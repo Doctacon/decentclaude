@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# post-merge hook - Run after git merge or git pull
+#
+# This hook:
+#   - Notifies about potential conflicts in other worktrees
+#   - Updates worktree state file
+#   - Suggests syncing other worktrees if they're on related branches
+
+set -euo pipefail
+
+# Arguments: squash_merge_flag
+SQUASH_MERGE=$1
+
+# Get current branch and worktree
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+CURRENT_WORKTREE=$(git rev-parse --show-toplevel)
+
+# Skip if on detached HEAD
+if [[ "$CURRENT_BRANCH" == "HEAD" ]]; then
+    exit 0
+fi
+
+# Update last merge timestamp for this worktree
+WORKTREE_STATE_DIR="${GIT_DIR:-$(git rev-parse --git-common-dir)}/worktree-state"
+mkdir -p "$WORKTREE_STATE_DIR"
+date +%s > "$WORKTREE_STATE_DIR/$(basename "$CURRENT_WORKTREE").last_merge"
+
+# Check if this was a merge from main
+MERGE_HEAD_FILE="${GIT_DIR:-$(git rev-parse --git-dir)}/MERGE_HEAD"
+if [[ -f "$MERGE_HEAD_FILE" ]]; then
+    MERGED_BRANCH=$(git name-rev --name-only "$(cat "$MERGE_HEAD_FILE")" 2>/dev/null || echo "unknown")
+
+    if [[ "$MERGED_BRANCH" == *"main"* ]] || [[ "$MERGED_BRANCH" == *"master"* ]]; then
+        echo ""
+        echo "Merged from main. Other worktrees might also need to merge main."
+        echo "Run 'wt-status' to check other worktrees."
+    fi
+fi
+
+# Notify if other worktrees might be affected
+OTHER_WORKTREES=()
+while IFS= read -r line; do
+    if [[ $line =~ ^worktree[[:space:]]+(.*) ]]; then
+        WORKTREE_PATH="${BASH_REMATCH[1]}"
+
+        # Skip current worktree and bare repos
+        if [[ "$WORKTREE_PATH" == "$CURRENT_WORKTREE" ]] || [[ $WORKTREE_PATH == *".repo.git"* ]]; then
+            continue
+        fi
+
+        # Get branch info
+        read -r branch_line
+        if [[ $branch_line =~ branch[[:space:]]+refs/heads/(.*) ]]; then
+            BRANCH="${BASH_REMATCH[1]}"
+
+            # Skip main/master branches
+            if [[ "$BRANCH" != "main" ]] && [[ "$BRANCH" != "master" ]]; then
+                OTHER_WORKTREES+=("$(basename "$WORKTREE_PATH"):$BRANCH")
+            fi
+        fi
+    fi
+done < <(git worktree list --porcelain)
+
+if [[ ${#OTHER_WORKTREES[@]} -gt 0 ]] && [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+    echo ""
+    echo "Updated main branch. Consider syncing these worktrees:"
+    for wt in "${OTHER_WORKTREES[@]}"; do
+        echo "  - $wt"
+    done
+    echo ""
+    echo "Run 'wt-sync' to check their status."
+fi
+
+exit 0

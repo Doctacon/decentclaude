@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# wt-clean - Clean up stale or merged worktrees
+#
+# Usage: wt-clean [options]
+#
+# This utility identifies and optionally removes:
+#   - Worktrees for branches that have been merged
+#   - Worktrees for branches that no longer exist on remote
+#   - Worktrees in directories that no longer exist
+#
+# Options:
+#   --merged, -m         Remove worktrees for branches merged into main
+#   --gone, -g           Remove worktrees for branches deleted from remote
+#   --dry-run, -n        Show what would be removed without removing
+#   --force, -f          Force removal even with uncommitted changes
+#   --help, -h           Show this help message
+
+set -euo pipefail
+
+# Color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+RESET='\033[0m'
+
+# Options
+REMOVE_MERGED=false
+REMOVE_GONE=false
+DRY_RUN=false
+FORCE=false
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -m|--merged)
+            REMOVE_MERGED=true
+            shift
+            ;;
+        -g|--gone)
+            REMOVE_GONE=true
+            shift
+            ;;
+        -n|--dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        -f|--force)
+            FORCE=true
+            shift
+            ;;
+        -h|--help)
+            grep '^#' "$0" | sed 's/^# \?//'
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# If no removal option specified, default to dry-run mode
+if ! $REMOVE_MERGED && ! $REMOVE_GONE; then
+    DRY_RUN=true
+    REMOVE_MERGED=true
+    REMOVE_GONE=true
+    echo -e "${CYAN}Running in scan mode (no changes will be made)${RESET}"
+    echo "Use --merged or --gone to actually remove worktrees"
+    echo ""
+fi
+
+echo -e "${CYAN}Cleaning worktrees...${RESET}"
+echo ""
+
+# First, prune worktree metadata for missing directories
+echo -e "${CYAN}[1/3] Pruning missing worktrees${RESET}"
+if $DRY_RUN; then
+    MISSING=$(git worktree list | grep -c "prunable" || true)
+    if [[ $MISSING -gt 0 ]]; then
+        echo -e "  ${YELLOW}Found $MISSING prunable worktrees${RESET}"
+        echo "  (dry-run) Would run: git worktree prune"
+    else
+        echo -e "  ${GREEN}No missing worktrees found${RESET}"
+    fi
+else
+    git worktree prune --verbose
+    echo -e "  ${GREEN}✓ Prune complete${RESET}"
+fi
+echo ""
+
+# Fetch latest to ensure we have up-to-date remote info
+echo -e "${CYAN}[2/3] Fetching latest from remote${RESET}"
+if ! $DRY_RUN; then
+    git fetch --all --prune --quiet
+    echo -e "  ${GREEN}✓ Fetch complete${RESET}"
+else
+    echo "  (dry-run) Would run: git fetch --all --prune"
+fi
+echo ""
+
+# Check each worktree
+echo -e "${CYAN}[3/3] Checking worktrees${RESET}"
+REMOVED_COUNT=0
+SKIPPED_COUNT=0
+
+while IFS= read -r line; do
+    if [[ $line =~ ^worktree[[:space:]]+(.*) ]]; then
+        WORKTREE_PATH="${BASH_REMATCH[1]}"
+
+        # Skip bare repos
+        if [[ $WORKTREE_PATH == *".repo.git"* ]]; then
+            continue
+        fi
+
+        # Get branch info
+        read -r branch_line
+        if [[ $branch_line =~ branch[[:space:]]+refs/heads/(.*) ]]; then
+            BRANCH="${BASH_REMATCH[1]}"
+        else
+            # Skip detached HEAD or main branch
+            continue
+        fi
+
+        # Never remove main or master branches
+        if [[ "$BRANCH" == "main" ]] || [[ "$BRANCH" == "master" ]]; then
+            continue
+        fi
+
+        cd "$WORKTREE_PATH" 2>/dev/null || continue
+
+        WORKTREE_NAME=$(basename "$WORKTREE_PATH")
+        SHOULD_REMOVE=false
+        REASON=""
+
+        # Check for uncommitted changes
+        HAS_CHANGES=false
+        if [[ -n $(git status --porcelain) ]]; then
+            HAS_CHANGES=true
+        fi
+
+        # Check if branch is merged
+        if $REMOVE_MERGED; then
+            if git merge-base --is-ancestor "$BRANCH" "origin/main" 2>/dev/null; then
+                SHOULD_REMOVE=true
+                REASON="merged into main"
+            fi
+        fi
+
+        # Check if branch is gone from remote
+        if $REMOVE_GONE; then
+            if ! git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+                SHOULD_REMOVE=true
+                REASON="branch deleted from remote"
+            fi
+        fi
+
+        # Decide whether to remove
+        if $SHOULD_REMOVE; then
+            if $HAS_CHANGES && ! $FORCE; then
+                echo -e "  ${YELLOW}⊘ $WORKTREE_NAME${RESET} - $REASON (skipped: has uncommitted changes)"
+                echo "    Use --force to remove anyway"
+                ((SKIPPED_COUNT++))
+            else
+                if $DRY_RUN; then
+                    echo -e "  ${CYAN}⊘ $WORKTREE_NAME${RESET} - $REASON (would remove)"
+                    ((REMOVED_COUNT++))
+                else
+                    echo -e "  ${RED}✗ $WORKTREE_NAME${RESET} - $REASON (removing)"
+                    cd .. 2>/dev/null || true
+                    if $FORCE; then
+                        git worktree remove --force "$WORKTREE_PATH" 2>/dev/null || echo "    Failed to remove"
+                    else
+                        git worktree remove "$WORKTREE_PATH" 2>/dev/null || echo "    Failed to remove"
+                    fi
+                    ((REMOVED_COUNT++))
+                fi
+            fi
+        fi
+    fi
+done < <(git worktree list --porcelain)
+
+echo ""
+echo -e "${CYAN}Summary${RESET}"
+if $DRY_RUN; then
+    echo "  Would remove: $REMOVED_COUNT worktrees"
+    echo "  Would skip: $SKIPPED_COUNT worktrees (uncommitted changes)"
+else
+    echo "  Removed: $REMOVED_COUNT worktrees"
+    echo "  Skipped: $SKIPPED_COUNT worktrees (uncommitted changes)"
+fi
+echo ""
+
+if $DRY_RUN && [[ $REMOVED_COUNT -gt 0 ]]; then
+    echo -e "${YELLOW}To actually remove these worktrees, run:${RESET}"
+    if $REMOVE_MERGED; then
+        echo "  wt-clean --merged"
+    fi
+    if $REMOVE_GONE; then
+        echo "  wt-clean --gone"
+    fi
+fi
