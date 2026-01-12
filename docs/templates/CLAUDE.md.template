@@ -1,0 +1,647 @@
+# Claude Code Project Instructions
+
+> Copy this template to the root of your project as `CLAUDE.md` and customize for your specific needs.
+
+## Project Overview
+
+**Project Name**: [Your Project Name]
+**Project Type**: [Data Platform / Analytics / ETL Pipeline / etc.]
+**Primary Technologies**: [dbt / SQLMesh / BigQuery / Airflow / etc.]
+**Repository**: [Link to repo]
+
+### What This Project Does
+
+[Brief description of the project's purpose and what it accomplishes]
+
+### Key Stakeholders
+
+- **Owner**: [Team/Individual]
+- **Primary Users**: [Who uses this]
+- **Slack Channel**: [#channel]
+
+## Working with This Project
+
+### Environment Setup
+
+```bash
+# Required environment variables
+export PROJECT_ID=[gcp_project_id]
+export DATASET=[dataset_name]
+export DBT_PROFILES_DIR=~/.dbt
+export PYTHONPATH=.
+
+# Authentication
+gcloud auth login
+gcloud config set project [project_id]
+
+# Install dependencies
+pip install -r requirements.txt
+
+# dbt setup
+dbt deps
+dbt debug
+
+# SQLMesh setup (if applicable)
+sqlmesh init
+```
+
+### Project Structure
+
+```
+[project_root]/
+├── dbt_project.yml          # dbt configuration
+├── sqlmesh_config.yaml      # SQLMesh configuration (if applicable)
+├── models/                  # Data models
+│   ├── staging/            # Staging models (raw data cleaned)
+│   ├── intermediate/       # Intermediate transformations
+│   └── marts/              # Business-facing models
+├── macros/                 # Reusable SQL macros
+├── tests/                  # Custom data quality tests
+├── docs/                   # Documentation
+│   ├── models/            # Model-specific documentation
+│   ├── runbooks/          # Operational runbooks
+│   └── templates/         # Documentation templates
+└── scripts/               # Utility scripts
+```
+
+## Claude Code Workflows
+
+### Before Making Changes
+
+When I'm about to work on this project, I should:
+
+1. **Check project context**
+   ```bash
+   # Verify I'm in the right project
+   gcloud config get-value project
+
+   # Check git status
+   git status
+
+   # Review recent changes
+   git log --oneline -5
+   ```
+
+2. **Understand current state**
+   ```bash
+   # Check for running pipelines
+   [status_check_command]
+
+   # Verify environment
+   dbt debug  # or sqlmesh validate
+   ```
+
+3. **Review documentation**
+   - Read relevant model documentation in `docs/models/`
+   - Check runbooks in `docs/runbooks/`
+   - Review data engineering patterns in `data-engineering-patterns.md`
+
+### Common Tasks
+
+#### Task: Create New dbt Model
+
+When asked to create a new model:
+
+1. **Determine model layer**
+   - Staging: Raw data cleaning and standardization
+   - Intermediate: Business logic and transformations
+   - Marts: Final business-facing datasets
+
+2. **Follow naming conventions**
+   - Staging: `stg_[source]__[entity].sql`
+   - Intermediate: `int_[entity]__[description].sql`
+   - Marts: `[entity]_[grain].sql` or `fct_[entity].sql`, `dim_[entity].sql`
+
+3. **Create model and schema files**
+   ```bash
+   # Create model SQL
+   touch models/[layer]/[model_name].sql
+
+   # Document in schema.yml
+   # Add to models/[layer]/schema.yml
+   ```
+
+4. **Implement with best practices**
+   - Use CTEs for readability
+   - Add meaningful column names
+   - Include grain in comments
+   - Use ref() for dependencies
+   - Add appropriate config (materialization, partitioning, clustering)
+
+5. **Test and validate**
+   ```bash
+   # Compile to check syntax
+   dbt compile --select [model_name]
+
+   # Run in dev
+   dbt run --select [model_name] --target dev
+
+   # Add and run tests
+   dbt test --select [model_name]
+   ```
+
+#### Task: Create New SQLMesh Model
+
+When asked to create a SQLMesh model:
+
+1. **Define model metadata**
+   ```sql
+   MODEL (
+     name [schema].[model_name],
+     kind [INCREMENTAL_BY_TIME_RANGE / VIEW / FULL],
+     grain ([grain_columns]),
+     partitioned_by ([partition_column], [granularity]),
+     clustered_by ([cluster_columns])
+   );
+   ```
+
+2. **Implement query logic**
+   - Use proper time range filters for incremental models
+   - Reference upstream models with `@[model_name]`
+   - Add appropriate WHERE clauses
+
+3. **Test and validate**
+   ```bash
+   # Validate model
+   sqlmesh validate [model_name]
+
+   # Plan changes
+   sqlmesh plan --environment dev
+
+   # Run model
+   sqlmesh run --environment dev --select [model_name]
+   ```
+
+#### Task: Optimize Query Performance
+
+When asked to optimize a query or model:
+
+1. **Analyze current performance**
+   ```sql
+   -- Check table size and cost
+   SELECT
+     table_name,
+     ROUND(size_bytes / POW(10, 9), 2) as size_gb,
+     ROUND(size_bytes / POW(10, 9) * 0.02, 2) as full_scan_cost_usd
+   FROM `[project.dataset].__TABLES__`
+   WHERE table_name = '[table_name]';
+   ```
+
+2. **Check for common issues**
+   - Missing partition filters
+   - No clustering on frequently filtered/joined columns
+   - SELECT * instead of specific columns
+   - Unnecessary full table scans
+   - Inefficient JOINs
+
+3. **Apply optimizations**
+   - Add partition_by configuration
+   - Add cluster_by for frequently used columns
+   - Use incremental materialization
+   - Add WHERE clause on partition column
+   - Use APPROX_* functions where appropriate
+
+4. **Validate improvements**
+   ```bash
+   # Compare before/after with explain
+   # Run dry run to check bytes processed
+   ```
+
+#### Task: Debug Pipeline Failure
+
+When asked to debug a failed pipeline:
+
+1. **Gather information**
+   ```bash
+   # Check recent runs
+   [check_recent_runs_command]
+
+   # View error logs
+   [view_logs_command]
+
+   # Check data freshness
+   [check_freshness_command]
+   ```
+
+2. **Identify root cause**
+   - Check error message in logs
+   - Review recent code changes
+   - Verify upstream dependencies completed
+   - Check for schema changes
+   - Verify permissions
+
+3. **Implement fix**
+   - Fix code issues
+   - Update schema
+   - Grant permissions if needed
+   - Clear cache if necessary
+
+4. **Verify and monitor**
+   ```bash
+   # Test fix in dev
+   [run_in_dev]
+
+   # Deploy to prod
+   [deploy_command]
+
+   # Monitor next run
+   [monitor_command]
+   ```
+
+#### Task: Add Data Quality Tests
+
+When asked to add tests:
+
+1. **Identify appropriate tests**
+   - Uniqueness tests for primary keys
+   - Not null tests for required columns
+   - Freshness tests for time-sensitive data
+   - Relationship tests for foreign keys
+   - Custom business logic tests
+
+2. **Add tests to schema.yml**
+   ```yaml
+   models:
+     - name: [model_name]
+       columns:
+         - name: [pk_column]
+           tests:
+             - unique
+             - not_null
+         - name: [fk_column]
+           tests:
+             - relationships:
+                 to: ref('[parent_model]')
+                 field: [parent_column]
+       tests:
+         - dbt_utils.recency:
+             datepart: hour
+             field: updated_at
+             interval: 24
+   ```
+
+3. **Run tests**
+   ```bash
+   dbt test --select [model_name]
+   ```
+
+## Code Standards
+
+### SQL Style Guide
+
+**Follow these conventions:**
+
+1. **Formatting**
+   - Use lowercase for SQL keywords
+   - Use trailing commas
+   - Indent with 2 spaces
+   - One column per line in SELECT
+
+   ```sql
+   select
+     column_1,
+     column_2,
+     column_3
+   from {{ ref('source_model') }}
+   where condition = true
+   ```
+
+2. **CTEs over subqueries**
+   ```sql
+   with source_data as (
+     select * from {{ ref('staging_table') }}
+   ),
+
+   transformed as (
+     select
+       column_1,
+       column_2
+     from source_data
+     where column_1 is not null
+   )
+
+   select * from transformed
+   ```
+
+3. **Naming conventions**
+   - Use snake_case for all identifiers
+   - Prefix boolean columns with `is_` or `has_`
+   - Use descriptive names, avoid abbreviations
+   - Suffix date columns with `_date`, timestamps with `_at`
+
+4. **Comments**
+   - Add grain comment at top of each model
+   - Comment complex business logic
+   - Document any non-obvious transformations
+
+### dbt Best Practices
+
+**Always:**
+- Use `ref()` for model dependencies, never hardcode table names
+- Use `source()` for external tables
+- Configure appropriate materialization
+- Add partition_by and cluster_by for large tables
+- Document models and columns in schema.yml
+- Add tests for all models
+- Use incremental models for large, append-only datasets
+
+**Never:**
+- Hardcode dates or values (use variables/macros)
+- Create circular dependencies
+- Mix layers (e.g., marts referencing other marts excessively)
+- Skip testing
+- Use SELECT * in production models
+
+### SQLMesh Best Practices
+
+**Always:**
+- Define model metadata (name, kind, grain)
+- Use proper partitioning for incremental models
+- Test in virtual environments before prod
+- Document breaking changes
+- Use forward-only changes when possible
+
+**Never:**
+- Skip environment validation
+- Deploy breaking changes without migration
+- Use hardcoded time ranges in incremental models
+- Forget to set grain for incremental models
+
+## Testing Strategy
+
+### Before Committing Code
+
+```bash
+# 1. Compile all models
+dbt compile  # or sqlmesh validate
+
+# 2. Run changed models in dev
+dbt run --select state:modified+ --target dev
+
+# 3. Run all tests
+dbt test --select state:modified+
+
+# 4. Check for data quality issues
+python scripts/data_quality.py  # if applicable
+
+# 5. Generate and review docs
+dbt docs generate
+dbt docs serve
+```
+
+### Pre-Deployment Checklist
+
+- [ ] All models compile successfully
+- [ ] Models run successfully in dev/staging
+- [ ] All tests pass
+- [ ] Documentation updated
+- [ ] Performance impact assessed
+- [ ] Breaking changes documented
+- [ ] Downstream dependencies notified
+
+## Git Hooks Integration
+
+### Available Hooks
+
+This project uses git hooks for automated validation:
+
+**Pre-commit hooks:**
+- SQL syntax validation
+- dbt compilation check
+- Data quality checks
+- No hardcoded secrets check
+
+**Post-merge hooks:**
+- [If applicable]
+
+**Usage:**
+```bash
+# Hooks run automatically
+git commit -m "Add new model"
+
+# Skip hooks if needed (use sparingly)
+git commit --no-verify -m "Add new model"
+```
+
+## Deployment Process
+
+### Development Workflow
+
+```bash
+# 1. Create feature branch
+git checkout -b feature/[description]
+
+# 2. Make changes and test locally
+dbt run --select [models] --target dev
+dbt test --select [models]
+
+# 3. Commit changes
+git add [files]
+git commit -m "[description]"
+
+# 4. Push and create PR
+git push origin feature/[description]
+# Create PR in GitHub
+
+# 5. After approval, merge to main
+# CI/CD will deploy to staging
+
+# 6. After staging validation, deploy to prod
+[production_deployment_command]
+```
+
+### Emergency Rollback
+
+```bash
+# 1. Identify last good version
+git log --oneline -10
+
+# 2. Revert to previous version
+git revert [commit_hash]
+
+# 3. Deploy immediately
+[emergency_deploy_command]
+
+# 4. Notify stakeholders
+[notification_command]
+```
+
+## Monitoring and Alerts
+
+### Key Metrics to Monitor
+
+- Pipeline success rate
+- Data freshness
+- Row counts (volume anomalies)
+- Query costs
+- Runtime duration
+- Test failure rate
+
+### Alert Conditions
+
+[Define when alerts should trigger]
+
+### Dashboard Links
+
+- [Production Dashboard]
+- [Data Quality Dashboard]
+- [Cost Dashboard]
+
+## Common Gotchas
+
+### Issue: Permission Denied
+
+**Solution:**
+```bash
+# Authenticate
+gcloud auth login
+gcloud config set project [project_id]
+
+# Or use service account
+export GOOGLE_APPLICATION_CREDENTIALS=[path_to_key.json]
+```
+
+### Issue: dbt Cannot Find Profile
+
+**Solution:**
+```bash
+# Set profiles directory
+export DBT_PROFILES_DIR=~/.dbt
+
+# Or use --profiles-dir flag
+dbt run --profiles-dir ~/.dbt
+```
+
+### Issue: BigQuery Rate Limits
+
+**Solution:**
+- Add delays between queries
+- Use batch inserts instead of individual inserts
+- Request quota increase if needed
+
+### Issue: SQLMesh Breaking Changes
+
+**Solution:**
+```bash
+# Create migration
+sqlmesh plan --create-migration
+
+# Or recreate virtual environment (dev only)
+sqlmesh plan --recreate --environment dev
+```
+
+## Resources
+
+### Internal Documentation
+
+- [Architecture Documentation]
+- [Data Dictionary]
+- [Team Wiki]
+
+### External Resources
+
+- [dbt Documentation](https://docs.getdbt.com/)
+- [SQLMesh Documentation](https://sqlmesh.readthedocs.io/)
+- [BigQuery Documentation](https://cloud.google.com/bigquery/docs)
+- [Data Engineering Patterns](./data-engineering-patterns.md)
+
+### Useful Commands
+
+```bash
+# dbt
+dbt run --select [model]              # Run specific model
+dbt test --select [model]             # Test specific model
+dbt docs generate && dbt docs serve   # View documentation
+dbt ls --select tag:[tag]             # List models by tag
+dbt run-operation [macro]             # Run macro
+
+# SQLMesh
+sqlmesh plan                          # Plan changes
+sqlmesh run --environment [env]       # Run in environment
+sqlmesh validate [model]              # Validate model
+sqlmesh render [model]                # View rendered SQL
+sqlmesh diff                          # See what changed
+
+# BigQuery
+bq query --nouse_legacy_sql '[sql]'   # Run query
+bq show [table]                       # Show table details
+bq ls [dataset]                       # List tables
+bq mk --dataset [dataset]             # Create dataset
+```
+
+## Specific Instructions for Claude
+
+### When Creating Models
+
+- Always ask about the grain (one row per what?)
+- Confirm layer placement (staging/intermediate/marts)
+- Verify partitioning/clustering strategy for tables > 1GB
+- Add tests automatically for primary keys
+- Generate documentation in schema.yml
+
+### When Debugging
+
+- Start by checking logs and error messages
+- Review recent git commits for changes
+- Check upstream dependencies
+- Verify data availability and freshness
+- Test in dev before touching prod
+
+### When Optimizing
+
+- Always estimate cost impact before and after
+- Check if partition pruning is working
+- Verify clustering is beneficial (look at query patterns)
+- Consider incremental vs full refresh tradeoffs
+- Test performance in dev with production-like data
+
+### When Documenting
+
+- Use templates from `docs/templates/`
+- Include examples and query patterns
+- Document breaking changes
+- Keep runbooks up to date
+- Generate dbt docs after model changes
+
+## Environment-Specific Notes
+
+### Development
+
+- Use small data samples for testing
+- Limit partitions to recent data
+- Feel free to experiment
+- Clean up temporary tables
+
+### Staging
+
+- Mirror production configuration
+- Use full data volumes
+- Run full test suite
+- Validate before promoting to prod
+
+### Production
+
+- Changes only through CI/CD
+- No manual table modifications
+- Monitor for 24h after changes
+- Document all changes
+
+## Contact and Support
+
+**For questions about:**
+- Data models: [Contact/Channel]
+- Pipeline issues: [Contact/Channel]
+- Access/Permissions: [Contact/Channel]
+- General support: [Contact/Channel]
+
+**Escalation path:**
+1. [Team Channel]
+2. [Team Lead]
+3. [Manager]
+4. [On-call rotation]
+
+---
+
+**Last updated**: [YYYY-MM-DD]
+**Template version**: 1.0
+**Maintained by**: [Team/Individual]
