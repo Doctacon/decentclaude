@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# wt-switch - Quick switch between worktrees in the Gas Town workspace
+#
+# Usage: wt-switch <worktree-name>
+#        wt-switch --list
+#
+# Options:
+#   --list, -l        List available worktrees
+#   --help, -h        Show this help message
+#
+# Examples:
+#   wt-switch furiosa      # Switch to furiosa worktree
+#   wt-switch refinery     # Switch to refinery worktree
+#   wt-switch -l           # List all worktrees
+
+set -euo pipefail
+
+# Color codes
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+RESET='\033[0m'
+
+# Parse arguments
+if [[ $# -eq 0 ]]; then
+    echo "Usage: wt-switch <worktree-name>"
+    echo "       wt-switch --list"
+    exit 1
+fi
+
+case $1 in
+    -l|--list)
+        echo -e "${CYAN}Available worktrees:${RESET}"
+        git worktree list | grep -v "(bare)" | while read -r path commit branch; do
+            WORKTREE_NAME=$(basename "$path")
+            echo -e "  ${GREEN}$WORKTREE_NAME${RESET}"
+            echo "    Path: $path"
+            echo "    Branch: $branch"
+        done
+        exit 0
+        ;;
+    -h|--help)
+        grep '^#' "$0" | sed 's/^# \?//'
+        exit 0
+        ;;
+esac
+
+TARGET_NAME="$1"
+
+# Find matching worktree
+WORKTREE_PATH=""
+while IFS= read -r line; do
+    if [[ $line =~ ^worktree[[:space:]]+(.*) ]]; then
+        PATH_CANDIDATE="${BASH_REMATCH[1]}"
+        WORKTREE_NAME=$(basename "$PATH_CANDIDATE")
+
+        # Skip bare repos
+        if [[ $PATH_CANDIDATE == *".repo.git"* ]]; then
+            continue
+        fi
+
+        # Check if name matches
+        if [[ "$WORKTREE_NAME" == "$TARGET_NAME" ]]; then
+            WORKTREE_PATH="$PATH_CANDIDATE"
+            break
+        fi
+    fi
+done < <(git worktree list --porcelain)
+
+if [[ -z "$WORKTREE_PATH" ]]; then
+    echo "Error: Worktree '$TARGET_NAME' not found"
+    echo ""
+    echo "Available worktrees:"
+    git worktree list | grep -v "(bare)" | while read -r path _; do
+        echo "  $(basename "$path")"
+    done
+    exit 1
+fi
+
+# Check if worktree exists
+if [[ ! -d "$WORKTREE_PATH" ]]; then
+    echo "Error: Worktree path does not exist: $WORKTREE_PATH"
+    exit 1
+fi
+
+# Output cd command for sourcing
+echo "cd \"$WORKTREE_PATH\""
+
+# If not being sourced, inform user
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    echo ""
+    echo "Note: To actually switch, use:"
+    echo "  eval \"\$(wt-switch $TARGET_NAME)\""
+    echo ""
+    echo "Or add this alias to your shell rc:"
+    echo "  alias wts='eval \"\$(wt-switch \"\$@\")\"'"
+fi
