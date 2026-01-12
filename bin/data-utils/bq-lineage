@@ -1,0 +1,344 @@
+#!/usr/bin/env python3
+"""
+bq-lineage - Explore BigQuery table lineage (upstream and downstream dependencies)
+
+Usage:
+  bq-lineage <table_id> [options]
+
+Arguments:
+  table_id   Table ID (format: project.dataset.table)
+
+Options:
+  --direction=<dir>  Lineage direction: upstream, downstream, both (default: both)
+  --depth=<n>        Maximum depth to traverse (default: 1)
+  --format=<format>  Output format: text, json, mermaid (default: text)
+  --help, -h         Show this help message
+
+Examples:
+  bq-lineage project.dataset.orders
+  bq-lineage project.dataset.orders --direction=downstream
+  bq-lineage project.dataset.orders --direction=upstream --depth=2
+  bq-lineage project.dataset.orders --format=mermaid
+"""
+
+import sys
+import json
+import argparse
+from typing import List, Set
+from google.cloud import bigquery
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def get_upstream_dependencies(client: bigquery.Client, table_id: str, dataset_id: str) -> List[str]:
+    """
+    Get tables that this table depends on (referenced in view definition).
+
+    Args:
+        client: BigQuery client
+        table_id: Full table ID (project.dataset.table)
+        dataset_id: Dataset ID (project.dataset)
+
+    Returns:
+        List of table IDs that this table depends on
+    """
+    try:
+        parts = table_id.split('.')
+        if len(parts) != 3:
+            return []
+        project, dataset, table_name = parts
+
+        # Check if it's a view
+        table = client.get_table(table_id)
+        if table.table_type not in ['VIEW', 'MATERIALIZED_VIEW']:
+            return []
+
+        # Parse view definition for referenced tables
+        view_query = table.view_query or table.mview_query
+
+        # Query INFORMATION_SCHEMA for referenced tables
+        query = f"""
+        SELECT
+          CONCAT(table_catalog, '.', table_schema, '.', table_name) as referenced_table
+        FROM `{project}.{dataset}.INFORMATION_SCHEMA.TABLE_OPTIONS`
+        WHERE
+          option_name = 'view_definition'
+          AND option_value LIKE '%{table_name}%'
+        """
+
+        # Alternatively, parse the view query for table references
+        # This is a simplified approach - a full parser would be more robust
+        referenced_tables = []
+        if view_query:
+            # Extract table references from view query
+            # Pattern: project.dataset.table or dataset.table
+            import re
+            pattern = r'`?([a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)`?'
+            matches = re.findall(pattern, view_query)
+            referenced_tables.extend(matches)
+
+            # Also check for dataset.table pattern
+            pattern2 = r'FROM\s+`?([a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)`?'
+            matches2 = re.findall(pattern2, view_query, re.IGNORECASE)
+            for match in matches2:
+                # Add project if not present
+                if '.' in match and match.count('.') == 1:
+                    referenced_tables.append(f"{project}.{match}")
+
+        return list(set(referenced_tables))
+
+    except Exception as e:
+        return []
+
+
+def get_downstream_dependencies(client: bigquery.Client, table_id: str) -> List[str]:
+    """
+    Get tables that depend on this table (views/tables that reference it).
+
+    Args:
+        client: BigQuery client
+        table_id: Full table ID (project.dataset.table)
+
+    Returns:
+        List of table IDs that depend on this table
+    """
+    try:
+        parts = table_id.split('.')
+        if len(parts) != 3:
+            return []
+        project, dataset, table_name = parts
+
+        # Search all datasets for views that reference this table
+        query = f"""
+        SELECT
+          CONCAT(table_catalog, '.', table_schema, '.', table_name) as dependent_table,
+          table_type
+        FROM `{project}.region-us`.INFORMATION_SCHEMA.TABLES
+        WHERE
+          table_type IN ('VIEW', 'MATERIALIZED_VIEW')
+          AND table_catalog = '{project}'
+        """
+
+        dependent_tables = []
+        try:
+            query_job = client.query(query)
+
+            for row in query_job:
+                # Get the view definition and check if it references our table
+                try:
+                    dependent_table_obj = client.get_table(row.dependent_table)
+                    view_query = dependent_table_obj.view_query or dependent_table_obj.mview_query
+
+                    if view_query and table_id in view_query:
+                        dependent_tables.append(row.dependent_table)
+                except:
+                    continue
+
+        except Exception:
+            # Fallback: Check only the same dataset
+            query = f"""
+            SELECT
+              CONCAT(table_catalog, '.', table_schema, '.', table_name) as dependent_table,
+              table_type
+            FROM `{project}.{dataset}.INFORMATION_SCHEMA.TABLES`
+            WHERE
+              table_type IN ('VIEW', 'MATERIALIZED_VIEW')
+            """
+
+            query_job = client.query(query)
+            for row in query_job:
+                try:
+                    dependent_table_obj = client.get_table(row.dependent_table)
+                    view_query = dependent_table_obj.view_query or dependent_table_obj.mview_query
+
+                    if view_query and table_id in view_query:
+                        dependent_tables.append(row.dependent_table)
+                except:
+                    continue
+
+        return dependent_tables
+
+    except Exception as e:
+        return []
+
+
+def get_lineage(client: bigquery.Client, table_id: str, direction: str = 'both', depth: int = 1) -> dict:
+    """
+    Get lineage information for a BigQuery table.
+
+    Args:
+        client: BigQuery client
+        table_id: Full table ID (project.dataset.table)
+        direction: 'upstream', 'downstream', or 'both'
+        depth: Maximum depth to traverse
+
+    Returns:
+        Dictionary with lineage information
+    """
+    parts = table_id.split('.')
+    if len(parts) != 3:
+        raise ValueError("Table ID must be in format: project.dataset.table")
+    project, dataset, _ = parts
+    dataset_id = f"{project}.{dataset}"
+
+    result = {
+        "table_id": table_id,
+        "direction": direction,
+        "depth": depth,
+        "upstream": [],
+        "downstream": []
+    }
+
+    if direction in ['upstream', 'both']:
+        upstream = get_upstream_dependencies(client, table_id, dataset_id)
+        result['upstream'] = upstream
+
+    if direction in ['downstream', 'both']:
+        downstream = get_downstream_dependencies(client, table_id)
+        result['downstream'] = downstream
+
+    return result
+
+
+def print_text_report(result: dict):
+    """Print a formatted text report of lineage"""
+
+    print(f"\n{Colors.CYAN}{Colors.BOLD}BigQuery Table Lineage{Colors.RESET}")
+    print(f"{Colors.BLUE}Table:{Colors.RESET} {result['table_id']}")
+    print(f"{Colors.BLUE}Direction:{Colors.RESET} {result['direction']}")
+    print(f"{Colors.BLUE}Depth:{Colors.RESET} {result['depth']}")
+    print("=" * 80)
+
+    # Upstream dependencies
+    if result['direction'] in ['upstream', 'both']:
+        print(f"\n{Colors.BOLD}Upstream Dependencies ({len(result['upstream'])}):{Colors.RESET}")
+        if result['upstream']:
+            print(f"{Colors.GREEN}Tables this table depends on:{Colors.RESET}")
+            for table in sorted(result['upstream']):
+                print(f"  {Colors.GREEN}←{Colors.RESET} {table}")
+        else:
+            print(f"  {Colors.YELLOW}No upstream dependencies found{Colors.RESET}")
+
+    # Downstream dependencies
+    if result['direction'] in ['downstream', 'both']:
+        print(f"\n{Colors.BOLD}Downstream Dependencies ({len(result['downstream'])}):{Colors.RESET}")
+        if result['downstream']:
+            print(f"{Colors.BLUE}Tables that depend on this table:{Colors.RESET}")
+            for table in sorted(result['downstream']):
+                print(f"  {Colors.BLUE}→{Colors.RESET} {table}")
+        else:
+            print(f"  {Colors.YELLOW}No downstream dependencies found{Colors.RESET}")
+
+    # Summary
+    print(f"\n{Colors.CYAN}{Colors.BOLD}Summary{Colors.RESET}")
+    print(f"  Total upstream:   {len(result['upstream'])}")
+    print(f"  Total downstream: {len(result['downstream'])}")
+
+    if not result['upstream'] and not result['downstream']:
+        print(f"\n  {Colors.YELLOW}⚠ This table appears to be standalone (no dependencies){Colors.RESET}")
+    elif not result['upstream']:
+        print(f"\n  {Colors.GREEN}✓ This is a source table (no upstream dependencies){Colors.RESET}")
+    elif not result['downstream']:
+        print(f"\n  {Colors.BLUE}ℹ This is a leaf table (no downstream dependencies){Colors.RESET}")
+
+    print("=" * 80)
+
+
+def print_json_report(result: dict):
+    """Print a JSON report of lineage"""
+    output = {
+        "table_id": result['table_id'],
+        "direction": result['direction'],
+        "depth": result['depth'],
+        "upstream": sorted(result['upstream']),
+        "downstream": sorted(result['downstream']),
+        "summary": {
+            "upstream_count": len(result['upstream']),
+            "downstream_count": len(result['downstream']),
+            "is_source": len(result['upstream']) == 0,
+            "is_leaf": len(result['downstream']) == 0
+        }
+    }
+    print(json.dumps(output, indent=2))
+
+
+def print_mermaid_diagram(result: dict):
+    """Print a Mermaid diagram of lineage"""
+
+    print("```mermaid")
+    print("graph LR")
+
+    # Shorten table names for readability
+    def shorten(table_id):
+        parts = table_id.split('.')
+        if len(parts) == 3:
+            return f"{parts[1]}.{parts[2]}"
+        return table_id
+
+    center = shorten(result['table_id'])
+    center_node = center.replace('.', '_').replace('-', '_')
+
+    print(f"    {center_node}[{center}]")
+    print(f"    style {center_node} fill:#f9f,stroke:#333,stroke-width:4px")
+
+    # Upstream
+    if result['upstream']:
+        for i, table in enumerate(sorted(result['upstream'])):
+            short = shorten(table)
+            node_id = f"up{i}"
+            print(f"    {node_id}[{short}]")
+            print(f"    {node_id} --> {center_node}")
+
+    # Downstream
+    if result['downstream']:
+        for i, table in enumerate(sorted(result['downstream'])):
+            short = shorten(table)
+            node_id = f"down{i}"
+            print(f"    {node_id}[{short}]")
+            print(f"    {center_node} --> {node_id}")
+
+    print("```")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Explore BigQuery table lineage",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("table_id", help="Table ID (project.dataset.table)")
+    parser.add_argument("--direction", choices=["upstream", "downstream", "both"], default="both",
+                       help="Lineage direction (default: both)")
+    parser.add_argument("--depth", type=int, default=1,
+                       help="Maximum depth to traverse (default: 1)")
+    parser.add_argument("--format", choices=["text", "json", "mermaid"], default="text",
+                       help="Output format (default: text)")
+
+    args = parser.parse_args()
+
+    # Initialize BigQuery client
+    client = bigquery.Client()
+
+    # Get lineage
+    result = get_lineage(client, args.table_id, args.direction, args.depth)
+
+    # Print report
+    if args.format == "json":
+        print_json_report(result)
+    elif args.format == "mermaid":
+        print_mermaid_diagram(result)
+    else:
+        print_text_report(result)
+
+
+if __name__ == "__main__":
+    main()
