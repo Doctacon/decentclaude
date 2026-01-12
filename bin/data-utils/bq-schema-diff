@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""
+bq-schema-diff - Compare schemas of two BigQuery tables
+
+Usage:
+  bq-schema-diff <table_a> <table_b> [options]
+
+Arguments:
+  table_a    First table ID (format: project.dataset.table)
+  table_b    Second table ID (format: project.dataset.table)
+
+Options:
+  --format=<format>  Output format: text, json (default: text)
+  --help, -h         Show this help message
+
+Examples:
+  bq-schema-diff project.dataset.table_v1 project.dataset.table_v2
+  bq-schema-diff myproject.staging.users myproject.prod.users --format=json
+"""
+
+import sys
+import json
+import argparse
+from typing import Dict, List, Set, Tuple
+from google.cloud import bigquery
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def get_table_schema(client: bigquery.Client, table_id: str) -> Dict[str, str]:
+    """
+    Get the schema of a BigQuery table as a dictionary.
+
+    Args:
+        client: BigQuery client
+        table_id: Full table ID (project.dataset.table)
+
+    Returns:
+        Dictionary mapping field names to field types
+    """
+    try:
+        table = client.get_table(table_id)
+        schema = {}
+        for field in table.schema:
+            # Handle nested fields
+            if field.field_type == 'RECORD':
+                nested_fields = []
+                for nested_field in field.fields:
+                    nested_fields.append(f"{nested_field.name}:{nested_field.field_type}")
+                schema[field.name] = f"RECORD<{', '.join(nested_fields)}>"
+            else:
+                mode = f" ({field.mode})" if field.mode != 'NULLABLE' else ""
+                schema[field.name] = f"{field.field_type}{mode}"
+        return schema
+    except Exception as e:
+        print(f"{Colors.RED}Error fetching schema for {table_id}: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def compare_schemas(schema_a: Dict[str, str], schema_b: Dict[str, str]) -> Tuple[Set[str], Set[str], Dict[str, Tuple[str, str]]]:
+    """
+    Compare two schemas and identify differences.
+
+    Args:
+        schema_a: Schema of first table
+        schema_b: Schema of second table
+
+    Returns:
+        Tuple of (fields only in A, fields only in B, fields with type changes)
+    """
+    keys_a = set(schema_a.keys())
+    keys_b = set(schema_b.keys())
+
+    only_in_a = keys_a - keys_b
+    only_in_b = keys_b - keys_a
+
+    type_changes = {}
+    for key in keys_a & keys_b:
+        if schema_a[key] != schema_b[key]:
+            type_changes[key] = (schema_a[key], schema_b[key])
+
+    return only_in_a, only_in_b, type_changes
+
+
+def print_text_report(table_a: str, table_b: str, only_in_a: Set[str], only_in_b: Set[str],
+                     type_changes: Dict[str, Tuple[str, str]], schema_a: Dict[str, str],
+                     schema_b: Dict[str, str]):
+    """Print a formatted text report of schema differences"""
+
+    print(f"\n{Colors.CYAN}{Colors.BOLD}Schema Comparison{Colors.RESET}")
+    print(f"{Colors.BLUE}Table A:{Colors.RESET} {table_a}")
+    print(f"{Colors.BLUE}Table B:{Colors.RESET} {table_b}")
+    print("=" * 80)
+
+    # Fields only in A
+    if only_in_a:
+        print(f"\n{Colors.RED}{Colors.BOLD}Fields only in Table A ({len(only_in_a)}):{Colors.RESET}")
+        for field in sorted(only_in_a):
+            print(f"  {Colors.RED}−{Colors.RESET} {field}: {schema_a[field]}")
+
+    # Fields only in B
+    if only_in_b:
+        print(f"\n{Colors.GREEN}{Colors.BOLD}Fields only in Table B ({len(only_in_b)}):{Colors.RESET}")
+        for field in sorted(only_in_b):
+            print(f"  {Colors.GREEN}+{Colors.RESET} {field}: {schema_b[field]}")
+
+    # Type changes
+    if type_changes:
+        print(f"\n{Colors.YELLOW}{Colors.BOLD}Fields with type changes ({len(type_changes)}):{Colors.RESET}")
+        for field, (type_a, type_b) in sorted(type_changes.items()):
+            print(f"  {Colors.YELLOW}~{Colors.RESET} {field}:")
+            print(f"    {Colors.RED}A:{Colors.RESET} {type_a}")
+            print(f"    {Colors.GREEN}B:{Colors.RESET} {type_b}")
+
+    # Summary
+    print(f"\n{Colors.CYAN}{Colors.BOLD}Summary{Colors.RESET}")
+    if not only_in_a and not only_in_b and not type_changes:
+        print(f"{Colors.GREEN}✓ Schemas are identical{Colors.RESET}")
+    else:
+        print(f"  Fields only in A: {len(only_in_a)}")
+        print(f"  Fields only in B: {len(only_in_b)}")
+        print(f"  Type changes: {len(type_changes)}")
+        print(f"  {Colors.YELLOW}⚠ Schemas differ{Colors.RESET}")
+    print("=" * 80)
+
+
+def print_json_report(table_a: str, table_b: str, only_in_a: Set[str], only_in_b: Set[str],
+                     type_changes: Dict[str, Tuple[str, str]], schema_a: Dict[str, str],
+                     schema_b: Dict[str, str]):
+    """Print a JSON report of schema differences"""
+
+    report = {
+        "table_a": table_a,
+        "table_b": table_b,
+        "only_in_a": [{"field": field, "type": schema_a[field]} for field in sorted(only_in_a)],
+        "only_in_b": [{"field": field, "type": schema_b[field]} for field in sorted(only_in_b)],
+        "type_changes": [
+            {
+                "field": field,
+                "type_a": type_a,
+                "type_b": type_b
+            }
+            for field, (type_a, type_b) in sorted(type_changes.items())
+        ],
+        "identical": not only_in_a and not only_in_b and not type_changes,
+        "summary": {
+            "fields_only_in_a": len(only_in_a),
+            "fields_only_in_b": len(only_in_b),
+            "type_changes": len(type_changes)
+        }
+    }
+
+    print(json.dumps(report, indent=2))
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Compare schemas of two BigQuery tables",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("table_a", help="First table ID (project.dataset.table)")
+    parser.add_argument("table_b", help="Second table ID (project.dataset.table)")
+    parser.add_argument("--format", choices=["text", "json"], default="text",
+                       help="Output format (default: text)")
+
+    args = parser.parse_args()
+
+    # Initialize BigQuery client
+    client = bigquery.Client()
+
+    # Get schemas
+    schema_a = get_table_schema(client, args.table_a)
+    schema_b = get_table_schema(client, args.table_b)
+
+    # Compare schemas
+    only_in_a, only_in_b, type_changes = compare_schemas(schema_a, schema_b)
+
+    # Print report
+    if args.format == "json":
+        print_json_report(args.table_a, args.table_b, only_in_a, only_in_b, type_changes, schema_a, schema_b)
+    else:
+        print_text_report(args.table_a, args.table_b, only_in_a, only_in_b, type_changes, schema_a, schema_b)
+
+    # Exit with status code
+    if only_in_a or only_in_b or type_changes:
+        sys.exit(1)
+    else:
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

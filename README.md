@@ -8,6 +8,17 @@ This repository provides a comprehensive set of Claude Code hooks designed speci
 
 ## Features
 
+### CLI Data Utilities
+
+Powerful command-line utilities for common BigQuery operations:
+
+- **bq-schema-diff**: Compare schemas of two tables to identify differences
+- **bq-query-cost**: Estimate query costs before execution
+- **bq-partition-info**: Analyze partitioning configuration and partition sizes
+- **bq-lineage**: Explore table dependencies (upstream and downstream)
+
+See [Data Utilities](#data-utilities) for detailed usage.
+
 ### Automated Validation Hooks
 
 - **SQL Syntax Validation**: Automatically validate SQL before execution or file writes
@@ -121,6 +132,160 @@ Run the data-quality-check hook
 
 Executes the Python script at `scripts/data_quality.py` with customizable checks.
 
+## Data Utilities
+
+### bq-schema-diff
+
+Compare schemas of two BigQuery tables to identify differences.
+
+**Usage:**
+```bash
+bin/data-utils/bq-schema-diff <table_a> <table_b> [options]
+```
+
+**Options:**
+- `--format=<format>` - Output format: text, json (default: text)
+
+**Examples:**
+```bash
+# Compare two tables
+bin/data-utils/bq-schema-diff project.dataset.table_v1 project.dataset.table_v2
+
+# Output as JSON
+bin/data-utils/bq-schema-diff project.dataset.staging.users project.dataset.prod.users --format=json
+```
+
+**Output includes:**
+- Fields only in table A
+- Fields only in table B
+- Fields with type changes
+- Summary of differences
+
+### bq-query-cost
+
+Estimate BigQuery query costs before execution using dry run.
+
+**Usage:**
+```bash
+bin/data-utils/bq-query-cost <query> [options]
+bin/data-utils/bq-query-cost --file=<sql_file> [options]
+```
+
+**Options:**
+- `--file=<path>` - Read query from SQL file
+- `--format=<format>` - Output format: text, json (default: text)
+
+**Examples:**
+```bash
+# Estimate from query string
+bin/data-utils/bq-query-cost "SELECT * FROM project.dataset.table WHERE date = '2024-01-01'"
+
+# Estimate from file
+bin/data-utils/bq-query-cost --file=query.sql
+
+# JSON output
+bin/data-utils/bq-query-cost --file=query.sql --format=json
+```
+
+**Output includes:**
+- Bytes processed (formatted)
+- GB and TB processed
+- Estimated cost in USD
+- Cost category (Very Low, Low, Moderate, High, Very High)
+- Pricing model information
+
+### bq-partition-info
+
+Analyze BigQuery table partitioning configuration and partition details.
+
+**Usage:**
+```bash
+bin/data-utils/bq-partition-info <table_id> [options]
+```
+
+**Options:**
+- `--top=<n>` - Show top N partitions by size (default: 10)
+- `--format=<format>` - Output format: text, json (default: text)
+
+**Examples:**
+```bash
+# Analyze partitioning
+bin/data-utils/bq-partition-info project.dataset.events
+
+# Show top 20 partitions
+bin/data-utils/bq-partition-info project.dataset.events --top=20
+
+# JSON output
+bin/data-utils/bq-partition-info project.dataset.events --format=json
+```
+
+**Output includes:**
+- Partitioning type (TIME or RANGE)
+- Partition field
+- Expiration settings
+- Partition filter requirement
+- Clustering fields
+- Top N partitions by size with row counts and bytes
+
+### bq-lineage
+
+Explore BigQuery table lineage to understand dependencies.
+
+**Usage:**
+```bash
+bin/data-utils/bq-lineage <table_id> [options]
+```
+
+**Options:**
+- `--direction=<dir>` - Lineage direction: upstream, downstream, both (default: both)
+- `--depth=<n>` - Maximum depth to traverse (default: 1)
+- `--format=<format>` - Output format: text, json, mermaid (default: text)
+
+**Examples:**
+```bash
+# Show all dependencies
+bin/data-utils/bq-lineage project.dataset.orders
+
+# Show only downstream dependencies
+bin/data-utils/bq-lineage project.dataset.orders --direction=downstream
+
+# Generate Mermaid diagram
+bin/data-utils/bq-lineage project.dataset.orders --format=mermaid
+```
+
+**Output includes:**
+- Upstream dependencies (tables this table depends on)
+- Downstream dependencies (tables that depend on this table)
+- Dependency counts
+- Impact analysis information
+
+**Note:** Lineage detection works best with views and materialized views. For tables, it searches for references in view definitions across the project.
+
+### Installation
+
+To make utilities accessible from anywhere, add to your PATH:
+
+```bash
+# Add to ~/.bashrc or ~/.zshrc
+export PATH="$PATH:/path/to/decentclaude/bin/data-utils"
+```
+
+Or create symlinks:
+
+```bash
+sudo ln -s /path/to/decentclaude/bin/data-utils/bq-schema-diff /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/bq-query-cost /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/bq-partition-info /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/bq-lineage /usr/local/bin/
+```
+
+### Requirements
+
+All utilities require:
+- Python 3.7+
+- google-cloud-bigquery library: `pip install google-cloud-bigquery`
+- Google Cloud credentials configured (via GOOGLE_APPLICATION_CREDENTIALS or gcloud auth)
+
 ## Customization
 
 ### Adding Custom Checks
@@ -173,17 +338,28 @@ chmod +x .git/hooks/pre-commit
 ```
 .
 ├── .claude/
-│   ├── settings.json      # Hook configurations
-│   └── HOOKS.md          # Hook documentation
+│   ├── settings.json           # Hook configurations
+│   └── HOOKS.md               # Hook documentation
+├── bin/
+│   ├── data-utils/            # CLI utilities for BigQuery
+│   │   ├── bq-schema-diff     # Compare table schemas
+│   │   ├── bq-query-cost      # Estimate query costs
+│   │   ├── bq-partition-info  # Analyze partitions
+│   │   └── bq-lineage         # Explore table lineage
+│   └── worktree-utils/        # Git worktree utilities
 ├── scripts/
-│   └── data_quality.py   # Data quality check framework
-└── README.md             # This file
+│   └── data_quality.py        # Data quality check framework
+├── docs/                      # Documentation
+├── examples/                  # Example SQL and configs
+├── data-engineering-patterns.md  # Best practices guide
+└── README.md                  # This file
 ```
 
 ## Requirements
 
 - Python 3.7+
-- sqlparse (required)
+- sqlparse (required for hooks)
+- google-cloud-bigquery (required for CLI utilities)
 - sqlfluff (optional, for linting)
 - dbt-core (optional, for dbt hooks)
 - sqlmesh (optional, for SQLMesh hooks)
