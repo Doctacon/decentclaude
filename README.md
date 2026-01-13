@@ -17,6 +17,7 @@ Powerful command-line utilities for common BigQuery operations:
 - **bq-query-cost**: Estimate query costs before execution
 - **bq-partition-info**: Analyze partitioning configuration and partition sizes
 - **bq-lineage**: Explore table dependencies (upstream and downstream)
+- **bq-table-compare**: Comprehensive table comparison with row counts, schema drift, statistics, and sample data
 
 See [Data Utilities](#data-utilities) for detailed usage.
 
@@ -346,6 +347,51 @@ bin/data-utils/bq-lineage project.dataset.orders --format=mermaid
 
 **Note:** Lineage detection works best with views and materialized views. For tables, it searches for references in view definitions across the project.
 
+### bq-table-compare
+
+Perform comprehensive comparison of two BigQuery tables to validate migrations, compare prod/staging environments, or detect data drift.
+
+**Usage:**
+```bash
+bin/data-utils/bq-table-compare <table_a> <table_b> [options]
+```
+
+**Options:**
+- `--format=<format>` - Output format: text, json (default: text)
+- `--sample-size=<n>` - Number of rows to sample for comparison (default: 100)
+- `--skip-stats` - Skip statistical comparisons (faster)
+- `--skip-samples` - Skip sample data comparison
+
+**Examples:**
+```bash
+# Compare staging and production tables
+bin/data-utils/bq-table-compare project.staging.users project.prod.users
+
+# Compare with larger sample size
+bin/data-utils/bq-table-compare project.dataset.table_v1 project.dataset.table_v2 --sample-size=1000
+
+# JSON output for programmatic use
+bin/data-utils/bq-table-compare project.staging.data project.prod.data --format=json
+
+# Quick comparison without statistics
+bin/data-utils/bq-table-compare project.dev.orders project.prod.orders --skip-stats
+```
+
+**Output includes:**
+- Row count differences with percentage change
+- Schema drift detection (missing fields, added fields, type changes)
+- Statistical comparison of numeric columns (mean, min, max, stddev, median)
+- Data distribution analysis
+- Sample data comparison
+- Overall summary of differences
+
+**Use cases:**
+- Validate data migrations before cutover
+- Compare staging and production environments
+- Detect schema drift between versions
+- Verify data consistency across replicas
+- Monitor data quality over time
+
 ### Installation
 
 To make utilities accessible from anywhere, add to your PATH:
@@ -363,6 +409,7 @@ sudo ln -s /path/to/decentclaude/bin/data-utils/bq-schema-diff /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-query-cost /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-partition-info /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-lineage /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/bq-table-compare /usr/local/bin/
 ```
 
 ### Requirements
@@ -432,7 +479,8 @@ chmod +x .git/hooks/pre-commit
 │   │   ├── bq-schema-diff     # Compare table schemas
 │   │   ├── bq-query-cost      # Estimate query costs
 │   │   ├── bq-partition-info  # Analyze partitions
-│   │   └── bq-lineage         # Explore table lineage
+│   │   ├── bq-lineage         # Explore table lineage
+│   │   └── bq-table-compare   # Comprehensive table comparison
 │   └── worktree-utils/        # Git worktree utilities
 ├── scripts/
 │   └── data_quality.py        # Data quality check framework
