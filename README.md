@@ -182,9 +182,18 @@ Run the [hook-name] hook
 - **[Playbooks](playbooks.md)** - Comprehensive workflow patterns
 - **[Best Practices](data-engineering-patterns.md)** - Data engineering patterns and anti-patterns
 
+### Code Review & Collaboration
+
+- **[Code Review Infrastructure](docs/CODE_REVIEW_README.md)** - Complete PR and review workflow
+  - [PR Templates](.github/PULL_REQUEST_TEMPLATE/) - Templates for different change types
+  - [Review Guidelines](docs/code-review-guidelines.md) - Code review best practices
+  - [Comment Templates](docs/review-comment-templates.md) - Standard review feedback
+  - [Workflow Integration](docs/pr-workflow-integration.md) - GitHub/GitLab setup
+
 ### Technical Reference
 - [Hooks Documentation](docs/worktrees/HOOKS.md) - Detailed hook descriptions and usage
 - [Data Quality Script](scripts/data_quality.py) - Extensible quality check framework
+- [Data Engineering Patterns](data-engineering-patterns.md) - Best practices guide
 - [Data Testing Patterns](data-testing-patterns.md) - Testing framework patterns
 
 ## Example Usage
