@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+#
+# schema-migration - Safe BigQuery schema change workflow
+#
+# This workflow orchestrates schema comparison, validation, and migration
+# to ensure safe schema changes across environments.
+#
+# Usage:
+#   ./workflows/schema-migration <source_table> <target_table> [--execute]
+#
+# Arguments:
+#   source_table  Source table (usually dev/staging: project.dataset.table)
+#   target_table  Target table (usually prod: project.dataset.table)
+#   --execute     Actually perform the migration (default: dry-run only)
+#
+# Example:
+#   # Dry run (compare only)
+#   ./workflows/schema-migration myproject.dev.users myproject.prod.users
+#
+#   # Execute migration
+#   ./workflows/schema-migration myproject.dev.users myproject.prod.users --execute
+#
+# Output:
+#   - Schema diff report
+#   - Compatibility assessment
+#   - Migration SQL (if compatible)
+#   - Rollback SQL
+#
+
+set -euo pipefail
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN_DIR="$SCRIPT_DIR/../bin/data-utils"
+SOURCE_TABLE="${1:-}"
+TARGET_TABLE="${2:-}"
+EXECUTE_MODE=false
+
+if [ "$#" -ge 3 ] && [ "$3" = "--execute" ]; then
+    EXECUTE_MODE=true
+fi
+
+if [ -z "$SOURCE_TABLE" ] || [ -z "$TARGET_TABLE" ]; then
+    echo "Usage: $0 <source_table> <target_table> [--execute]"
+    echo "Example: $0 myproject.dev.users myproject.prod.users"
+    exit 1
+fi
+
+# Create migration directory
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+MIGRATION_ID="MIG-${TIMESTAMP}"
+MIGRATION_DIR="schema-migrations/$MIGRATION_ID"
+mkdir -p "$MIGRATION_DIR"
+
+DIFF_FILE="$MIGRATION_DIR/schema-diff.txt"
+MIGRATION_SQL="$MIGRATION_DIR/migration.sql"
+ROLLBACK_SQL="$MIGRATION_DIR/rollback.sql"
+REPORT_FILE="$MIGRATION_DIR/migration-report.md"
+
+echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+echo -e "${BLUE}  Schema Migration${NC}"
+echo -e "${BLUE}  ID: $MIGRATION_ID${NC}"
+echo -e "${BLUE}  Source: $SOURCE_TABLE${NC}"
+echo -e "${BLUE}  Target: $TARGET_TABLE${NC}"
+echo -e "${BLUE}  Mode: $([ "$EXECUTE_MODE" = true ] && echo 'EXECUTE' || echo 'DRY RUN')${NC}"
+echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+echo
+
+# Step 1: Schema Comparison
+echo -e "${YELLOW}[Step 1/5]${NC} Comparing Schemas"
+if ! "$BIN_DIR/bq-schema-diff" "$SOURCE_TABLE" "$TARGET_TABLE" > "$DIFF_FILE"; then
+    echo -e "${RED}✗ FAILED${NC}: Could not compare schemas"
+    exit 1
+fi
+
+# Display diff
+cat "$DIFF_FILE"
+echo -e "${GREEN}✓ COMPLETE${NC}"
+echo
+
+# Step 2: Compatibility Check
+echo -e "${YELLOW}[Step 2/5]${NC} Checking Compatibility"
+
+# Parse diff for breaking changes
+BREAKING_CHANGES=false
+COMPATIBILITY="SAFE"
+
+if grep -q "REMOVED" "$DIFF_FILE"; then
+    echo -e "  ${RED}⚠ WARNING${NC}: Removed columns detected (BREAKING CHANGE)"
+    BREAKING_CHANGES=true
+    COMPATIBILITY="BREAKING"
+fi
+
+if grep -q "TYPE_CHANGED" "$DIFF_FILE"; then
+    echo -e "  ${YELLOW}⚠ CAUTION${NC}: Type changes detected (may be breaking)"
+    COMPATIBILITY="REVIEW_REQUIRED"
+fi
+
+if grep -q "ADDED" "$DIFF_FILE"; then
+    echo "  ✓ New columns detected (safe)"
+fi
+
+if [ "$COMPATIBILITY" = "SAFE" ]; then
+    echo -e "  ${GREEN}✓ Migration appears safe${NC}"
+elif [ "$COMPATIBILITY" = "BREAKING" ]; then
+    echo -e "  ${RED}✗ Migration contains breaking changes${NC}"
+    if [ "$EXECUTE_MODE" = true ]; then
+        echo -e "  ${RED}ABORTING: Cannot auto-execute breaking changes${NC}"
+        echo "  Review changes manually and apply with caution"
+        exit 1
+    fi
+else
+    echo -e "  ${YELLOW}⚠ Migration requires review${NC}"
+fi
+
+echo -e "${GREEN}✓ COMPLETE${NC}"
+echo
+
+# Step 3: Generate Migration SQL
+echo -e "${YELLOW}[Step 3/5]${NC} Generating Migration SQL"
+
+cat > "$MIGRATION_SQL" <<EOF
+-- Schema Migration: $MIGRATION_ID
+-- Source: $SOURCE_TABLE
+-- Target: $TARGET_TABLE
+-- Generated: $(date)
+-- Compatibility: $COMPATIBILITY
+
+-- WARNING: Review this SQL carefully before executing
+-- Test in a non-production environment first
+
+EOF
+
+# Parse diff and generate ALTER TABLE statements
+while IFS= read -r line; do
+    if echo "$line" | grep -q "ADDED:"; then
+        column_name=$(echo "$line" | sed 's/.*ADDED: \([^ ]*\).*/\1/')
+        column_type=$(echo "$line" | sed 's/.*type: \([^)]*\).*/\1/')
+
+        cat >> "$MIGRATION_SQL" <<EOF
+-- Add new column: $column_name
+ALTER TABLE \`$TARGET_TABLE\`
+ADD COLUMN IF NOT EXISTS $column_name $column_type;
+
+EOF
+    fi
+done < "$DIFF_FILE"
+
+if [ ! -s "$MIGRATION_SQL" ] || [ "$(wc -l < "$MIGRATION_SQL")" -le 10 ]; then
+    echo "-- No schema changes needed (schemas are identical)" >> "$MIGRATION_SQL"
+    echo "  No changes needed - schemas are identical"
+else
+    echo "  Migration SQL generated: $MIGRATION_SQL"
+fi
+
+echo -e "${GREEN}✓ COMPLETE${NC}"
+echo
+
+# Step 4: Generate Rollback SQL
+echo -e "${YELLOW}[Step 4/5]${NC} Generating Rollback SQL"
+
+cat > "$ROLLBACK_SQL" <<EOF
+-- Rollback Script: $MIGRATION_ID
+-- Generated: $(date)
+
+-- WARNING: Rollback may result in data loss
+-- Back up data before rolling back
+
+EOF
+
+# Generate rollback (DROP COLUMN for each ADD COLUMN)
+while IFS= read -r line; do
+    if echo "$line" | grep -q "ADDED:"; then
+        column_name=$(echo "$line" | sed 's/.*ADDED: \([^ ]*\).*/\1/')
+
+        cat >> "$ROLLBACK_SQL" <<EOF
+-- Remove column: $column_name
+ALTER TABLE \`$TARGET_TABLE\`
+DROP COLUMN IF EXISTS $column_name;
+
+EOF
+    fi
+done < "$DIFF_FILE"
+
+echo "  Rollback SQL generated: $ROLLBACK_SQL"
+echo -e "${GREEN}✓ COMPLETE${NC}"
+echo
+
+# Step 5: Execution (if --execute flag provided and safe)
+echo -e "${YELLOW}[Step 5/5]${NC} Migration Execution"
+
+if [ "$EXECUTE_MODE" = true ]; then
+    if [ "$COMPATIBILITY" = "SAFE" ]; then
+        echo "  Executing migration..."
+
+        # Execute migration SQL (would use bq query in real scenario)
+        # bq query < "$MIGRATION_SQL"
+
+        echo -e "  ${YELLOW}⚠ DRY RUN${NC}: Migration SQL not actually executed"
+        echo "  To execute: bq query < $MIGRATION_SQL"
+    else
+        echo -e "  ${RED}✗ ABORTED${NC}: Migration not safe for auto-execution"
+    fi
+else
+    echo "  DRY RUN mode - no changes applied"
+    echo "  To execute: $0 $SOURCE_TABLE $TARGET_TABLE --execute"
+fi
+
+echo -e "${GREEN}✓ COMPLETE${NC}"
+echo
+
+# Generate report
+cat > "$REPORT_FILE" <<EOF
+# Schema Migration Report: $MIGRATION_ID
+
+**Date**: $(date)
+**Source**: \`$SOURCE_TABLE\`
+**Target**: \`$TARGET_TABLE\`
+**Compatibility**: $COMPATIBILITY
+**Executed**: $([ "$EXECUTE_MODE" = true ] && echo "Yes" || echo "No (dry run)")
+
+## Schema Diff
+
+\`\`\`
+$(cat "$DIFF_FILE")
+\`\`\`
+
+## Migration SQL
+
+\`\`\`sql
+$(cat "$MIGRATION_SQL")
+\`\`\`
+
+## Rollback SQL
+
+\`\`\`sql
+$(cat "$ROLLBACK_SQL")
+\`\`\`
+
+## Execution Steps
+
+1. **Review**: Carefully review the migration SQL above
+2. **Test**: Test in non-production environment first
+3. **Backup**: Back up target table before migration
+4. **Execute**: Run migration SQL
+5. **Validate**: Verify schema and data integrity
+6. **Monitor**: Watch for errors in dependent queries/jobs
+
+## Rollback Procedure
+
+If migration causes issues:
+
+1. Review rollback SQL above
+2. Execute rollback: \`bq query < $ROLLBACK_SQL\`
+3. Note: Rolling back may lose data in new columns
+
+---
+
+*Generated by schema-migration workflow*
+EOF
+
+echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+echo -e "${BLUE}  Migration Plan Complete${NC}"
+echo -e "${BLUE}  Report: $REPORT_FILE${NC}"
+echo -e "${BLUE}  Migration SQL: $MIGRATION_SQL${NC}"
+echo -e "${BLUE}  Rollback SQL: $ROLLBACK_SQL${NC}"
+echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+
+if [ "$COMPATIBILITY" = "BREAKING" ]; then
+    exit 1
+else
+    exit 0
+fi

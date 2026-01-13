@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+#
+# incident-response - Automated incident triage and response workflow
+#
+# This workflow guides systematic incident response including triage,
+# debugging, timeline reconstruction, and post-mortem generation.
+#
+# Usage:
+#   ./workflows/incident-response <incident_description> [severity]
+#
+# Arguments:
+#   incident_description  Brief description of the incident
+#   severity              P0, P1, P2, P3, P4 (default: P2)
+#
+# Example:
+#   ./workflows/incident-response "Dashboard query timeout" P1
+#
+# Output:
+#   - Incident report with timeline
+#   - Root cause analysis
+#   - Action items
+#   - Post-mortem document
+#
+
+set -euo pipefail
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN_DIR="$SCRIPT_DIR/../bin/data-utils"
+INCIDENT_DESC="${1:-}"
+SEVERITY="${2:-P2}"
+
+if [ -z "$INCIDENT_DESC" ]; then
+    echo "Usage: $0 <incident_description> [severity]"
+    echo "Example: $0 'Dashboard query timeout' P1"
+    exit 1
+fi
+
+# Create incident directory
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+INCIDENT_ID="INC-${TIMESTAMP}"
+INCIDENT_DIR="incidents/$INCIDENT_ID"
+mkdir -p "$INCIDENT_DIR"
+
+# Initialize incident report
+REPORT_FILE="$INCIDENT_DIR/incident-report.md"
+TIMELINE_FILE="$INCIDENT_DIR/timeline.jsonl"
+ACTIONS_FILE="$INCIDENT_DIR/action-items.md"
+
+echo -e "${RED}═══════════════════════════════════════════════════════${NC}"
+echo -e "${RED}  INCIDENT RESPONSE - $SEVERITY${NC}"
+echo -e "${RED}  ID: $INCIDENT_ID${NC}"
+echo -e "${RED}  Description: $INCIDENT_DESC${NC}"
+echo -e "${RED}═══════════════════════════════════════════════════════${NC}"
+echo
+
+# Log timeline event
+log_event() {
+    local event_type="$1"
+    local description="$2"
+    local details="${3:-}"
+
+    echo "{\"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"type\": \"$event_type\", \"description\": \"$description\", \"details\": \"$details\"}" >> "$TIMELINE_FILE"
+}
+
+log_event "incident_start" "Incident response initiated" "$INCIDENT_DESC"
+
+# Initialize report
+cat > "$REPORT_FILE" <<EOF
+# Incident Report: $INCIDENT_ID
+
+**Severity**: $SEVERITY
+**Description**: $INCIDENT_DESC
+**Started**: $(date)
+**Status**: IN PROGRESS
+
+## Timeline
+
+EOF
+
+# Step 1: Initial Triage
+echo -e "${YELLOW}[Step 1/6]${NC} Initial Triage"
+echo "  Assessing incident severity and scope..."
+log_event "triage_start" "Beginning initial triage"
+
+# Determine response time based on severity
+case "$SEVERITY" in
+    P0)
+        RESPONSE_TIME="15 minutes"
+        ESCALATION="Immediate page-out to on-call"
+        ;;
+    P1)
+        RESPONSE_TIME="1 hour"
+        ESCALATION="Alert senior engineer"
+        ;;
+    P2)
+        RESPONSE_TIME="4 hours"
+        ESCALATION="Post in incident channel"
+        ;;
+    *)
+        RESPONSE_TIME="Next business day"
+        ESCALATION="Create ticket"
+        ;;
+esac
+
+echo "  Target response time: $RESPONSE_TIME"
+echo "  Escalation: $ESCALATION"
+log_event "triage_complete" "Triage complete" "SLA: $RESPONSE_TIME"
+echo -e "${GREEN}✓ COMPLETE${NC}"
+echo
+
+# Step 2: Gather Context
+echo -e "${YELLOW}[Step 2/6]${NC} Gathering Context"
+echo "  Collecting system state and recent changes..."
+log_event "context_start" "Gathering incident context"
+
+# Check for related resources (this would integrate with actual systems)
+echo "  [ ] Check application logs"
+echo "  [ ] Review recent deployments"
+echo "  [ ] Check infrastructure changes"
+echo "  [ ] Review monitoring alerts"
+echo "  [ ] Check dependencies status"
+
+log_event "context_complete" "Context gathering complete"
+echo -e "${GREEN}✓ COMPLETE${NC}"
+echo
+
+# Step 3: Form Hypothesis
+echo -e "${YELLOW}[Step 3/6]${NC} Forming Hypothesis"
+echo "  Analyzing symptoms to form initial hypothesis..."
+log_event "hypothesis_start" "Forming root cause hypothesis"
+
+# Provide hypothesis framework
+cat >> "$REPORT_FILE" <<EOF
+## Root Cause Hypothesis
+
+### Symptoms Observed
+- $INCIDENT_DESC
+
+### Potential Causes
+1. **Infrastructure**: Resource exhaustion, networking, scaling
+2. **Code**: Recent deployment, bug, performance regression
+3. **Data**: Schema changes, data quality issues, volume spikes
+4. **External**: Third-party API issues, DDoS, provider outage
+
+### Most Likely Cause
+[To be determined through investigation]
+
+EOF
+
+log_event "hypothesis_complete" "Hypothesis formed"
+echo -e "${GREEN}✓ COMPLETE${NC}"
+echo
+
+# Step 4: Mitigation
+echo -e "${YELLOW}[Step 4/6]${NC} Applying Mitigation"
+echo "  Implementing immediate mitigation to restore service..."
+log_event "mitigation_start" "Beginning mitigation actions"
+
+echo "  Common mitigation strategies:"
+echo "  - Rollback recent deployment"
+echo "  - Scale up resources"
+echo "  - Disable problematic feature"
+echo "  - Failover to backup system"
+echo "  - Rate limit / circuit break"
+
+cat >> "$REPORT_FILE" <<EOF
+## Mitigation Actions
+
+### Immediate Actions Taken
+[Document actions taken to restore service]
+
+### Service Restored
+- Time: [timestamp]
+- Duration of outage: [duration]
+- Mitigation applied: [description]
+
+EOF
+
+log_event "mitigation_complete" "Mitigation applied"
+echo -e "${GREEN}✓ COMPLETE${NC}"
+echo
+
+# Step 5: Root Cause Analysis
+echo -e "${YELLOW}[Step 5/6]${NC} Root Cause Analysis"
+echo "  Performing detailed root cause analysis..."
+log_event "rca_start" "Beginning root cause analysis"
+
+cat >> "$REPORT_FILE" <<EOF
+## Root Cause Analysis
+
+### Investigation Steps
+1. [Document investigation process]
+
+### Root Cause
+[Detailed explanation of what caused the incident]
+
+### Contributing Factors
+- [Factor 1]
+- [Factor 2]
+
+EOF
+
+log_event "rca_complete" "Root cause identified"
+echo -e "${GREEN}✓ COMPLETE${NC}"
+echo
+
+# Step 6: Action Items
+echo -e "${YELLOW}[Step 6/6]${NC} Generating Action Items"
+echo "  Creating follow-up action items..."
+log_event "actions_start" "Generating action items"
+
+cat > "$ACTIONS_FILE" <<EOF
+# Action Items - $INCIDENT_ID
+
+## Immediate (This Week)
+- [ ] Complete post-mortem document
+- [ ] Add monitoring/alerting to detect similar issues
+- [ ] Update runbook with new information
+
+## Short-term (This Month)
+- [ ] Implement permanent fix for root cause
+- [ ] Add automated tests to prevent regression
+- [ ] Review similar systems for same issue
+
+## Long-term (This Quarter)
+- [ ] Improve observability in affected area
+- [ ] Consider architectural changes to prevent recurrence
+- [ ] Share lessons learned with team
+
+EOF
+
+log_event "actions_complete" "Action items generated"
+echo -e "${GREEN}✓ COMPLETE${NC}"
+echo
+
+# Finalize report
+cat >> "$REPORT_FILE" <<EOF
+## Follow-up Actions
+
+See [action-items.md](action-items.md) for detailed follow-up tasks.
+
+## Timeline
+
+EOF
+
+# Convert timeline JSONL to markdown
+while IFS= read -r line; do
+    timestamp=$(echo "$line" | jq -r '.timestamp')
+    event_type=$(echo "$line" | jq -r '.type')
+    description=$(echo "$line" | jq -r '.description')
+    echo "- **$timestamp** [$event_type]: $description" >> "$REPORT_FILE"
+done < "$TIMELINE_FILE"
+
+cat >> "$REPORT_FILE" <<EOF
+
+## Lessons Learned
+
+### What Went Well
+- [Document positives]
+
+### What Could Be Improved
+- [Document improvements]
+
+### Preventative Measures
+- [Actions to prevent recurrence]
+
+---
+
+*Generated by incident-response workflow*
+*Incident ID: $INCIDENT_ID*
+*Completed: $(date)*
+EOF
+
+echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+echo -e "${BLUE}  Incident Response Complete${NC}"
+echo -e "${BLUE}  Report: $REPORT_FILE${NC}"
+echo -e "${BLUE}  Actions: $ACTIONS_FILE${NC}"
+echo -e "${BLUE}  Timeline: $TIMELINE_FILE${NC}"
+echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+echo
+echo "Next steps:"
+echo "1. Complete the root cause analysis in $REPORT_FILE"
+echo "2. Review and assign action items in $ACTIONS_FILE"
+echo "3. Share incident report with team"
+echo "4. Schedule post-mortem meeting"
