@@ -1,0 +1,472 @@
+#!/usr/bin/env python3
+"""
+bq-cost-report - Analyze historical BigQuery costs and usage
+
+Usage:
+  bq-cost-report [options]
+
+Options:
+  --project=<id>       Project ID to analyze (default: current project)
+  --days=<n>           Number of days to analyze (default: 7)
+  --group-by=<field>   Group results by: user, dataset, table, query_type (default: user)
+  --top=<n>            Show top N results (default: 10)
+  --format=<format>    Output format: text, json, csv (default: text)
+  --help, -h           Show this help message
+
+Examples:
+  bq-cost-report
+  bq-cost-report --days=30
+  bq-cost-report --group-by=dataset --top=20
+  bq-cost-report --group-by=table --format=json
+  bq-cost-report --project=my-project --days=90 --format=csv
+"""
+
+import sys
+import json
+import csv
+import io
+import argparse
+from datetime import datetime, timedelta
+from typing import Dict, List
+from collections import defaultdict
+from google.cloud import bigquery
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+
+
+class CostAnalyzer:
+    """Analyze BigQuery costs from job history"""
+
+    # Cost per TB for on-demand pricing
+    COST_PER_TB = 6.25
+
+    def __init__(self, client: bigquery.Client):
+        self.client = client
+        self.project_id = client.project
+
+    def analyze_costs(
+        self,
+        days: int = 7,
+        group_by: str = 'user',
+        top_n: int = 10,
+        project_id: str = None
+    ) -> Dict:
+        """
+        Analyze BigQuery costs over a time period.
+
+        Args:
+            days: Number of days to analyze
+            group_by: Field to group by (user, dataset, table, query_type)
+            top_n: Number of top results to show
+            project_id: Project ID to analyze (default: current project)
+
+        Returns:
+            Dictionary with cost analysis results
+        """
+        if project_id is None:
+            project_id = self.project_id
+
+        print(f"{Colors.CYAN}Analyzing costs for last {days} days...{Colors.RESET}", file=sys.stderr)
+
+        # Calculate date range
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days)
+
+        # Query job history
+        jobs = self._fetch_job_history(project_id, start_date, end_date)
+
+        print(f"{Colors.DIM}Found {len(jobs)} jobs{Colors.RESET}", file=sys.stderr)
+
+        # Aggregate costs
+        aggregated = self._aggregate_jobs(jobs, group_by)
+
+        # Calculate totals
+        total_bytes = sum(j['total_bytes_billed'] or 0 for j in jobs)
+        total_cost = self._calculate_cost(total_bytes)
+        total_jobs = len(jobs)
+        cache_hits = sum(1 for j in jobs if j.get('cache_hit'))
+
+        # Sort and limit
+        sorted_results = sorted(
+            aggregated.items(),
+            key=lambda x: x[1]['cost'],
+            reverse=True
+        )[:top_n]
+
+        # Calculate daily breakdown
+        daily_breakdown = self._calculate_daily_breakdown(jobs)
+
+        return {
+            "project_id": project_id,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "days": days,
+            "group_by": group_by,
+            "total_jobs": total_jobs,
+            "total_bytes": total_bytes,
+            "total_cost": total_cost,
+            "cache_hits": cache_hits,
+            "cache_hit_rate": cache_hits / total_jobs if total_jobs > 0 else 0,
+            "top_results": [
+                {
+                    "group": group,
+                    **data
+                }
+                for group, data in sorted_results
+            ],
+            "daily_breakdown": daily_breakdown
+        }
+
+    def _fetch_job_history(
+        self,
+        project_id: str,
+        start_date: datetime,
+        end_date: datetime
+    ) -> List[Dict]:
+        """Fetch job history from INFORMATION_SCHEMA"""
+
+        query = f"""
+        SELECT
+            job_id,
+            user_email,
+            creation_time,
+            start_time,
+            end_time,
+            total_bytes_processed,
+            total_bytes_billed,
+            total_slot_ms,
+            cache_hit,
+            statement_type,
+            referenced_tables,
+            query
+        FROM
+            `{project_id}.region-us.INFORMATION_SCHEMA.JOBS_BY_PROJECT`
+        WHERE
+            creation_time >= @start_date
+            AND creation_time < @end_date
+            AND state = 'DONE'
+            AND job_type = 'QUERY'
+            AND total_bytes_billed IS NOT NULL
+        ORDER BY
+            creation_time DESC
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("start_date", "TIMESTAMP", start_date),
+                bigquery.ScalarQueryParameter("end_date", "TIMESTAMP", end_date),
+            ]
+        )
+
+        try:
+            query_job = self.client.query(query, job_config=job_config)
+            results = query_job.result()
+
+            jobs = []
+            for row in results:
+                job_data = {
+                    "job_id": row.job_id,
+                    "user_email": row.user_email,
+                    "creation_time": row.creation_time,
+                    "start_time": row.start_time,
+                    "end_time": row.end_time,
+                    "total_bytes_processed": row.total_bytes_processed,
+                    "total_bytes_billed": row.total_bytes_billed,
+                    "total_slot_ms": row.total_slot_ms,
+                    "cache_hit": row.cache_hit,
+                    "statement_type": row.statement_type,
+                    "referenced_tables": row.referenced_tables,
+                    "query": row.query[:500] if row.query else None,  # Truncate long queries
+                }
+                jobs.append(job_data)
+
+            return jobs
+
+        except Exception as e:
+            print(f"{Colors.RED}Error fetching job history: {str(e)}{Colors.RESET}", file=sys.stderr)
+            print(f"{Colors.YELLOW}Note: Ensure you have access to INFORMATION_SCHEMA.JOBS_BY_PROJECT{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
+
+    def _aggregate_jobs(self, jobs: List[Dict], group_by: str) -> Dict:
+        """Aggregate jobs by specified field"""
+
+        aggregated = defaultdict(lambda: {
+            "jobs": 0,
+            "bytes_processed": 0,
+            "bytes_billed": 0,
+            "cost": 0.0,
+            "slot_ms": 0,
+            "cache_hits": 0,
+        })
+
+        for job in jobs:
+            # Determine group key
+            if group_by == 'user':
+                key = job['user_email'] or 'unknown'
+            elif group_by == 'dataset':
+                key = self._extract_dataset(job['referenced_tables'])
+            elif group_by == 'table':
+                key = self._extract_table(job['referenced_tables'])
+            elif group_by == 'query_type':
+                key = job['statement_type'] or 'UNKNOWN'
+            else:
+                key = 'all'
+
+            # Aggregate metrics
+            bytes_billed = job['total_bytes_billed'] or 0
+            aggregated[key]['jobs'] += 1
+            aggregated[key]['bytes_processed'] += job['total_bytes_processed'] or 0
+            aggregated[key]['bytes_billed'] += bytes_billed
+            aggregated[key]['cost'] += self._calculate_cost(bytes_billed)
+            aggregated[key]['slot_ms'] += job['total_slot_ms'] or 0
+            if job.get('cache_hit'):
+                aggregated[key]['cache_hits'] += 1
+
+        # Calculate averages and rates
+        for key, data in aggregated.items():
+            data['avg_bytes_per_job'] = data['bytes_billed'] / data['jobs'] if data['jobs'] > 0 else 0
+            data['avg_cost_per_job'] = data['cost'] / data['jobs'] if data['jobs'] > 0 else 0
+            data['cache_hit_rate'] = data['cache_hits'] / data['jobs'] if data['jobs'] > 0 else 0
+
+        return dict(aggregated)
+
+    def _calculate_daily_breakdown(self, jobs: List[Dict]) -> List[Dict]:
+        """Calculate daily cost breakdown"""
+
+        daily = defaultdict(lambda: {
+            "jobs": 0,
+            "bytes_billed": 0,
+            "cost": 0.0,
+        })
+
+        for job in jobs:
+            if job['creation_time']:
+                date_key = job['creation_time'].date().isoformat()
+                bytes_billed = job['total_bytes_billed'] or 0
+                daily[date_key]['jobs'] += 1
+                daily[date_key]['bytes_billed'] += bytes_billed
+                daily[date_key]['cost'] += self._calculate_cost(bytes_billed)
+
+        # Convert to sorted list
+        return [
+            {"date": date, **data}
+            for date, data in sorted(daily.items())
+        ]
+
+    @staticmethod
+    def _extract_dataset(referenced_tables) -> str:
+        """Extract primary dataset from referenced tables"""
+        if not referenced_tables:
+            return 'none'
+
+        # Parse first table reference
+        for table_ref in referenced_tables:
+            if table_ref and 'datasetId' in table_ref:
+                return table_ref['datasetId']
+
+        return 'unknown'
+
+    @staticmethod
+    def _extract_table(referenced_tables) -> str:
+        """Extract primary table from referenced tables"""
+        if not referenced_tables:
+            return 'none'
+
+        # Parse first table reference
+        for table_ref in referenced_tables:
+            if table_ref:
+                project = table_ref.get('projectId', '')
+                dataset = table_ref.get('datasetId', '')
+                table = table_ref.get('tableId', '')
+                if table:
+                    return f"{project}.{dataset}.{table}"
+
+        return 'unknown'
+
+    @classmethod
+    def _calculate_cost(cls, bytes_value: int) -> float:
+        """Calculate cost from bytes billed"""
+        if bytes_value is None:
+            return 0.0
+        tb_billed = bytes_value / (1024 ** 4)
+        return tb_billed * cls.COST_PER_TB
+
+
+def format_bytes(bytes_value: float) -> str:
+    """Format bytes into human-readable string"""
+    if bytes_value is None:
+        return "N/A"
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB', 'PB']:
+        if bytes_value < 1024.0:
+            return f"{bytes_value:.2f} {unit}"
+        bytes_value /= 1024.0
+    return f"{bytes_value:.2f} EB"
+
+
+def print_text_report(result: Dict):
+    """Print a formatted text report of cost analysis"""
+
+    print(f"\n{Colors.CYAN}{Colors.BOLD}BigQuery Cost Analysis Report{Colors.RESET}")
+    print("=" * 80)
+
+    # Summary
+    print(f"\n{Colors.BOLD}Summary:{Colors.RESET}")
+    print(f"  Project:         {result['project_id']}")
+    print(f"  Period:          {result['start_date'][:10]} to {result['end_date'][:10]} ({result['days']} days)")
+    print(f"  Total Jobs:      {result['total_jobs']:,}")
+    print(f"  Data Processed:  {format_bytes(result['total_bytes'])}")
+    print(f"  Total Cost:      {Colors.BOLD}${result['total_cost']:.2f} USD{Colors.RESET}")
+    print(f"  Avg Cost/Day:    ${result['total_cost']/result['days']:.2f} USD")
+    print(f"  Cache Hit Rate:  {result['cache_hit_rate']*100:.1f}%")
+
+    # Top results
+    print(f"\n{Colors.BOLD}Top {len(result['top_results'])} by {result['group_by'].title()}:{Colors.RESET}")
+    print()
+
+    # Header
+    print(f"  {'Rank':<6} {'Group':<40} {'Jobs':>8} {'Cost':>12} {'Avg/Job':>12} {'Cache %':>8}")
+    print(f"  {'-'*6} {'-'*40} {'-'*8} {'-'*12} {'-'*12} {'-'*8}")
+
+    # Rows
+    for i, item in enumerate(result['top_results'], 1):
+        group = item['group'][:38] if len(item['group']) > 38 else item['group']
+        jobs = item['jobs']
+        cost = item['cost']
+        avg_cost = item['avg_cost_per_job']
+        cache_rate = item['cache_hit_rate'] * 100
+
+        # Color code by cost
+        if cost > result['total_cost'] * 0.25:
+            color = Colors.RED
+        elif cost > result['total_cost'] * 0.10:
+            color = Colors.YELLOW
+        else:
+            color = Colors.GREEN
+
+        print(f"  {i:<6} {group:<40} {jobs:>8,} " +
+              f"{color}${cost:>11.2f}{Colors.RESET} ${avg_cost:>11.4f} {cache_rate:>7.1f}%")
+
+    # Daily breakdown
+    if result['daily_breakdown']:
+        print(f"\n{Colors.BOLD}Daily Breakdown:{Colors.RESET}")
+        print()
+        print(f"  {'Date':<12} {'Jobs':>8} {'Data Processed':>16} {'Cost':>12}")
+        print(f"  {'-'*12} {'-'*8} {'-'*16} {'-'*12}")
+
+        for day in result['daily_breakdown']:
+            date = day['date']
+            jobs = day['jobs']
+            data = format_bytes(day['bytes_billed'])
+            cost = day['cost']
+
+            print(f"  {date:<12} {jobs:>8,} {data:>16} ${cost:>11.2f}")
+
+    # Notes
+    print(f"\n{Colors.BOLD}Notes:{Colors.RESET}")
+    print(f"  • Costs calculated using on-demand pricing: ${CostAnalyzer.COST_PER_TB:.2f}/TB")
+    print(f"  • First 1 TB per month is free")
+    print(f"  • Cached queries (free) are included in job count but not cost")
+    print(f"  • Flat-rate customers are not charged per query")
+
+    print("\n" + "=" * 80)
+
+
+def print_json_report(result: Dict):
+    """Print a JSON report of cost analysis"""
+    output = {
+        "project_id": result['project_id'],
+        "period": {
+            "start": result['start_date'],
+            "end": result['end_date'],
+            "days": result['days']
+        },
+        "summary": {
+            "total_jobs": result['total_jobs'],
+            "total_bytes": result['total_bytes'],
+            "total_cost_usd": round(result['total_cost'], 2),
+            "avg_cost_per_day_usd": round(result['total_cost'] / result['days'], 2),
+            "cache_hit_rate": round(result['cache_hit_rate'], 4)
+        },
+        "group_by": result['group_by'],
+        "top_results": result['top_results'],
+        "daily_breakdown": result['daily_breakdown']
+    }
+    print(json.dumps(output, indent=2))
+
+
+def print_csv_report(result: Dict):
+    """Print a CSV report of cost analysis"""
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Write top results
+    writer.writerow(['rank', 'group', 'jobs', 'bytes_billed', 'cost_usd', 'avg_cost_per_job_usd', 'cache_hit_rate'])
+    for i, item in enumerate(result['top_results'], 1):
+        writer.writerow([
+            i,
+            item['group'],
+            item['jobs'],
+            item['bytes_billed'],
+            round(item['cost'], 4),
+            round(item['avg_cost_per_job'], 6),
+            round(item['cache_hit_rate'], 4)
+        ])
+
+    print(output.getvalue())
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Analyze historical BigQuery costs and usage",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("--project", help="Project ID to analyze (default: current project)")
+    parser.add_argument("--days", type=int, default=7, help="Number of days to analyze (default: 7)")
+    parser.add_argument("--group-by", choices=["user", "dataset", "table", "query_type"], default="user",
+                       help="Group results by (default: user)")
+    parser.add_argument("--top", type=int, default=10, help="Show top N results (default: 10)")
+    parser.add_argument("--format", choices=["text", "json", "csv"], default="text",
+                       help="Output format (default: text)")
+
+    args = parser.parse_args()
+
+    # Validate days
+    if args.days < 1:
+        print(f"{Colors.RED}Number of days must be at least 1{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    # Initialize BigQuery client
+    client = bigquery.Client(project=args.project)
+
+    # Analyze costs
+    analyzer = CostAnalyzer(client)
+    result = analyzer.analyze_costs(
+        days=args.days,
+        group_by=args.group_by,
+        top_n=args.top,
+        project_id=args.project
+    )
+
+    # Print report
+    if args.format == "json":
+        print_json_report(result)
+    elif args.format == "csv":
+        print_csv_report(result)
+    else:
+        print_text_report(result)
+
+
+if __name__ == "__main__":
+    main()
