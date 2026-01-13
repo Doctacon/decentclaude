@@ -1,0 +1,376 @@
+# AI-Powered Code Review Workflow
+#
+# Uses Claude to review SQL and data model changes
+# Runs: On PRs with SQL/model changes
+# Duration: ~2-4 minutes (depends on file count)
+#
+# Required Secrets:
+#   - ANTHROPIC_API_KEY
+#
+# Optional Configuration:
+#   - MAX_FILES_TO_REVIEW (default: 10)
+#   - CLAUDE_MODEL (default: claude-sonnet-4-5-20250929)
+#
+# Usage:
+#   1. Copy to .github/workflows/ai-review.yml
+#   2. Add ANTHROPIC_API_KEY to GitHub secrets
+#   3. Customize review prompts as needed
+
+name: AI Code Review
+
+on:
+  pull_request:
+    paths:
+      - '**.sql'
+      - 'models/**'
+      - 'queries/**'
+      - 'dbt_project.yml'
+
+env:
+  MAX_FILES_TO_REVIEW: 10
+  CLAUDE_MODEL: claude-sonnet-4-5-20250929
+
+jobs:
+  ai-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install anthropic
+
+      - name: Get changed files
+        id: changed-files
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.(sql|yml|yaml)$' || echo "")
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No files to review"
+            echo "files=" >> $GITHUB_OUTPUT
+            echo "count=0" >> $GITHUB_OUTPUT
+          else
+            echo "Files to review:"
+            echo "$CHANGED_FILES"
+
+            # Limit files to review
+            LIMITED_FILES=$(echo "$CHANGED_FILES" | head -n ${{ env.MAX_FILES_TO_REVIEW }})
+            FILES_JSON=$(echo "$LIMITED_FILES" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+
+            echo "files=$FILES_JSON" >> $GITHUB_OUTPUT
+            echo "count=$(echo "$LIMITED_FILES" | wc -l | xargs)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: AI Review SQL Changes
+        if: steps.changed-files.outputs.count > 0
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cat > ai_review.py << 'EOF'
+          import anthropic
+          import os
+          import sys
+          import json
+          from pathlib import Path
+          from typing import List, Dict
+
+          def get_file_type(filepath: str) -> str:
+              """Determine the type of file for context"""
+              if 'models/' in filepath:
+                  return 'dbt model'
+              elif 'queries/' in filepath:
+                  return 'query'
+              elif 'migrations/' in filepath:
+                  return 'migration'
+              elif filepath.endswith('.yml') or filepath.endswith('.yaml'):
+                  return 'config'
+              else:
+                  return 'SQL file'
+
+          def review_file(client: anthropic.Anthropic, filepath: str, content: str, diff: str = None) -> Dict:
+              """Review a single file with Claude"""
+              file_type = get_file_type(filepath)
+
+              prompt = f"""Review this {file_type} for a data engineering project.
+
+          File: {filepath}
+
+          {"=" * 60}
+          CURRENT CONTENT:
+          {"=" * 60}
+          ```sql
+          {content}
+          ```
+
+          {"=" * 60}
+          REVIEW FOCUS AREAS:
+          {"=" * 60}
+
+          1. **Performance & Optimization**
+             - Are there missing WHERE clauses that could filter data?
+             - Could partitioning or clustering improve performance?
+             - Are there inefficient JOINs or subqueries?
+             - Is SELECT * being used where specific columns would be better?
+
+          2. **Best Practices**
+             - Are table and column names clear and consistent?
+             - Is the SQL readable and well-formatted?
+             - Are there appropriate comments for complex logic?
+             - Are CTEs used effectively for readability?
+
+          3. **Data Quality & Correctness**
+             - Are NULL values handled properly?
+             - Are there potential edge cases not covered?
+             - Are aggregations and GROUP BY clauses correct?
+             - Are date/time calculations handled properly?
+
+          4. **Security & Compliance**
+             - Are there any hardcoded credentials or secrets?
+             - Is PII (Personally Identifiable Information) handled appropriately?
+             - Are there SQL injection risks?
+
+          5. **Maintainability**
+             - Is the query overly complex and could it be simplified?
+             - Are there magic numbers that should be constants?
+             - Would this be easy for another developer to understand?
+
+          {"=" * 60}
+          INSTRUCTIONS:
+          {"=" * 60}
+
+          Provide specific, actionable feedback in the following format:
+
+          ## Summary
+          [One sentence overview]
+
+          ## Critical Issues (if any)
+          - [Issue 1]
+          - [Issue 2]
+
+          ## Recommendations
+          - [Recommendation 1]
+          - [Recommendation 2]
+
+          ## Positive Notes
+          - [What's done well]
+
+          Be concise but specific. Focus on the most impactful improvements.
+          If the code looks good, say so! Don't create issues that don't exist.
+          """
+
+              try:
+                  message = client.messages.create(
+                      model=os.environ.get('CLAUDE_MODEL', 'claude-sonnet-4-5-20250929'),
+                      max_tokens=2000,
+                      messages=[{
+                          "role": "user",
+                          "content": prompt
+                      }]
+                  )
+
+                  review_text = message.content[0].text
+
+                  return {
+                      'file': filepath,
+                      'status': 'success',
+                      'review': review_text,
+                      'error': None
+                  }
+
+              except Exception as e:
+                  return {
+                      'file': filepath,
+                      'status': 'error',
+                      'review': None,
+                      'error': str(e)
+                  }
+
+          def main():
+              api_key = os.environ.get('ANTHROPIC_API_KEY')
+              if not api_key:
+                  print("ERROR: ANTHROPIC_API_KEY not set")
+                  sys.exit(1)
+
+              client = anthropic.Anthropic(api_key=api_key)
+
+              # Get list of files to review
+              files_json = os.environ.get('CHANGED_FILES', '[]')
+              files = json.loads(files_json)
+
+              if not files:
+                  print("No files to review")
+                  return
+
+              print(f"Reviewing {len(files)} files with Claude...")
+              print("=" * 60)
+
+              reviews = []
+
+              for filepath in files:
+                  if not Path(filepath).exists():
+                      print(f"Skipping {filepath} (not found)")
+                      continue
+
+                  print(f"\nReviewing: {filepath}")
+
+                  try:
+                      with open(filepath, 'r') as f:
+                          content = f.read()
+
+                      if len(content.strip()) == 0:
+                          print(f"  Skipping (empty file)")
+                          continue
+
+                      result = review_file(client, filepath, content)
+                      reviews.append(result)
+
+                      if result['status'] == 'success':
+                          print(f"  ✅ Review complete")
+                      else:
+                          print(f"  ❌ Error: {result['error']}")
+
+                  except Exception as e:
+                      print(f"  ❌ Failed to read file: {str(e)}")
+                      reviews.append({
+                          'file': filepath,
+                          'status': 'error',
+                          'review': None,
+                          'error': str(e)
+                      })
+
+              # Save reviews to file
+              with open('ai_reviews.json', 'w') as f:
+                  json.dump(reviews, f, indent=2)
+
+              print("\n" + "=" * 60)
+              print(f"Completed {len(reviews)} reviews")
+              print("Results saved to ai_reviews.json")
+
+          if __name__ == '__main__':
+              main()
+          EOF
+
+          export CHANGED_FILES='${{ steps.changed-files.outputs.files }}'
+          python3 ai_review.py
+
+      - name: Upload AI review results
+        if: always() && steps.changed-files.outputs.count > 0
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-review-results
+          path: ai_reviews.json
+          retention-days: 30
+
+      - name: Post AI review comments
+        if: always() && steps.changed-files.outputs.count > 0 && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            if (!fs.existsSync('ai_reviews.json')) {
+              console.log('No review results found');
+              return;
+            }
+
+            const reviews = JSON.parse(fs.readFileSync('ai_reviews.json', 'utf8'));
+
+            if (reviews.length === 0) {
+              return;
+            }
+
+            let comment = `## 🤖 AI Code Review by Claude\n\n`;
+            comment += `Reviewed **${reviews.length}** file(s)\n\n`;
+            comment += `---\n\n`;
+
+            for (const review of reviews) {
+              if (review.status === 'error') {
+                comment += `### ❌ ${review.file}\n\n`;
+                comment += `Error: ${review.error}\n\n`;
+                continue;
+              }
+
+              comment += `### 📄 \`${review.file}\`\n\n`;
+              comment += review.review;
+              comment += `\n\n---\n\n`;
+            }
+
+            comment += `\n*AI reviews are suggestions only. Use your judgment and domain expertise.*\n`;
+            comment += `*Model: ${process.env.CLAUDE_MODEL}*\n`;
+
+            // Split into multiple comments if too long (GitHub limit is ~65k chars)
+            const maxLength = 60000;
+
+            if (comment.length <= maxLength) {
+              try {
+                await github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: comment
+                });
+              } catch (error) {
+                console.log('Could not create comment:', error);
+              }
+            } else {
+              // Split into multiple comments
+              console.log('Comment too long, splitting into multiple parts');
+
+              const parts = [];
+              let currentPart = `## 🤖 AI Code Review by Claude (Part 1)\n\n`;
+
+              for (const review of reviews) {
+                const reviewText = review.status === 'error'
+                  ? `### ❌ ${review.file}\n\nError: ${review.error}\n\n`
+                  : `### 📄 \`${review.file}\`\n\n${review.review}\n\n---\n\n`;
+
+                if ((currentPart + reviewText).length > maxLength) {
+                  parts.push(currentPart);
+                  currentPart = `## 🤖 AI Code Review by Claude (Part ${parts.length + 1})\n\n`;
+                }
+
+                currentPart += reviewText;
+              }
+
+              parts.push(currentPart);
+
+              for (const part of parts) {
+                try {
+                  await github.rest.issues.createComment({
+                    issue_number: context.issue.number,
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    body: part
+                  });
+                } catch (error) {
+                  console.log('Could not create comment:', error);
+                }
+              }
+            }
+
+      - name: Summary
+        if: always() && steps.changed-files.outputs.count > 0
+        run: |
+          if [ -f ai_reviews.json ]; then
+            TOTAL=$(cat ai_reviews.json | jq '. | length')
+            SUCCESS=$(cat ai_reviews.json | jq '[.[] | select(.status == "success")] | length')
+            ERRORS=$(cat ai_reviews.json | jq '[.[] | select(.status == "error")] | length')
+
+            echo "AI Review Summary:"
+            echo "  Total files: $TOTAL"
+            echo "  Successfully reviewed: $SUCCESS"
+            echo "  Errors: $ERRORS"
+          fi

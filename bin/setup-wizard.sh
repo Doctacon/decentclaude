@@ -24,6 +24,7 @@ PIP_OK=false
 GCLOUD_OK=false
 DBT_INSTALLED=false
 SQLMESH_INSTALLED=false
+CLAUDE_CODE_INSTALLED=false
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"
@@ -301,6 +302,158 @@ fi
 
 echo ""
 
+# Claude Code Skills and Hooks Installation
+echo "Step 7: Claude Code Skills and Hooks"
+echo "───────────────────────────────────────────────────────────"
+echo ""
+
+CLAUDE_DIR="$HOME/.claude"
+SKILLS_SOURCE="$SCRIPT_DIR/../.claude/skills"
+AGENTS_SOURCE="$SCRIPT_DIR/../.claude/agents"
+HOOKS_SOURCE="$SCRIPT_DIR/../examples/hooks"
+
+echo "DecentClaude includes specialized Claude Code Skills and Hooks:"
+echo "  Skills: Pre-built workflows for common data engineering tasks"
+echo "  Agents: Specialized review and testing agents"
+echo "  Hooks: Automated validation and formatting"
+echo ""
+
+# Check if Claude Code is available
+if command_exists claude; then
+    echo -e "${CHECK} Claude Code CLI found"
+    CLAUDE_VERSION=$(claude --version 2>/dev/null || echo "unknown")
+    echo "  Version: $CLAUDE_VERSION"
+else
+    echo -e "${WARN} Claude Code CLI not found"
+    echo "  Skills and hooks require Claude Code to be installed."
+    echo ""
+    echo "  Install from: https://github.com/anthropics/anthropic-claude-code"
+    echo ""
+fi
+
+read -p "Would you like to install Claude Code Skills and Hooks? [y/N]: " install_claude_code
+if [[ $install_claude_code =~ ^[Yy]$ ]]; then
+    # Check if .claude directory exists
+    if [ -d "$CLAUDE_DIR" ]; then
+        echo -e "${WARN} Found existing $CLAUDE_DIR directory"
+        echo ""
+        read -p "Overwrite existing Skills and Hooks? [y/N]: " overwrite_claude
+        if [[ ! $overwrite_claude =~ ^[Yy]$ ]]; then
+            echo "  Skipping Claude Code installation"
+        else
+            INSTALL_CLAUDE=true
+        fi
+    else
+        INSTALL_CLAUDE=true
+    fi
+
+    if [ "$INSTALL_CLAUDE" = true ]; then
+        echo ""
+        echo -e "${ARROW} Installing Claude Code components..."
+
+        # Create directories
+        mkdir -p "$CLAUDE_DIR/skills"
+        mkdir -p "$CLAUDE_DIR/agents"
+        mkdir -p "$CLAUDE_DIR/hooks"
+
+        # Copy skills
+        if [ -d "$SKILLS_SOURCE" ]; then
+            echo -e "${ARROW} Copying Skills..."
+            cp -r "$SKILLS_SOURCE"/* "$CLAUDE_DIR/skills/" 2>/dev/null || true
+            SKILL_COUNT=$(find "$CLAUDE_DIR/skills" -name "SKILL.md" | wc -l | tr -d ' ')
+            echo -e "${CHECK} Installed $SKILL_COUNT Skills"
+        else
+            echo -e "${WARN} Skills directory not found at $SKILLS_SOURCE"
+        fi
+
+        # Copy agents
+        if [ -d "$AGENTS_SOURCE" ]; then
+            echo -e "${ARROW} Copying Agents..."
+            cp -r "$AGENTS_SOURCE"/* "$CLAUDE_DIR/agents/" 2>/dev/null || true
+            AGENT_COUNT=$(find "$CLAUDE_DIR/agents" -name "*.md" | wc -l | tr -d ' ')
+            echo -e "${CHECK} Installed $AGENT_COUNT Agents"
+        else
+            echo -e "${WARN} Agents directory not found at $AGENTS_SOURCE"
+        fi
+
+        # Copy hooks
+        if [ -d "$HOOKS_SOURCE" ]; then
+            echo -e "${ARROW} Copying Hooks..."
+            # Copy only .sh files, skip README and other docs
+            find "$HOOKS_SOURCE" -name "*.sh" -not -name "test-hooks.sh" -exec cp {} "$CLAUDE_DIR/hooks/" \; 2>/dev/null || true
+
+            # Make hooks executable
+            echo -e "${ARROW} Making hooks executable..."
+            chmod +x "$CLAUDE_DIR/hooks"/*.sh 2>/dev/null || true
+
+            HOOK_COUNT=$(find "$CLAUDE_DIR/hooks" -name "*.sh" | wc -l | tr -d ' ')
+            echo -e "${CHECK} Installed $HOOK_COUNT Hooks"
+        else
+            echo -e "${WARN} Hooks directory not found at $HOOKS_SOURCE"
+        fi
+
+        echo ""
+        echo "Claude Code components installed to: $CLAUDE_DIR"
+
+        # Test Claude Code configuration
+        echo ""
+        echo -e "${ARROW} Verifying Claude Code configuration..."
+
+        if command_exists claude; then
+            # Try to list skills (this validates the installation)
+            if claude skills list >/dev/null 2>&1; then
+                echo -e "${CHECK} Claude Code Skills are accessible"
+            else
+                echo -e "${WARN} Claude Code may need configuration"
+                echo "  Run: claude config"
+            fi
+
+            # Test a skill invocation if possible
+            echo ""
+            read -p "Would you like to test a Skill invocation? [y/N]: " test_skill
+            if [[ $test_skill =~ ^[Yy]$ ]]; then
+                echo ""
+                echo "Testing: claude skills run explain-code --help"
+                echo ""
+                claude skills run explain-code --help || echo -e "${WARN} Skill test failed (this is normal if Skills aren't configured yet)"
+            fi
+        else
+            echo -e "${WARN} Cannot verify - Claude Code CLI not found"
+            echo ""
+            echo "After installing Claude Code, verify installation with:"
+            echo "  1. claude skills list"
+            echo "  2. ls -la $CLAUDE_DIR/hooks/"
+            echo "  3. claude skills run explain-code --help"
+        fi
+
+        # Show hook configuration info
+        echo ""
+        echo "Installed Hooks:"
+        if [ -d "$CLAUDE_DIR/hooks" ]; then
+            for hook in "$CLAUDE_DIR/hooks"/*.sh; do
+                if [ -f "$hook" ]; then
+                    HOOK_NAME=$(basename "$hook")
+                    if [ -x "$hook" ]; then
+                        echo -e "  ${CHECK} $HOOK_NAME (enabled)"
+                    else
+                        echo -e "  ${CROSS} $HOOK_NAME (not executable)"
+                    fi
+                fi
+            done
+        fi
+
+        echo ""
+        echo "Hook Configuration:"
+        echo "  - Enable/disable: chmod +x/-x ~/.claude/hooks/<hook>.sh"
+        echo "  - Configuration: Set environment variables (see hook files)"
+        echo "  - Documentation: cat $HOOKS_SOURCE/README.md"
+
+        CLAUDE_CODE_INSTALLED=true
+    fi
+fi
+
+echo ""
+
 # Summary
 echo "═══════════════════════════════════════════════════════════"
 echo "  Setup Complete!"
@@ -317,6 +470,9 @@ fi
 if $GCLOUD_OK; then
     echo -e "  ${CHECK} BigQuery ready"
 fi
+if $CLAUDE_CODE_INSTALLED; then
+    echo -e "  ${CHECK} Claude Code Skills and Hooks installed"
+fi
 echo ""
 echo "Next Steps:"
 echo ""
@@ -326,11 +482,16 @@ echo ""
 echo "2. Try the CLI utilities:"
 echo -e "   ${ARROW} bin/data-utils/bq-schema-diff --help"
 echo ""
-echo "3. Explore example workflows:"
-echo -e "   ${ARROW} cat playbooks.md"
+echo "3. Explore Claude Code Skills:"
+echo -e "   ${ARROW} claude skills list"
+echo -e "   ${ARROW} cat ~/.claude/skills/*/SKILL.md"
 echo ""
-echo "4. View available hooks:"
-echo -e "   ${ARROW} cat docs/worktrees/HOOKS.md"
+echo "4. Review installed Hooks:"
+echo -e "   ${ARROW} cat examples/hooks/README.md"
+echo -e "   ${ARROW} ls -la ~/.claude/hooks/"
+echo ""
+echo "5. Explore example workflows:"
+echo -e "   ${ARROW} cat playbooks.md"
 echo ""
 echo "For help and documentation:"
 echo "  - README.md: Full documentation"

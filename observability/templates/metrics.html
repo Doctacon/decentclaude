@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Metrics - Observability Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: #2c3e50;
+            color: white;
+            padding: 20px 0;
+            margin-bottom: 30px;
+        }
+
+        h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+
+        .nav {
+            display: flex;
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .nav a {
+            color: white;
+            text-decoration: none;
+            padding: 8px 15px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        .nav a:hover, .nav a.active {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .control-label {
+            font-weight: 500;
+        }
+
+        select {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: white;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .btn:hover {
+            background: #2980b9;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(600px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .metric-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .metric-title {
+            font-size: 1.3em;
+            font-weight: bold;
+            margin-bottom: 15px;
+            color: #2c3e50;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+
+        .metrics-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        .metrics-table th,
+        .metrics-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ecf0f1;
+        }
+
+        .metrics-table th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+
+        .metrics-table tr:hover {
+            background: #f8f9fa;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #7f8c8d;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Metrics</h1>
+            <p>Detailed performance and usage metrics</p>
+            <div class="nav">
+                <a href="/">Dashboard</a>
+                <a href="/metrics" class="active">Metrics</a>
+                <a href="/queries">Queries</a>
+                <a href="/costs">Costs</a>
+                <a href="/errors">Errors</a>
+                <a href="/health">Health</a>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="controls">
+            <div class="control-group">
+                <label class="control-label">Time Range:</label>
+                <select id="timeRange">
+                    <option value="1">Last Hour</option>
+                    <option value="6">Last 6 Hours</option>
+                    <option value="24" selected>Last 24 Hours</option>
+                    <option value="168">Last Week</option>
+                </select>
+            </div>
+            <button class="btn" onclick="loadMetrics()">Refresh</button>
+        </div>
+
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-title">Query Execution Metrics</div>
+                <div class="chart-container">
+                    <canvas id="queryMetricsChart"></canvas>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-title">Query Duration Distribution</div>
+                <div class="chart-container">
+                    <canvas id="durationChart"></canvas>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-title">Data Processing Volume</div>
+                <div class="chart-container">
+                    <canvas id="volumeChart"></canvas>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-title">Success vs Error Rate</div>
+                <div class="chart-container">
+                    <canvas id="successRateChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="metric-card">
+            <div class="metric-title">Metric Summary</div>
+            <table class="metrics-table">
+                <thead>
+                    <tr>
+                        <th>Metric</th>
+                        <th>Current</th>
+                        <th>Average</th>
+                        <th>Peak</th>
+                        <th>Total</th>
+                    </tr>
+                </thead>
+                <tbody id="metricsTableBody">
+                    <tr>
+                        <td colspan="5" class="loading">Loading metrics...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let queryMetricsChart, durationChart, volumeChart, successRateChart;
+
+        async function loadMetrics() {
+            const hours = document.getElementById('timeRange').value;
+            await loadQueryMetricsChart(hours);
+            await loadDurationChart(hours);
+            await loadVolumeChart(hours);
+            await loadSuccessRateChart(hours);
+            await loadMetricsTable(hours);
+        }
+
+        async function loadQueryMetricsChart(hours) {
+            try {
+                const response = await fetch(`/api/metrics/recent?hours=${hours}`);
+                const data = await response.json();
+
+                const ctx = document.getElementById('queryMetricsChart');
+
+                if (queryMetricsChart) {
+                    queryMetricsChart.destroy();
+                }
+
+                queryMetricsChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: data.data.map(d => new Date(d.timestamp).toLocaleTimeString()),
+                        datasets: [{
+                            label: 'Queries Executed',
+                            data: data.data.map(d => d.query_count),
+                            borderColor: '#3498db',
+                            backgroundColor: 'rgba(52, 152, 219, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top'
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading query metrics chart:', error);
+            }
+        }
+
+        async function loadDurationChart(hours) {
+            try {
+                const response = await fetch(`/api/metrics/recent?hours=${hours}`);
+                const data = await response.json();
+
+                const ctx = document.getElementById('durationChart');
+
+                if (durationChart) {
+                    durationChart.destroy();
+                }
+
+                durationChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: data.data.map(d => new Date(d.timestamp).toLocaleTimeString()),
+                        datasets: [{
+                            label: 'Avg Duration (seconds)',
+                            data: data.data.map(d => d.avg_duration),
+                            backgroundColor: 'rgba(39, 174, 96, 0.7)',
+                            borderColor: '#27ae60',
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading duration chart:', error);
+            }
+        }
+
+        async function loadVolumeChart(hours) {
+            try {
+                const response = await fetch(`/api/metrics/recent?hours=${hours}`);
+                const data = await response.json();
+
+                const ctx = document.getElementById('volumeChart');
+
+                if (volumeChart) {
+                    volumeChart.destroy();
+                }
+
+                volumeChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: data.data.map(d => new Date(d.timestamp).toLocaleTimeString()),
+                        datasets: [{
+                            label: 'Data Processed (GB)',
+                            data: data.data.map(d => (d.query_count * 1024 * 1024) / (1024 * 1024 * 1024)),
+                            borderColor: '#9b59b6',
+                            backgroundColor: 'rgba(155, 89, 182, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top'
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading volume chart:', error);
+            }
+        }
+
+        async function loadSuccessRateChart(hours) {
+            try {
+                const response = await fetch(`/api/metrics/recent?hours=${hours}`);
+                const data = await response.json();
+
+                const ctx = document.getElementById('successRateChart');
+
+                if (successRateChart) {
+                    successRateChart.destroy();
+                }
+
+                const totalQueries = data.data.reduce((sum, d) => sum + d.query_count, 0);
+                const totalErrors = data.data.reduce((sum, d) => sum + d.error_count, 0);
+                const successCount = totalQueries - totalErrors;
+
+                successRateChart = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['Success', 'Errors'],
+                        datasets: [{
+                            data: [successCount, totalErrors],
+                            backgroundColor: [
+                                'rgba(39, 174, 96, 0.8)',
+                                'rgba(231, 76, 60, 0.8)'
+                            ],
+                            borderColor: [
+                                '#27ae60',
+                                '#e74c3c'
+                            ],
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                position: 'bottom'
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading success rate chart:', error);
+            }
+        }
+
+        async function loadMetricsTable(hours) {
+            try {
+                const response = await fetch(`/api/metrics/recent?hours=${hours}`);
+                const data = await response.json();
+
+                const queryCounts = data.data.map(d => d.query_count);
+                const durations = data.data.map(d => d.avg_duration);
+                const costs = data.data.map(d => d.cost_usd);
+
+                const tableHtml = `
+                    <tr>
+                        <td>Query Count</td>
+                        <td>${queryCounts[queryCounts.length - 1]}</td>
+                        <td>${(queryCounts.reduce((a, b) => a + b, 0) / queryCounts.length).toFixed(0)}</td>
+                        <td>${Math.max(...queryCounts)}</td>
+                        <td>${queryCounts.reduce((a, b) => a + b, 0)}</td>
+                    </tr>
+                    <tr>
+                        <td>Avg Duration (s)</td>
+                        <td>${durations[durations.length - 1].toFixed(3)}</td>
+                        <td>${(durations.reduce((a, b) => a + b, 0) / durations.length).toFixed(3)}</td>
+                        <td>${Math.max(...durations).toFixed(3)}</td>
+                        <td>-</td>
+                    </tr>
+                    <tr>
+                        <td>Cost (USD)</td>
+                        <td>$${costs[costs.length - 1].toFixed(2)}</td>
+                        <td>$${(costs.reduce((a, b) => a + b, 0) / costs.length).toFixed(2)}</td>
+                        <td>$${Math.max(...costs).toFixed(2)}</td>
+                        <td>$${costs.reduce((a, b) => a + b, 0).toFixed(2)}</td>
+                    </tr>
+                `;
+
+                document.getElementById('metricsTableBody').innerHTML = tableHtml;
+            } catch (error) {
+                console.error('Error loading metrics table:', error);
+            }
+        }
+
+        // Load initial data
+        loadMetrics();
+
+        // Auto-refresh every 30 seconds
+        setInterval(loadMetrics, 30000);
+    </script>
+</body>
+</html>

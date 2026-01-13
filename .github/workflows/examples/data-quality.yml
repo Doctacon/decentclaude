@@ -1,0 +1,532 @@
+# Data Quality Audit Workflow
+#
+# Comprehensive data quality checks on schedule and commits
+# Runs: Daily schedule, on push to main, manual trigger
+# Duration: ~5-10 minutes
+#
+# Required Secrets:
+#   - GOOGLE_APPLICATION_CREDENTIALS_JSON (if using BigQuery checks)
+#
+# Optional Configuration:
+#   - Schedule (cron expression)
+#   - Quality check scripts
+#
+# Usage:
+#   1. Copy to .github/workflows/data-quality.yml
+#   2. Customize data quality checks in scripts/data_quality.py
+#   3. Adjust schedule as needed
+
+name: Data Quality Audit
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'models/**'
+      - 'queries/**'
+      - '**.sql'
+  schedule:
+    # Run daily at 8 AM UTC (adjust for your timezone)
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      skip_failures:
+        description: 'Continue even if checks fail'
+        required: false
+        default: 'false'
+
+jobs:
+  quality-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install sqlparse google-cloud-bigquery pyyaml
+
+      - name: Authenticate to Google Cloud
+        if: secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON != ''
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+        continue-on-error: true
+
+      - name: Run SQL syntax validation
+        id: syntax-check
+        run: |
+          echo "Running SQL syntax validation..."
+
+          cat > syntax_check.py << 'EOF'
+          import sqlparse
+          import json
+          from pathlib import Path
+          from typing import List, Dict
+
+          def validate_sql_file(filepath: Path) -> Dict:
+              """Validate SQL syntax in a file"""
+              try:
+                  with open(filepath, 'r') as f:
+                      content = f.read()
+
+                  if not content.strip():
+                      return {
+                          'file': str(filepath),
+                          'status': 'skipped',
+                          'message': 'Empty file'
+                      }
+
+                  parsed = sqlparse.parse(content)
+
+                  if not parsed:
+                      return {
+                          'file': str(filepath),
+                          'status': 'failed',
+                          'message': 'Invalid SQL syntax'
+                      }
+
+                  return {
+                      'file': str(filepath),
+                      'status': 'passed',
+                      'message': 'Valid SQL syntax'
+                  }
+
+              except Exception as e:
+                  return {
+                      'file': str(filepath),
+                      'status': 'error',
+                      'message': str(e)
+                  }
+
+          def main():
+              # Find all SQL files
+              sql_files = list(Path('.').rglob('*.sql'))
+
+              # Exclude certain directories
+              excluded_dirs = ['.git', 'node_modules', 'venv', '__pycache__']
+              sql_files = [
+                  f for f in sql_files
+                  if not any(excluded in str(f) for excluded in excluded_dirs)
+              ]
+
+              print(f"Found {len(sql_files)} SQL files to validate")
+
+              results = []
+              for filepath in sql_files:
+                  result = validate_sql_file(filepath)
+                  results.append(result)
+
+                  status_icon = {
+                      'passed': '✅',
+                      'failed': '❌',
+                      'error': '⚠️',
+                      'skipped': '⊘'
+                  }.get(result['status'], '?')
+
+                  print(f"{status_icon} {result['file']}: {result['message']}")
+
+              # Save results
+              with open('syntax_results.json', 'w') as f:
+                  json.dump({
+                      'total': len(results),
+                      'passed': len([r for r in results if r['status'] == 'passed']),
+                      'failed': len([r for r in results if r['status'] == 'failed']),
+                      'errors': len([r for r in results if r['status'] == 'error']),
+                      'skipped': len([r for r in results if r['status'] == 'skipped']),
+                      'results': results
+                  }, f, indent=2)
+
+              failed = [r for r in results if r['status'] in ['failed', 'error']]
+              if failed:
+                  print(f"\n❌ {len(failed)} files failed validation")
+                  return 1
+              else:
+                  print(f"\n✅ All {len(results)} files passed validation")
+                  return 0
+
+          if __name__ == '__main__':
+              import sys
+              sys.exit(main())
+          EOF
+
+          python3 syntax_check.py
+
+      - name: Check for best practices
+        id: best-practices
+        run: |
+          echo "Checking SQL best practices..."
+
+          cat > best_practices_check.py << 'EOF'
+          import json
+          from pathlib import Path
+          from typing import List, Dict, Tuple
+
+          class BestPracticeCheck:
+              def __init__(self, name: str, pattern: str, severity: str, message: str):
+                  self.name = name
+                  self.pattern = pattern
+                  self.severity = severity  # 'error', 'warning', 'info'
+                  self.message = message
+
+          CHECKS = [
+              BestPracticeCheck(
+                  'select_star',
+                  'SELECT *',
+                  'warning',
+                  'Avoid SELECT * - specify columns explicitly for better performance and maintainability'
+              ),
+              BestPracticeCheck(
+                  'missing_where',
+                  'FROM',
+                  'info',
+                  'Consider if WHERE clause is needed to filter data'
+              ),
+              BestPracticeCheck(
+                  'hardcoded_dates',
+                  r'\d{4}-\d{2}-\d{2}',
+                  'warning',
+                  'Hardcoded dates found - consider using parameters or date functions'
+              ),
+              BestPracticeCheck(
+                  'no_limit',
+                  'SELECT',
+                  'info',
+                  'Consider adding LIMIT clause for development queries'
+              ),
+          ]
+
+          def check_file(filepath: Path) -> Dict:
+              """Check a SQL file for best practices"""
+              try:
+                  with open(filepath, 'r') as f:
+                      content = f.read().upper()
+
+                  issues = []
+
+                  # SELECT * check
+                  if 'SELECT *' in content:
+                      issues.append({
+                          'check': 'select_star',
+                          'severity': 'warning',
+                          'message': 'Uses SELECT * - consider specifying columns'
+                      })
+
+                  # Missing WHERE clause check (simple heuristic)
+                  if 'FROM' in content and 'WHERE' not in content and 'JOIN' not in content:
+                      # Skip if it's just a simple select from a single source
+                      if content.count('FROM') == 1:
+                          issues.append({
+                              'check': 'missing_where',
+                              'severity': 'info',
+                              'message': 'No WHERE clause - ensure full table scan is intended'
+                          })
+
+                  return {
+                      'file': str(filepath),
+                      'issues': issues,
+                      'issue_count': len(issues)
+                  }
+
+              except Exception as e:
+                  return {
+                      'file': str(filepath),
+                      'issues': [],
+                      'error': str(e)
+                  }
+
+          def main():
+              sql_files = list(Path('.').rglob('*.sql'))
+              excluded_dirs = ['.git', 'node_modules', 'venv', '__pycache__']
+              sql_files = [
+                  f for f in sql_files
+                  if not any(excluded in str(f) for excluded in excluded_dirs)
+              ]
+
+              print(f"Checking {len(sql_files)} files for best practices...")
+
+              results = []
+              total_issues = 0
+
+              for filepath in sql_files:
+                  result = check_file(filepath)
+                  results.append(result)
+
+                  if result.get('issue_count', 0) > 0:
+                      total_issues += result['issue_count']
+                      print(f"\n📄 {result['file']}:")
+                      for issue in result['issues']:
+                          icon = '⚠️' if issue['severity'] == 'warning' else 'ℹ️'
+                          print(f"  {icon} {issue['message']}")
+
+              with open('best_practices_results.json', 'w') as f:
+                  json.dump({
+                      'total_files': len(results),
+                      'files_with_issues': len([r for r in results if r.get('issue_count', 0) > 0]),
+                      'total_issues': total_issues,
+                      'results': results
+                  }, f, indent=2)
+
+              print(f"\n✅ Best practices check complete")
+              print(f"   Files checked: {len(results)}")
+              print(f"   Issues found: {total_issues}")
+
+          if __name__ == '__main__':
+              main()
+          EOF
+
+          python3 best_practices_check.py
+
+      - name: Check for security issues
+        id: security-check
+        run: |
+          echo "Checking for security issues..."
+
+          cat > security_check.py << 'EOF'
+          import json
+          import re
+          from pathlib import Path
+
+          SECURITY_PATTERNS = [
+              (r'password\s*=\s*["\']', 'Potential hardcoded password'),
+              (r'api_?key\s*=\s*["\']', 'Potential hardcoded API key'),
+              (r'secret\s*=\s*["\']', 'Potential hardcoded secret'),
+              (r'token\s*=\s*["\']', 'Potential hardcoded token'),
+              (r'credential\s*=\s*["\']', 'Potential hardcoded credential'),
+          ]
+
+          def check_file(filepath: Path) -> Dict:
+              """Check file for security issues"""
+              try:
+                  with open(filepath, 'r') as f:
+                      content = f.read()
+
+                  issues = []
+                  for pattern, description in SECURITY_PATTERNS:
+                      matches = re.finditer(pattern, content, re.IGNORECASE)
+                      for match in matches:
+                          # Get line number
+                          line_num = content[:match.start()].count('\n') + 1
+                          issues.append({
+                              'pattern': description,
+                              'line': line_num,
+                              'severity': 'error'
+                          })
+
+                  return {
+                      'file': str(filepath),
+                      'issues': issues,
+                      'secure': len(issues) == 0
+                  }
+
+              except Exception as e:
+                  return {
+                      'file': str(filepath),
+                      'issues': [],
+                      'error': str(e)
+                  }
+
+          def main():
+              sql_files = list(Path('.').rglob('*.sql'))
+              excluded_dirs = ['.git', 'node_modules', 'venv', '__pycache__']
+              sql_files = [
+                  f for f in sql_files
+                  if not any(excluded in str(f) for excluded in excluded_dirs)
+              ]
+
+              print(f"Checking {len(sql_files)} files for security issues...")
+
+              results = []
+              total_issues = 0
+
+              for filepath in sql_files:
+                  result = check_file(filepath)
+                  results.append(result)
+
+                  if not result.get('secure', True):
+                      total_issues += len(result['issues'])
+                      print(f"\n❌ {result['file']}:")
+                      for issue in result['issues']:
+                          print(f"  Line {issue['line']}: {issue['pattern']}")
+
+              with open('security_results.json', 'w') as f:
+                  json.dump({
+                      'total_files': len(results),
+                      'secure_files': len([r for r in results if r.get('secure', True)]),
+                      'total_issues': total_issues,
+                      'results': results
+                  }, f, indent=2)
+
+              if total_issues > 0:
+                  print(f"\n❌ Found {total_issues} potential security issues")
+                  return 1
+              else:
+                  print(f"\n✅ No security issues found")
+                  return 0
+
+          if __name__ == '__main__':
+              import sys
+              sys.exit(main())
+          EOF
+
+          python3 security_check.py || echo "Security check found issues"
+
+      - name: Generate quality report
+        if: always()
+        run: |
+          cat > generate_report.py << 'EOF'
+          import json
+          from datetime import datetime
+          from pathlib import Path
+
+          def load_results(filename):
+              if Path(filename).exists():
+                  with open(filename, 'r') as f:
+                      return json.load(f)
+              return None
+
+          def main():
+              syntax_results = load_results('syntax_results.json')
+              best_practices_results = load_results('best_practices_results.json')
+              security_results = load_results('security_results.json')
+
+              report = {
+                  'timestamp': datetime.utcnow().isoformat(),
+                  'summary': {
+                      'syntax': syntax_results.get('passed', 0) if syntax_results else 0,
+                      'syntax_failed': syntax_results.get('failed', 0) if syntax_results else 0,
+                      'best_practice_issues': best_practices_results.get('total_issues', 0) if best_practices_results else 0,
+                      'security_issues': security_results.get('total_issues', 0) if security_results else 0,
+                  },
+                  'details': {
+                      'syntax': syntax_results,
+                      'best_practices': best_practices_results,
+                      'security': security_results
+                  }
+              }
+
+              with open('quality_report.json', 'w') as f:
+                  json.dump(report, f, indent=2)
+
+              print("\n" + "="*60)
+              print("DATA QUALITY AUDIT SUMMARY")
+              print("="*60)
+              print(f"Timestamp: {report['timestamp']}")
+              print(f"\nSQL Syntax:")
+              print(f"  ✅ Passed: {report['summary']['syntax']}")
+              print(f"  ❌ Failed: {report['summary']['syntax_failed']}")
+              print(f"\nBest Practices:")
+              print(f"  ⚠️  Issues: {report['summary']['best_practice_issues']}")
+              print(f"\nSecurity:")
+              print(f"  🔒 Issues: {report['summary']['security_issues']}")
+              print("="*60)
+
+          if __name__ == '__main__':
+              main()
+          EOF
+
+          python3 generate_report.py
+
+      - name: Upload quality report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-report-${{ github.run_number }}
+          path: |
+            quality_report.json
+            syntax_results.json
+            best_practices_results.json
+            security_results.json
+          retention-days: 90
+
+      - name: Check if quality checks passed
+        if: always()
+        id: quality-status
+        run: |
+          SYNTAX_FAILED=0
+          SECURITY_ISSUES=0
+
+          if [ -f syntax_results.json ]; then
+            SYNTAX_FAILED=$(cat syntax_results.json | jq -r '.failed // 0')
+          fi
+
+          if [ -f security_results.json ]; then
+            SECURITY_ISSUES=$(cat security_results.json | jq -r '.total_issues // 0')
+          fi
+
+          echo "syntax_failed=$SYNTAX_FAILED" >> $GITHUB_OUTPUT
+          echo "security_issues=$SECURITY_ISSUES" >> $GITHUB_OUTPUT
+
+          TOTAL_CRITICAL=$((SYNTAX_FAILED + SECURITY_ISSUES))
+
+          if [ $TOTAL_CRITICAL -gt 0 ]; then
+            echo "has_failures=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_failures=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create issue on failure
+        if: steps.quality-status.outputs.has_failures == 'true' && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            if (!fs.existsSync('quality_report.json')) {
+              console.log('No quality report found');
+              return;
+            }
+
+            const report = JSON.parse(fs.readFileSync('quality_report.json', 'utf8'));
+
+            let body = `## Data Quality Issues Detected\n\n`;
+            body += `**Date**: ${report.timestamp}\n`;
+            body += `**Run**: [#${context.runNumber}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})\n\n`;
+
+            body += `### Summary\n\n`;
+            body += `- ❌ SQL syntax failures: ${report.summary.syntax_failed}\n`;
+            body += `- 🔒 Security issues: ${report.summary.security_issues}\n`;
+            body += `- ⚠️ Best practice issues: ${report.summary.best_practice_issues}\n\n`;
+
+            body += `### Action Required\n\n`;
+            body += `Please review the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) and fix the issues.\n\n`;
+            body += `Download the full quality report from the workflow artifacts for details.\n`;
+
+            try {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `Data Quality Issues - ${new Date().toISOString().split('T')[0]}`,
+                body: body,
+                labels: ['data-quality', 'automated', 'needs-attention']
+              });
+            } catch (error) {
+              console.log('Could not create issue:', error);
+            }
+
+      - name: Fail workflow if critical issues found
+        if: steps.quality-status.outputs.has_failures == 'true' && github.event.inputs.skip_failures != 'true'
+        run: |
+          echo "❌ Data quality checks failed!"
+          echo "   Syntax failures: ${{ steps.quality-status.outputs.syntax_failed }}"
+          echo "   Security issues: ${{ steps.quality-status.outputs.security_issues }}"
+          echo ""
+          echo "Fix these issues or run with 'skip_failures' input to continue."
+          exit 1
+
+      - name: Success summary
+        if: steps.quality-status.outputs.has_failures == 'false'
+        run: |
+          echo "✅ All data quality checks passed!"
+          cat quality_report.json | jq '.summary'

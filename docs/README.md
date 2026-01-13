@@ -1,140 +1,132 @@
-# Claude Code Documentation
+# Documentation
 
-Comprehensive documentation for MCP server setup, team workflows, and best practices.
+Welcome to the DecentClaude data workflows documentation. This documentation has been reorganized into three main sections for easier navigation.
 
-## Contents
+## Quick Navigation
 
-### MCP Server Setup Guides
+- **[Complete Documentation Index](INDEX.md)** - Full searchable index with quick links
+- **[Reference Documentation](reference/)** - API and tool references
+- **[Guides and Tutorials](guides/)** - Step-by-step instructions
+- **[Architecture Documentation](architecture/)** - Design docs and system architecture
 
-Located in `mcp-servers/`:
+## Documentation Structure
 
-1. **[bigquery.md](mcp-servers/bigquery.md)** - BigQuery MCP Server Setup Guide
-   - Installation and authentication
-   - Complete tool reference (40+ tools)
-   - Query optimization and cost management
-   - Best practices and troubleshooting
+### Reference Documentation
 
-2. **[github.md](mcp-servers/github.md)** - GitHub MCP Server Setup Guide
-   - Repository and branch operations
-   - Issue and PR management
-   - Code review workflows
-   - CI/CD integration
+API and tool reference documentation for lookup and detailed information.
 
-3. **[databases.md](mcp-servers/databases.md)** - Database MCP Servers Guide
-   - PostgreSQL, MySQL, SQLite setup
-   - Connection patterns and security
-   - Query execution and schema management
-   - Performance tuning
+**Location**: `docs/reference/`
 
-4. **[monitoring.md](mcp-servers/monitoring.md)** - Monitoring Integration Guide
-   - DataDog, Prometheus, Grafana, New Relic
-   - Metrics querying and alerting
-   - Incident response workflows
-   - Dashboard management
+**Contents**:
+- MCP Server documentation (BigQuery, GitHub, Databases, Monitoring)
+- MCP Development Guide
+- Settings and configuration reference
+- Code review guidelines and templates
+- Documentation templates
 
-5. **[development-guide.md](mcp-servers/development-guide.md)** - MCP Server Development Guide
-   - Building custom MCP servers
-   - Tool and resource patterns
-   - Testing and deployment
-   - Best practices
+**[Browse Reference Docs](reference/README.md)**
 
-### Team Workflows
+### Guides and Tutorials
 
-Located in `workflows/`:
+Step-by-step instructions and how-to guides for common tasks.
 
-1. **[team-workflows.md](workflows/team-workflows.md)** - Claude Code Team Workflows
-   - PR review workflow (comprehensive and quick)
-   - Incident response workflow
-   - Feature development workflow
-   - Code migration and testing workflows
-   - Documentation workflow
+**Location**: `docs/guides/`
 
-2. **[session-management.md](workflows/session-management.md)** - Advanced Session Management
-   - Session resumption strategies
-   - Context management and compression
-   - Background task patterns
-   - Multi-agent coordination
-   - Session hooks and automation
+**Contents**:
+- QUICKSTART guide
+- Workflow tutorials
+- Team workflows and session management
+- Data engineering and testing patterns
+- Playbooks and troubleshooting guides
 
-### Configuration
+**[Browse Guides](guides/README.md)**
 
-1. **[settings-best-practices.md](settings-best-practices.md)** - Settings Best Practices
-   - Model selection guidelines
-   - Context window optimization
-   - MCP server configuration
-   - Hook and custom command setup
-   - Security and team settings
+### Architecture Documentation
 
-## Quick Start
+Design documents and implementation details for the system.
 
-### For Individual Developers
+**Location**: `docs/architecture/`
 
-1. Start with **[settings-best-practices.md](settings-best-practices.md)** to configure Claude Code
-2. Set up MCP servers you need:
-   - [GitHub](mcp-servers/github.md) for repository operations
-   - [PostgreSQL](mcp-servers/databases.md) for database work
-   - [DataDog](mcp-servers/monitoring.md) for monitoring
-3. Learn [team workflows](workflows/team-workflows.md) for common tasks
+**Contents**:
+- Knowledge base architecture
+- Observability system
+- Debug system design
+- Git worktrees integration
+- Examples and validation
 
-### For Teams
+**[Browse Architecture Docs](architecture/README.md)**
 
-1. Review **[team-workflows.md](workflows/team-workflows.md)** to understand collaboration patterns
-2. Set up shared team settings (see [settings-best-practices.md](settings-best-practices.md#team-settings))
-3. Configure necessary MCP servers for your stack
-4. Implement session management patterns from **[session-management.md](workflows/session-management.md)**
+## Getting Started
 
-### For Custom Integrations
+New to DecentClaude? Follow this path:
 
-1. Read **[development-guide.md](mcp-servers/development-guide.md)** to build custom MCP servers
-2. Follow examples for tools, resources, and prompts
-3. Implement proper testing and error handling
-4. Deploy and share with your team
+1. **[Main README](../README.md)** - Start with the project overview
+2. **[QUICKSTART](guides/QUICKSTART.md)** - Get up and running in minutes
+3. **[Settings Best Practices](reference/settings-best-practices.md)** - Configure your environment
+4. **[Workflows Tutorial](guides/WORKFLOWS_TUTORIAL.md)** - Learn the workflows
 
-## Common Use Cases
+## Finding What You Need
 
-### Code Review
+### By Task
 
-```
-See: workflows/team-workflows.md#pr-review-workflow
-```
+Use the [Documentation Index](INDEX.md) to find documentation by:
+- **Common tasks** (set up, configure, review PRs, analyze data, etc.)
+- **Technology** (BigQuery, GitHub, PostgreSQL, etc.)
+- **Use case** ("I want to...", "I need to...")
+- **Experience level** (beginner, intermediate, advanced)
 
-**Quick Start**:
-1. Configure GitHub MCP server
-2. Use PR review workflow template
-3. Customize review checklist for your needs
+### By Section
 
-### Data Analysis
+- **Looking up API details?** → [Reference](reference/README.md)
+- **Learning how to do something?** → [Guides](guides/README.md)
+- **Understanding system design?** → [Architecture](architecture/README.md)
 
-```
-See: mcp-servers/bigquery.md#common-workflows
-```
+## Quick Links
 
-**Quick Start**:
-1. Set up BigQuery MCP server
-2. Learn query optimization patterns
-3. Use profiling tools for data exploration
+### Most Popular Docs
 
-### Incident Response
+- [QUICKSTART](guides/QUICKSTART.md) - Quick start guide
+- [Team Workflows](guides/workflows/team-workflows.md) - Collaborative workflows
+- [Settings Best Practices](reference/settings-best-practices.md) - Configuration guide
+- [BigQuery MCP Server](reference/mcp-servers/bigquery.md) - BigQuery integration
+- [GitHub MCP Server](reference/mcp-servers/github.md) - GitHub integration
 
-```
-See: workflows/team-workflows.md#incident-response-workflow
-```
+### Common Tasks
 
-**Quick Start**:
-1. Configure monitoring MCP servers (DataDog, Prometheus)
-2. Set up incident response workflow
-3. Create runbooks and playbooks
+- [Review a Pull Request](guides/workflows/team-workflows.md#pr-review-workflow)
+- [Set Up Claude Code](reference/settings-best-practices.md)
+- [Query BigQuery](reference/mcp-servers/bigquery.md)
+- [Respond to an Incident](guides/workflows/team-workflows.md#incident-response-workflow)
+- [Build Custom MCP Server](reference/mcp-servers/development-guide.md)
 
-### Database Management
+## MCP Server Matrix
 
-```
-See: mcp-servers/databases.md#common-workflows
-```
+Quick reference for available MCP servers:
 
-**Quick Start**:
-1. Configure database MCP server
-2. Learn schema exploration patterns
-3. Implement data quality checks
+| Server | Category | Use Cases | Documentation |
+|--------|----------|-----------|---------------|
+| **GitHub** | Development | PR review, issue tracking, repo management | [github.md](reference/mcp-servers/github.md) |
+| **BigQuery** | Data | Analytics, data exploration, reporting | [bigquery.md](reference/mcp-servers/bigquery.md) |
+| **PostgreSQL** | Database | Schema management, queries, migrations | [databases.md](reference/mcp-servers/databases.md) |
+| **MySQL** | Database | Schema management, queries | [databases.md](reference/mcp-servers/databases.md) |
+| **SQLite** | Database | Local databases, testing | [databases.md](reference/mcp-servers/databases.md) |
+| **DataDog** | Monitoring | Metrics, alerts, APM, logs | [monitoring.md](reference/mcp-servers/monitoring.md) |
+| **Prometheus** | Monitoring | Metrics, time series | [monitoring.md](reference/mcp-servers/monitoring.md) |
+| **Grafana** | Monitoring | Dashboards, visualization | [monitoring.md](reference/mcp-servers/monitoring.md) |
+| **New Relic** | Monitoring | APM, infrastructure monitoring | [monitoring.md](reference/mcp-servers/monitoring.md) |
+
+## Workflow Matrix
+
+Quick reference for team workflows:
+
+| Workflow | Description | Key Tools | Documentation |
+|----------|-------------|-----------|---------------|
+| **PR Review** | Comprehensive code review | GitHub | [team-workflows.md](guides/workflows/team-workflows.md#pr-review-workflow) |
+| **Incident Response** | Handle production incidents | DataDog, GitHub | [team-workflows.md](guides/workflows/team-workflows.md#incident-response-workflow) |
+| **Feature Development** | Full feature lifecycle | GitHub, Database | [team-workflows.md](guides/workflows/team-workflows.md#feature-development-workflow) |
+| **Code Migration** | Large-scale refactoring | GitHub, Database | [team-workflows.md](guides/workflows/team-workflows.md#code-migration-workflow) |
+| **Testing** | Comprehensive testing | GitHub | [team-workflows.md](guides/workflows/team-workflows.md#testing-workflow) |
+| **Documentation** | Create and maintain docs | GitHub | [team-workflows.md](guides/workflows/team-workflows.md#documentation-workflow) |
 
 ## Best Practices Summary
 
@@ -146,7 +138,7 @@ See: mcp-servers/databases.md#common-workflows
 - Regular credential rotation
 - Audit MCP server permissions
 
-See: [settings-best-practices.md#security-best-practices](settings-best-practices.md#security-best-practices)
+See: [settings-best-practices.md#security-best-practices](reference/settings-best-practices.md#security-best-practices)
 
 ### Performance
 
@@ -156,7 +148,7 @@ See: [settings-best-practices.md#security-best-practices](settings-best-practice
 - Monitor resource usage
 - Set appropriate timeouts
 
-See: [settings-best-practices.md#performance-optimization](settings-best-practices.md#performance-optimization)
+See: [settings-best-practices.md#performance-optimization](reference/settings-best-practices.md#performance-optimization)
 
 ### Collaboration
 
@@ -166,151 +158,40 @@ See: [settings-best-practices.md#performance-optimization](settings-best-practic
 - Regular knowledge sharing
 - Clear handoff protocols
 
-See: [workflows/team-workflows.md#collaboration-patterns](workflows/team-workflows.md#collaboration-patterns)
-
-### Quality
-
-- Comprehensive testing
-- Code review before merge
-- Documentation updates
-- Monitoring and alerting
-- Regular retrospectives
-
-See: [workflows/team-workflows.md#quality-gates](workflows/team-workflows.md#quality-gates)
-
-## MCP Server Matrix
-
-Quick reference for available MCP servers:
-
-| Server | Category | Use Cases | Documentation |
-|--------|----------|-----------|---------------|
-| **GitHub** | Development | PR review, issue tracking, repo management | [github.md](mcp-servers/github.md) |
-| **BigQuery** | Data | Analytics, data exploration, reporting | [bigquery.md](mcp-servers/bigquery.md) |
-| **PostgreSQL** | Database | Schema management, queries, migrations | [databases.md](mcp-servers/databases.md) |
-| **MySQL** | Database | Schema management, queries | [databases.md](mcp-servers/databases.md) |
-| **SQLite** | Database | Local databases, testing | [databases.md](mcp-servers/databases.md) |
-| **DataDog** | Monitoring | Metrics, alerts, APM, logs | [monitoring.md](mcp-servers/monitoring.md) |
-| **Prometheus** | Monitoring | Metrics, time series | [monitoring.md](mcp-servers/monitoring.md) |
-| **Grafana** | Monitoring | Dashboards, visualization | [monitoring.md](mcp-servers/monitoring.md) |
-| **New Relic** | Monitoring | APM, infrastructure monitoring | [monitoring.md](mcp-servers/monitoring.md) |
-
-## Workflow Matrix
-
-Quick reference for team workflows:
-
-| Workflow | Description | Key Tools | Documentation |
-|----------|-------------|-----------|---------------|
-| **PR Review** | Comprehensive code review | GitHub | [team-workflows.md](workflows/team-workflows.md#pr-review-workflow) |
-| **Incident Response** | Handle production incidents | DataDog, GitHub | [team-workflows.md](workflows/team-workflows.md#incident-response-workflow) |
-| **Feature Development** | Full feature lifecycle | GitHub, Database | [team-workflows.md](workflows/team-workflows.md#feature-development-workflow) |
-| **Code Migration** | Large-scale refactoring | GitHub, Database | [team-workflows.md](workflows/team-workflows.md#code-migration-workflow) |
-| **Testing** | Comprehensive testing | GitHub | [team-workflows.md](workflows/team-workflows.md#testing-workflow) |
-| **Documentation** | Create and maintain docs | GitHub | [team-workflows.md](workflows/team-workflows.md#documentation-workflow) |
-
-## Advanced Topics
-
-### Multi-Agent Systems
-
-Learn how to coordinate multiple specialized agents:
-- [session-management.md#multi-agent-coordination](workflows/session-management.md#multi-agent-coordination)
-
-### Custom MCP Servers
-
-Build your own integrations:
-- [development-guide.md](mcp-servers/development-guide.md)
-
-### Session Automation
-
-Automate complex workflows:
-- [session-management.md#session-hooks-and-automation](workflows/session-management.md#session-hooks-and-automation)
-
-### Context Optimization
-
-Maximize context window efficiency:
-- [session-management.md#context-management](workflows/session-management.md#context-management)
-
-## Examples
-
-### Example Settings Configurations
-
-See [settings-best-practices.md#example-configurations](settings-best-practices.md#example-configurations):
-- Minimal configuration
-- Full-featured configuration
-- Team configuration
-- Environment-specific configuration
-
-### Example Workflows
-
-See [team-workflows.md](workflows/team-workflows.md):
-- Daily PR review queue
-- Security-focused review
-- Performance review
-- Incident investigation
-- Post-incident analysis
-
-### Example MCP Servers
-
-See [development-guide.md#example-complete-mcp-server](mcp-servers/development-guide.md#example-complete-mcp-server):
-- Complete TypeScript server
-- Python server
-- Tool implementation
-- Resource implementation
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Authentication Errors**
-   - See MCP server specific documentation
-   - Check credential configuration
-   - Verify permissions
-
-2. **Connection Issues**
-   - Verify MCP server is running
-   - Check network connectivity
-   - Review timeout settings
-
-3. **Performance Issues**
-   - Optimize context window
-   - Implement caching
-   - Review query patterns
-
-### Getting Help
-
-1. Check relevant documentation section
-2. Review troubleshooting sections in each guide
-3. Search for similar issues
-4. Consult with team
+See: [workflows/team-workflows.md#collaboration-patterns](guides/workflows/team-workflows.md#collaboration-patterns)
 
 ## Contributing
 
-### Documentation Updates
+When adding new documentation:
 
-When updating documentation:
-1. Maintain consistent formatting
-2. Include practical examples
-3. Update table of contents
-4. Add troubleshooting sections
-5. Test all code examples
+1. **Choose the right location**:
+   - `reference/` for API docs, tool references, configuration
+   - `guides/` for tutorials, how-tos, step-by-step instructions
+   - `architecture/` for design docs, system architecture
 
-### Adding New Guides
+2. **Update the index**: Add entries to [INDEX.md](INDEX.md)
 
-Structure for new guides:
-1. Overview section
-2. Installation/setup
-3. Configuration
-4. Usage examples
-5. Best practices
-6. Troubleshooting
-7. Resources
+3. **Update section README**: Update the README in the relevant section
 
-## Version History
+4. **Follow conventions**: Match the structure and style of similar docs
 
-- **v1.0.0** (2024-01-12): Initial comprehensive documentation
-  - MCP server setup guides
-  - Team workflows
-  - Session management
-  - Settings best practices
+5. **Include examples**: Add code examples and troubleshooting sections
+
+See [INDEX.md - Contributing](INDEX.md#contributing-to-documentation) for detailed guidelines.
+
+## Documentation Statistics
+
+- **Total Documentation**: 100,000+ lines across all docs
+- **Reference Docs**: 5,190+ lines
+- **Guides**: 99,000+ lines
+- **Architecture**: Multiple systems documented
+- **Code Examples**: 100+ working examples
+
+## Need Help?
+
+- Check the [Troubleshooting Guide](guides/TROUBLESHOOTING.md)
+- Search the [Complete Index](INDEX.md)
+- Review the [Playbooks](guides/playbooks.md) for operational guidance
 
 ## Resources
 
@@ -324,22 +205,3 @@ Structure for new guides:
 
 - [MCP Servers Repository](https://github.com/modelcontextprotocol/servers)
 - [Example Configurations](https://github.com/anthropics/claude-code-examples)
-
-### Related Tools
-
-- [GitHub CLI](https://cli.github.com/)
-- [Google Cloud SDK](https://cloud.google.com/sdk)
-- [PostgreSQL](https://www.postgresql.org/)
-- [DataDog](https://www.datadoghq.com/)
-
-## License
-
-This documentation is part of the decentclaude project.
-
-## Feedback
-
-For documentation improvements or corrections, please:
-1. Review existing documentation
-2. Identify gaps or errors
-3. Propose improvements
-4. Update and test changes

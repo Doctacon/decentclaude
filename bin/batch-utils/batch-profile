@@ -1,0 +1,712 @@
+#!/usr/bin/env python3
+"""
+batch-profile - Profile multiple BigQuery tables with aggregated reporting
+
+Usage:
+  batch-profile <table_ids...> [options]
+  batch-profile --file=<file> [options]
+  batch-profile --dataset=<dataset> [options]
+  cat tables.txt | batch-profile --stdin [options]
+
+Arguments:
+  table_ids   One or more table IDs (format: project.dataset.table)
+
+Options:
+  --file=<path>           Read table list from CSV/JSON file
+  --stdin                 Read table list from stdin (one per line)
+  --dataset=<dataset>     Profile all tables in dataset (format: project.dataset)
+  --pattern=<pattern>     Filter tables by name pattern (regex)
+  --parallel=<n>          Number of parallel workers (default: 4)
+  --format=<format>       Output format: text, json, markdown, html (default: text)
+  --output=<path>         Write output to file instead of stdout
+  --compare               Generate comparative analysis section
+  --top=<n>               Show top N tables in comparative analysis (default: 10)
+  --detect-anomalies      Enable anomaly detection for all tables
+  --sample-size=<n>       Sample size for each table (default: 10)
+  --progress              Show progress bar
+  --quiet                 Suppress individual table output, only show summary
+  --continue-on-error     Continue processing if individual tables fail
+  --log=<path>            Write detailed log file
+  --help, -h              Show this help message
+
+Input File Formats:
+  CSV: table_id,optional_name
+  JSON: [{"table_id": "project.dataset.table", "name": "optional"}]
+  Text: one table_id per line
+
+Examples:
+  # Profile multiple tables directly
+  batch-profile project.dataset.users project.dataset.orders
+
+  # Profile from file
+  batch-profile --file=tables.csv --parallel=8 --format=markdown
+
+  # Profile entire dataset with pattern filter
+  batch-profile --dataset=project.dataset --pattern="fact_.*" --compare
+
+  # Profile from stdin with comparative analysis
+  cat tables.txt | batch-profile --stdin --compare --format=html --output=report.html
+
+  # Generate JSON report for further processing
+  batch-profile --file=tables.json --format=json --output=profiles.json --quiet
+
+  # Continue on errors with detailed logging
+  batch-profile --file=tables.txt --continue-on-error --log=profile.log
+"""
+
+import sys
+import json
+import csv
+import argparse
+import re
+from pathlib import Path
+from typing import Dict, List, Any, Optional, Tuple
+from datetime import datetime
+from multiprocessing import Pool, cpu_count
+from functools import partial
+import subprocess
+import io
+
+try:
+    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn
+    from rich.console import Console
+    from rich.table import Table
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+
+try:
+    from google.cloud import bigquery
+    BQ_AVAILABLE = True
+except ImportError:
+    BQ_AVAILABLE = False
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+class BatchProfiler:
+    """Batch profiler for multiple BigQuery tables"""
+
+    def __init__(self, args):
+        self.args = args
+        self.tables = []
+        self.results = []
+        self.errors = []
+        self.start_time = None
+        self.end_time = None
+        self.log_file = None
+
+        if args.log:
+            self.log_file = open(args.log, 'w')
+
+    def log(self, message: str, level: str = "INFO"):
+        """Write to log file if configured"""
+        if self.log_file:
+            timestamp = datetime.now().isoformat()
+            self.log_file.write(f"[{timestamp}] [{level}] {message}\n")
+            self.log_file.flush()
+
+    def load_tables(self) -> List[Dict[str, str]]:
+        """Load table list from various sources"""
+        tables = []
+
+        # Load from direct arguments
+        if self.args.table_ids:
+            for table_id in self.args.table_ids:
+                tables.append({"table_id": table_id, "name": table_id.split('.')[-1]})
+
+        # Load from file
+        elif self.args.file:
+            file_path = Path(self.args.file)
+            if not file_path.exists():
+                print(f"{Colors.RED}Error: File not found: {self.args.file}{Colors.RESET}", file=sys.stderr)
+                sys.exit(1)
+
+            self.log(f"Loading tables from file: {self.args.file}")
+
+            # Detect file format
+            if file_path.suffix.lower() == '.json':
+                with open(file_path) as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        for item in data:
+                            if isinstance(item, str):
+                                tables.append({"table_id": item, "name": item.split('.')[-1]})
+                            elif isinstance(item, dict) and 'table_id' in item:
+                                tables.append({
+                                    "table_id": item['table_id'],
+                                    "name": item.get('name', item['table_id'].split('.')[-1])
+                                })
+            elif file_path.suffix.lower() == '.csv':
+                with open(file_path) as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        table_id = row.get('table_id') or row.get('table')
+                        if table_id:
+                            tables.append({
+                                "table_id": table_id,
+                                "name": row.get('name', table_id.split('.')[-1])
+                            })
+            else:
+                # Assume text file, one table per line
+                with open(file_path) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            tables.append({"table_id": line, "name": line.split('.')[-1]})
+
+        # Load from stdin
+        elif self.args.stdin:
+            self.log("Loading tables from stdin")
+            for line in sys.stdin:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    tables.append({"table_id": line, "name": line.split('.')[-1]})
+
+        # Load from dataset
+        elif self.args.dataset:
+            if not BQ_AVAILABLE:
+                print(f"{Colors.RED}Error: google-cloud-bigquery not available{Colors.RESET}", file=sys.stderr)
+                sys.exit(1)
+
+            self.log(f"Loading tables from dataset: {self.args.dataset}")
+            client = bigquery.Client()
+            dataset_ref = client.dataset(self.args.dataset.split('.')[-1],
+                                        project='.'.join(self.args.dataset.split('.')[:-1]) if '.' in self.args.dataset else None)
+
+            dataset_tables = client.list_tables(dataset_ref)
+            pattern = re.compile(self.args.pattern) if self.args.pattern else None
+
+            for table in dataset_tables:
+                table_id = f"{table.project}.{table.dataset_id}.{table.table_id}"
+                if pattern is None or pattern.search(table.table_id):
+                    tables.append({"table_id": table_id, "name": table.table_id})
+
+        else:
+            print(f"{Colors.RED}Error: No table source specified{Colors.RESET}", file=sys.stderr)
+            print("Use one of: table_ids, --file, --stdin, or --dataset", file=sys.stderr)
+            sys.exit(1)
+
+        self.log(f"Loaded {len(tables)} tables")
+        return tables
+
+    def profile_table(self, table_info: Dict[str, str]) -> Tuple[Optional[Dict], Optional[str]]:
+        """Profile a single table using bq-profile"""
+        table_id = table_info['table_id']
+
+        try:
+            self.log(f"Profiling table: {table_id}")
+
+            # Build bq-profile command
+            cmd = [
+                str(Path(__file__).parent.parent / "data-utils" / "bq-profile"),
+                table_id,
+                "--format=json"
+            ]
+
+            if self.args.detect_anomalies:
+                cmd.append("--detect-anomalies")
+
+            if self.args.sample_size:
+                cmd.append(f"--sample-size={self.args.sample_size}")
+
+            # Run bq-profile
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+
+            if result.returncode == 0:
+                profile_data = json.loads(result.stdout)
+                profile_data['_table_name'] = table_info['name']
+                self.log(f"Successfully profiled: {table_id}")
+                return profile_data, None
+            else:
+                error_msg = result.stderr.strip() or "Unknown error"
+                self.log(f"Failed to profile {table_id}: {error_msg}", "ERROR")
+                return None, f"{table_id}: {error_msg}"
+
+        except subprocess.TimeoutExpired:
+            error_msg = f"Timeout after 300 seconds"
+            self.log(f"Timeout profiling {table_id}", "ERROR")
+            return None, f"{table_id}: {error_msg}"
+        except Exception as e:
+            error_msg = str(e)
+            self.log(f"Exception profiling {table_id}: {error_msg}", "ERROR")
+            return None, f"{table_id}: {error_msg}"
+
+    def profile_tables_parallel(self, tables: List[Dict[str, str]]) -> Tuple[List[Dict], List[str]]:
+        """Profile tables in parallel"""
+        results = []
+        errors = []
+
+        if self.args.progress and RICH_AVAILABLE:
+            console = Console()
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                TimeRemainingColumn(),
+                console=console
+            ) as progress:
+                task = progress.add_task("Profiling tables...", total=len(tables))
+
+                with Pool(processes=self.args.parallel) as pool:
+                    for result, error in pool.imap_unordered(self.profile_table, tables):
+                        if result:
+                            results.append(result)
+                        if error:
+                            errors.append(error)
+                            if not self.args.continue_on_error:
+                                pool.terminate()
+                                break
+                        progress.update(task, advance=1)
+        else:
+            # No progress bar
+            with Pool(processes=self.args.parallel) as pool:
+                for result, error in pool.imap_unordered(self.profile_table, tables):
+                    if result:
+                        results.append(result)
+                    if error:
+                        errors.append(error)
+                        if not self.args.continue_on_error:
+                            pool.terminate()
+                            break
+
+        return results, errors
+
+    def generate_comparative_analysis(self, results: List[Dict]) -> Dict[str, Any]:
+        """Generate comparative analysis across all profiled tables"""
+        if not results:
+            return {}
+
+        analysis = {
+            "total_tables": len(results),
+            "total_rows": sum(r.get('metadata', {}).get('num_rows', 0) for r in results),
+            "total_size_gb": sum(r.get('metadata', {}).get('size_gb', 0) for r in results),
+            "largest_tables": [],
+            "highest_null_rates": [],
+            "most_columns": [],
+            "oldest_tables": [],
+            "newest_tables": [],
+            "partition_info": {
+                "partitioned": 0,
+                "non_partitioned": 0,
+                "clustered": 0
+            }
+        }
+
+        # Collect table stats
+        table_stats = []
+        for result in results:
+            metadata = result.get('metadata', {})
+            stats = {
+                "table_id": metadata.get('table_id', 'unknown'),
+                "name": result.get('_table_name', 'unknown'),
+                "num_rows": metadata.get('num_rows', 0),
+                "size_gb": metadata.get('size_gb', 0),
+                "num_columns": len(result.get('columns', [])),
+                "created": metadata.get('created', ''),
+                "modified": metadata.get('modified', ''),
+                "is_partitioned": metadata.get('is_partitioned', False),
+                "is_clustered": metadata.get('is_clustered', False),
+            }
+
+            # Calculate average null rate
+            columns = result.get('columns', [])
+            if columns:
+                null_rates = [col.get('null_percentage', 0) for col in columns if 'null_percentage' in col]
+                stats['avg_null_rate'] = sum(null_rates) / len(null_rates) if null_rates else 0
+            else:
+                stats['avg_null_rate'] = 0
+
+            table_stats.append(stats)
+
+            # Update partition info
+            if stats['is_partitioned']:
+                analysis['partition_info']['partitioned'] += 1
+            else:
+                analysis['partition_info']['non_partitioned'] += 1
+
+            if stats['is_clustered']:
+                analysis['partition_info']['clustered'] += 1
+
+        # Sort and get top tables
+        top_n = self.args.top
+
+        # Largest by size
+        analysis['largest_tables'] = sorted(
+            table_stats,
+            key=lambda x: x['size_gb'],
+            reverse=True
+        )[:top_n]
+
+        # Highest null rates
+        analysis['highest_null_rates'] = sorted(
+            table_stats,
+            key=lambda x: x['avg_null_rate'],
+            reverse=True
+        )[:top_n]
+
+        # Most columns
+        analysis['most_columns'] = sorted(
+            table_stats,
+            key=lambda x: x['num_columns'],
+            reverse=True
+        )[:top_n]
+
+        # Oldest tables
+        analysis['oldest_tables'] = sorted(
+            [s for s in table_stats if s['created']],
+            key=lambda x: x['created']
+        )[:top_n]
+
+        # Newest tables
+        analysis['newest_tables'] = sorted(
+            [s for s in table_stats if s['created']],
+            key=lambda x: x['created'],
+            reverse=True
+        )[:top_n]
+
+        return analysis
+
+    def format_output_text(self, results: List[Dict], analysis: Optional[Dict], errors: List[str]) -> str:
+        """Format output as text"""
+        output = []
+
+        output.append(f"{Colors.BOLD}Batch Profile Report{Colors.RESET}")
+        output.append("=" * 80)
+        output.append(f"Generated: {datetime.now().isoformat()}")
+        output.append(f"Tables profiled: {len(results)}")
+        output.append(f"Errors: {len(errors)}")
+        output.append(f"Execution time: {(self.end_time - self.start_time).total_seconds():.2f}s")
+        output.append("")
+
+        # Show errors if any
+        if errors:
+            output.append(f"{Colors.RED}Errors:{Colors.RESET}")
+            for error in errors:
+                output.append(f"  {error}")
+            output.append("")
+
+        # Comparative analysis
+        if analysis and self.args.compare:
+            output.append(f"{Colors.BOLD}Comparative Analysis{Colors.RESET}")
+            output.append("-" * 80)
+            output.append(f"Total rows across all tables: {analysis['total_rows']:,}")
+            output.append(f"Total size: {analysis['total_size_gb']:.2f} GB")
+            output.append("")
+
+            output.append(f"Partitioning:")
+            output.append(f"  Partitioned tables: {analysis['partition_info']['partitioned']}")
+            output.append(f"  Non-partitioned tables: {analysis['partition_info']['non_partitioned']}")
+            output.append(f"  Clustered tables: {analysis['partition_info']['clustered']}")
+            output.append("")
+
+            # Largest tables
+            output.append(f"{Colors.BOLD}Largest Tables:{Colors.RESET}")
+            for i, table in enumerate(analysis['largest_tables'], 1):
+                output.append(f"  {i}. {table['name']}: {table['size_gb']:.2f} GB ({table['num_rows']:,} rows)")
+            output.append("")
+
+            # Highest null rates
+            output.append(f"{Colors.BOLD}Highest Average Null Rates:{Colors.RESET}")
+            for i, table in enumerate(analysis['highest_null_rates'], 1):
+                output.append(f"  {i}. {table['name']}: {table['avg_null_rate']:.1f}%")
+            output.append("")
+
+            # Most columns
+            output.append(f"{Colors.BOLD}Most Columns:{Colors.RESET}")
+            for i, table in enumerate(analysis['most_columns'], 1):
+                output.append(f"  {i}. {table['name']}: {table['num_columns']} columns")
+            output.append("")
+
+        # Individual table summaries (if not quiet)
+        if not self.args.quiet:
+            output.append(f"{Colors.BOLD}Individual Table Profiles{Colors.RESET}")
+            output.append("-" * 80)
+            for result in results:
+                metadata = result.get('metadata', {})
+                output.append(f"\n{Colors.CYAN}{metadata.get('table_id', 'unknown')}{Colors.RESET}")
+                output.append(f"  Rows: {metadata.get('num_rows', 0):,}")
+                output.append(f"  Size: {metadata.get('size_gb', 0):.2f} GB")
+                output.append(f"  Columns: {len(result.get('columns', []))}")
+                if metadata.get('is_partitioned'):
+                    output.append(f"  Partitioned: Yes")
+                if metadata.get('is_clustered'):
+                    output.append(f"  Clustered: Yes")
+
+        return "\n".join(output)
+
+    def format_output_json(self, results: List[Dict], analysis: Optional[Dict], errors: List[str]) -> str:
+        """Format output as JSON"""
+        output = {
+            "metadata": {
+                "generated": datetime.now().isoformat(),
+                "tables_profiled": len(results),
+                "errors": len(errors),
+                "execution_time_seconds": (self.end_time - self.start_time).total_seconds()
+            },
+            "errors": errors,
+            "profiles": results
+        }
+
+        if analysis and self.args.compare:
+            output["comparative_analysis"] = analysis
+
+        return json.dumps(output, indent=2)
+
+    def format_output_markdown(self, results: List[Dict], analysis: Optional[Dict], errors: List[str]) -> str:
+        """Format output as Markdown"""
+        output = []
+
+        output.append("# Batch Profile Report\n")
+        output.append(f"**Generated:** {datetime.now().isoformat()}  ")
+        output.append(f"**Tables profiled:** {len(results)}  ")
+        output.append(f"**Errors:** {len(errors)}  ")
+        output.append(f"**Execution time:** {(self.end_time - self.start_time).total_seconds():.2f}s\n")
+
+        # Errors
+        if errors:
+            output.append("## Errors\n")
+            for error in errors:
+                output.append(f"- {error}")
+            output.append("")
+
+        # Comparative analysis
+        if analysis and self.args.compare:
+            output.append("## Comparative Analysis\n")
+            output.append(f"**Total rows:** {analysis['total_rows']:,}  ")
+            output.append(f"**Total size:** {analysis['total_size_gb']:.2f} GB\n")
+
+            output.append("### Partitioning\n")
+            output.append(f"- Partitioned tables: {analysis['partition_info']['partitioned']}")
+            output.append(f"- Non-partitioned tables: {analysis['partition_info']['non_partitioned']}")
+            output.append(f"- Clustered tables: {analysis['partition_info']['clustered']}\n")
+
+            # Largest tables
+            output.append("### Largest Tables\n")
+            output.append("| Rank | Table | Size (GB) | Rows |")
+            output.append("|------|-------|-----------|------|")
+            for i, table in enumerate(analysis['largest_tables'], 1):
+                output.append(f"| {i} | {table['name']} | {table['size_gb']:.2f} | {table['num_rows']:,} |")
+            output.append("")
+
+            # Highest null rates
+            output.append("### Highest Average Null Rates\n")
+            output.append("| Rank | Table | Avg Null Rate |")
+            output.append("|------|-------|---------------|")
+            for i, table in enumerate(analysis['highest_null_rates'], 1):
+                output.append(f"| {i} | {table['name']} | {table['avg_null_rate']:.1f}% |")
+            output.append("")
+
+            # Most columns
+            output.append("### Most Columns\n")
+            output.append("| Rank | Table | Columns |")
+            output.append("|------|-------|---------|")
+            for i, table in enumerate(analysis['most_columns'], 1):
+                output.append(f"| {i} | {table['name']} | {table['num_columns']} |")
+            output.append("")
+
+        # Individual summaries
+        if not self.args.quiet:
+            output.append("## Individual Table Profiles\n")
+            for result in results:
+                metadata = result.get('metadata', {})
+                output.append(f"### {metadata.get('table_id', 'unknown')}\n")
+                output.append(f"- **Rows:** {metadata.get('num_rows', 0):,}")
+                output.append(f"- **Size:** {metadata.get('size_gb', 0):.2f} GB")
+                output.append(f"- **Columns:** {len(result.get('columns', []))}")
+                if metadata.get('is_partitioned'):
+                    output.append(f"- **Partitioned:** Yes")
+                if metadata.get('is_clustered'):
+                    output.append(f"- **Clustered:** Yes")
+                output.append("")
+
+        return "\n".join(output)
+
+    def format_output_html(self, results: List[Dict], analysis: Optional[Dict], errors: List[str]) -> str:
+        """Format output as HTML"""
+        html = []
+
+        html.append("<!DOCTYPE html>")
+        html.append("<html><head>")
+        html.append("<title>Batch Profile Report</title>")
+        html.append("<style>")
+        html.append("body { font-family: Arial, sans-serif; margin: 20px; }")
+        html.append("h1, h2, h3 { color: #333; }")
+        html.append("table { border-collapse: collapse; width: 100%; margin: 20px 0; }")
+        html.append("th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }")
+        html.append("th { background-color: #4CAF50; color: white; }")
+        html.append("tr:nth-child(even) { background-color: #f2f2f2; }")
+        html.append(".error { color: red; }")
+        html.append(".metadata { color: #666; font-size: 0.9em; }")
+        html.append("</style>")
+        html.append("</head><body>")
+
+        html.append("<h1>Batch Profile Report</h1>")
+        html.append(f"<div class='metadata'>")
+        html.append(f"<strong>Generated:</strong> {datetime.now().isoformat()}<br>")
+        html.append(f"<strong>Tables profiled:</strong> {len(results)}<br>")
+        html.append(f"<strong>Errors:</strong> {len(errors)}<br>")
+        html.append(f"<strong>Execution time:</strong> {(self.end_time - self.start_time).total_seconds():.2f}s")
+        html.append("</div>")
+
+        # Errors
+        if errors:
+            html.append("<h2>Errors</h2>")
+            html.append("<ul class='error'>")
+            for error in errors:
+                html.append(f"<li>{error}</li>")
+            html.append("</ul>")
+
+        # Comparative analysis
+        if analysis and self.args.compare:
+            html.append("<h2>Comparative Analysis</h2>")
+            html.append(f"<p><strong>Total rows:</strong> {analysis['total_rows']:,}</p>")
+            html.append(f"<p><strong>Total size:</strong> {analysis['total_size_gb']:.2f} GB</p>")
+
+            html.append("<h3>Partitioning</h3>")
+            html.append("<ul>")
+            html.append(f"<li>Partitioned tables: {analysis['partition_info']['partitioned']}</li>")
+            html.append(f"<li>Non-partitioned tables: {analysis['partition_info']['non_partitioned']}</li>")
+            html.append(f"<li>Clustered tables: {analysis['partition_info']['clustered']}</li>")
+            html.append("</ul>")
+
+            # Largest tables
+            html.append("<h3>Largest Tables</h3>")
+            html.append("<table>")
+            html.append("<tr><th>Rank</th><th>Table</th><th>Size (GB)</th><th>Rows</th></tr>")
+            for i, table in enumerate(analysis['largest_tables'], 1):
+                html.append(f"<tr><td>{i}</td><td>{table['name']}</td><td>{table['size_gb']:.2f}</td><td>{table['num_rows']:,}</td></tr>")
+            html.append("</table>")
+
+            # Highest null rates
+            html.append("<h3>Highest Average Null Rates</h3>")
+            html.append("<table>")
+            html.append("<tr><th>Rank</th><th>Table</th><th>Avg Null Rate</th></tr>")
+            for i, table in enumerate(analysis['highest_null_rates'], 1):
+                html.append(f"<tr><td>{i}</td><td>{table['name']}</td><td>{table['avg_null_rate']:.1f}%</td></tr>")
+            html.append("</table>")
+
+            # Most columns
+            html.append("<h3>Most Columns</h3>")
+            html.append("<table>")
+            html.append("<tr><th>Rank</th><th>Table</th><th>Columns</th></tr>")
+            for i, table in enumerate(analysis['most_columns'], 1):
+                html.append(f"<tr><td>{i}</td><td>{table['name']}</td><td>{table['num_columns']}</td></tr>")
+            html.append("</table>")
+
+        # Individual profiles
+        if not self.args.quiet:
+            html.append("<h2>Individual Table Profiles</h2>")
+            for result in results:
+                metadata = result.get('metadata', {})
+                html.append(f"<h3>{metadata.get('table_id', 'unknown')}</h3>")
+                html.append("<ul>")
+                html.append(f"<li><strong>Rows:</strong> {metadata.get('num_rows', 0):,}</li>")
+                html.append(f"<li><strong>Size:</strong> {metadata.get('size_gb', 0):.2f} GB</li>")
+                html.append(f"<li><strong>Columns:</strong> {len(result.get('columns', []))}</li>")
+                if metadata.get('is_partitioned'):
+                    html.append(f"<li><strong>Partitioned:</strong> Yes</li>")
+                if metadata.get('is_clustered'):
+                    html.append(f"<li><strong>Clustered:</strong> Yes</li>")
+                html.append("</ul>")
+
+        html.append("</body></html>")
+        return "\n".join(html)
+
+    def run(self):
+        """Main execution method"""
+        self.start_time = datetime.now()
+
+        # Load tables
+        self.tables = self.load_tables()
+
+        if not self.tables:
+            print(f"{Colors.RED}Error: No tables to profile{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"{Colors.CYAN}Profiling {len(self.tables)} tables with {self.args.parallel} workers...{Colors.RESET}",
+              file=sys.stderr if self.args.output else sys.stdout)
+
+        # Profile tables
+        self.results, self.errors = self.profile_tables_parallel(self.tables)
+
+        self.end_time = datetime.now()
+
+        # Generate comparative analysis if requested
+        analysis = None
+        if self.args.compare:
+            self.log("Generating comparative analysis")
+            analysis = self.generate_comparative_analysis(self.results)
+
+        # Format output
+        if self.args.format == 'json':
+            output = self.format_output_json(self.results, analysis, self.errors)
+        elif self.args.format == 'markdown':
+            output = self.format_output_markdown(self.results, analysis, self.errors)
+        elif self.args.format == 'html':
+            output = self.format_output_html(self.results, analysis, self.errors)
+        else:
+            output = self.format_output_text(self.results, analysis, self.errors)
+
+        # Write output
+        if self.args.output:
+            with open(self.args.output, 'w') as f:
+                f.write(output)
+            print(f"{Colors.GREEN}Report written to: {self.args.output}{Colors.RESET}", file=sys.stderr)
+        else:
+            print(output)
+
+        # Close log file
+        if self.log_file:
+            self.log_file.close()
+
+        # Exit with error if there were failures and not continuing on error
+        if self.errors and not self.args.continue_on_error:
+            sys.exit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Profile multiple BigQuery tables with aggregated reporting",
+                                     add_help=False)
+    parser.add_argument('table_ids', nargs='*', help='Table IDs to profile')
+    parser.add_argument('--file', help='Read table list from file')
+    parser.add_argument('--stdin', action='store_true', help='Read table list from stdin')
+    parser.add_argument('--dataset', help='Profile all tables in dataset')
+    parser.add_argument('--pattern', help='Filter tables by name pattern (regex)')
+    parser.add_argument('--parallel', type=int, default=4, help='Number of parallel workers')
+    parser.add_argument('--format', choices=['text', 'json', 'markdown', 'html'], default='text',
+                       help='Output format')
+    parser.add_argument('--output', help='Write output to file')
+    parser.add_argument('--compare', action='store_true', help='Generate comparative analysis')
+    parser.add_argument('--top', type=int, default=10, help='Show top N tables in comparative analysis')
+    parser.add_argument('--detect-anomalies', action='store_true', help='Enable anomaly detection')
+    parser.add_argument('--sample-size', type=int, help='Sample size for each table')
+    parser.add_argument('--progress', action='store_true', help='Show progress bar')
+    parser.add_argument('--quiet', action='store_true', help='Suppress individual table output')
+    parser.add_argument('--continue-on-error', action='store_true', help='Continue on errors')
+    parser.add_argument('--log', help='Write detailed log file')
+    parser.add_argument('--help', '-h', action='store_true', help='Show help message')
+
+    args = parser.parse_args()
+
+    if args.help:
+        print(__doc__)
+        sys.exit(0)
+
+    profiler = BatchProfiler(args)
+    profiler.run()
+
+
+if __name__ == '__main__':
+    main()

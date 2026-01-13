@@ -108,6 +108,76 @@ SQLite database with:
 - Article-tag mapping
 - Links table
 
+## Troubleshooting Tools
+
+### troubleshooting_tree.py
+
+Interactive CLI decision tree for diagnosing and resolving common BigQuery issues.
+
+**Usage**:
+```bash
+# Interactive mode - guided troubleshooting
+python troubleshooting_tree.py
+
+# Jump to specific category
+python troubleshooting_tree.py --category sql
+python troubleshooting_tree.py --category performance
+python troubleshooting_tree.py --category cost
+python troubleshooting_tree.py --category quality
+python troubleshooting_tree.py --category tool
+
+# Search knowledge base
+python troubleshooting_tree.py --search "permission denied"
+```
+
+**Features**:
+- Interactive decision tree with questions
+- Diagnostic commands for each issue
+- Links to relevant documentation
+- Common solutions and examples
+- Integration with MCP tools
+
+**Categories**:
+1. **SQL Errors** - Syntax, permissions, not found, timeouts, resources
+2. **Performance** - Slow queries, high bytes scanned, queue times
+3. **Cost** - Unexpected charges, quota exceeded, forecasting
+4. **Data Quality** - NULLs, duplicates, schema issues, stale data
+5. **Tool Errors** - Dependencies, configuration, API errors
+
+**Documentation**: See [Troubleshooting Decision Tree](../docs/guides/troubleshooting-tree.md)
+
+**Examples**:
+
+```bash
+# Example 1: SQL Error
+$ python troubleshooting_tree.py --category sql
+
+What type of SQL error are you getting?
+  1. Syntax Error
+  2. Permission Denied
+  3. Table/Dataset Not Found
+  4. Query Timeout
+  5. Resources Exceeded
+
+Your choice: 2
+
+# Guides through permission troubleshooting...
+```
+
+```bash
+# Example 2: Performance Issue
+$ python troubleshooting_tree.py --category performance
+
+What performance issue are you experiencing?
+  1. Query execution is slow
+  2. High bytes scanned
+  3. Long queue time
+
+Your choice: 1
+
+# Shows optimization commands and suggestions...
+```
+
 ## License
 
 Part of the decentclaude data engineering toolkit.

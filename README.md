@@ -19,7 +19,7 @@ Searchable knowledge base for capturing tribal knowledge, issues, solutions, and
 - **CLI + Web Interface**: Command-line tools and web UI for browsing
 - **Link to Code/Docs**: Connect knowledge to relevant resources
 
-See [Knowledge Base Documentation](docs/knowledge-base.md) for detailed usage.
+See [Knowledge Base Documentation](docs/architecture/knowledge-base.md) for detailed usage.
 
 ### CLI Data Utilities
 
@@ -121,6 +121,22 @@ pip install anthropic
 pip install sqlfluff dbt-core dbt-bigquery sqlmesh
 ```
 
+### Optional: Install Command Aliases
+
+Speed up your workflow with short command aliases:
+
+```bash
+# Install aliases automatically (recommended)
+./bin/install-aliases.sh
+
+# Or add to your shell manually
+echo 'source /path/to/rig/bin/aliases.sh' >> ~/.bashrc  # or ~/.zshrc
+```
+
+This enables short aliases like `bqp` instead of `bq-profile`, `aig` instead of `ai-generate`, etc.
+
+**See [Command Aliases Guide](docs/guides/command-aliases.md) for full details.**
+
 ### 1a. Knowledge Base Quick Start
 
 ```bash
@@ -186,30 +202,56 @@ Run the [hook-name] hook
 
 ## Documentation
 
-### Getting Started
-- **[QUICKSTART.md](QUICKSTART.md)** - 5-minute setup and first workflows
-- **[Setup Wizard](bin/setup-wizard.sh)** - Interactive installation script
-- **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)** - Common issues and solutions
+**Complete documentation is now organized in the [docs/](docs/) directory.**
 
-### Tutorials and Guides
-- **[Common Workflows Tutorial](docs/WORKFLOWS_TUTORIAL.md)** - Step-by-step daily workflows
-- **[Video Walkthrough Script](docs/VIDEO_WALKTHROUGH.md)** - Script for creating video tutorials
-- **[Playbooks](playbooks.md)** - Comprehensive workflow patterns
-- **[Best Practices](data-engineering-patterns.md)** - Data engineering patterns and anti-patterns
+### Quick Links
+
+- **[Complete Documentation Index](docs/INDEX.md)** - Searchable index with all documentation
+- **[QUICKSTART Guide](docs/guides/QUICKSTART.md)** - Get up and running in 5 minutes
+- **[Setup Wizard](bin/setup-wizard.sh)** - Interactive installation script
+
+### Documentation Structure
+
+All documentation has been reorganized into three main sections:
+
+1. **[Reference Documentation](docs/reference/)** - API and tool references
+   - MCP Server guides (BigQuery, GitHub, Databases, Monitoring)
+   - Settings and configuration reference
+   - Code review guidelines and templates
+
+2. **[Guides and Tutorials](docs/guides/)** - Step-by-step instructions
+   - QUICKSTART and workflow tutorials
+   - Team workflows and session management
+   - Data engineering and testing patterns
+   - Playbooks and troubleshooting
+
+3. **[Architecture Documentation](docs/architecture/)** - Design docs and implementation
+   - Knowledge base architecture
+   - Observability system
+   - Debug system and worktrees
+   - Examples and validation
+
+### Finding Documentation
+
+Use the [Documentation Index](docs/INDEX.md) to find docs by:
+- Common tasks (review PRs, analyze data, handle incidents)
+- Technology (BigQuery, GitHub, PostgreSQL, dbt, SQLMesh)
+- Use case ("I want to...", "I need to...")
+- Experience level (beginner, intermediate, advanced)
 
 ### Code Review & Collaboration
 
-- **[Code Review Infrastructure](docs/CODE_REVIEW_README.md)** - Complete PR and review workflow
+- **[Code Review Infrastructure](docs/reference/CODE_REVIEW_README.md)** - Complete PR and review workflow
   - [PR Templates](.github/PULL_REQUEST_TEMPLATE/) - Templates for different change types
-  - [Review Guidelines](docs/code-review-guidelines.md) - Code review best practices
-  - [Comment Templates](docs/review-comment-templates.md) - Standard review feedback
-  - [Workflow Integration](docs/pr-workflow-integration.md) - GitHub/GitLab setup
+  - [Review Guidelines](docs/reference/code-review-guidelines.md) - Code review best practices
+  - [Comment Templates](docs/reference/review-comment-templates.md) - Standard review feedback
+  - [Workflow Integration](docs/reference/pr-workflow-integration.md) - GitHub/GitLab setup
 
 ### Technical Reference
-- [Hooks Documentation](docs/worktrees/HOOKS.md) - Detailed hook descriptions and usage
+- [Hooks Documentation](docs/architecture/worktrees/HOOKS.md) - Detailed hook descriptions and usage
 - [Data Quality Script](scripts/data_quality.py) - Extensible quality check framework
-- [Data Engineering Patterns](data-engineering-patterns.md) - Best practices guide
-- [Data Testing Patterns](data-testing-patterns.md) - Testing framework patterns
+- [Data Engineering Patterns](docs/guides/data-engineering-patterns.md) - Best practices guide
+- [Data Testing Patterns](docs/guides/data-testing-patterns.md) - Testing framework patterns
 
 ## Example Usage
 

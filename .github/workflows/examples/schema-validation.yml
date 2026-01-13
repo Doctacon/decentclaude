@@ -1,0 +1,421 @@
+# BigQuery Schema Validation Workflow
+#
+# Detects schema changes and breaking changes between environments
+# Runs: On PRs affecting model/schema files
+# Duration: ~2-3 minutes
+#
+# Required Secrets:
+#   - GOOGLE_APPLICATION_CREDENTIALS_JSON
+#   - GCP_PROJECT_ID
+#
+# Environment Variables (customize in workflow):
+#   - STAGING_DATASET
+#   - PRODUCTION_DATASET
+#
+# Usage:
+#   1. Copy to .github/workflows/schema-validation.yml
+#   2. Configure datasets and table mapping
+#   3. Adjust breaking change rules
+
+name: Schema Validation
+
+on:
+  pull_request:
+    paths:
+      - 'models/**'
+      - 'schemas/**'
+      - 'migrations/**'
+      - 'dbt_project.yml'
+
+env:
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  STAGING_DATASET: staging
+  PRODUCTION_DATASET: production
+
+jobs:
+  schema-diff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install google-cloud-bigquery pyyaml
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+
+      - name: Detect affected tables
+        id: detect-tables
+        run: |
+          cat > detect_tables.py << 'EOF'
+          import os
+          import re
+          import json
+          from pathlib import Path
+
+          def extract_table_name(filepath):
+              """Extract table name from file path"""
+              # Example: models/marts/customers.sql -> customers
+              # Adjust this logic based on your naming conventions
+              stem = Path(filepath).stem
+              return stem
+
+          def find_affected_tables():
+              """Find tables affected by this PR"""
+              import subprocess
+
+              result = subprocess.run(
+                  ['git', 'diff', '--name-only', f'origin/{os.environ.get("GITHUB_BASE_REF", "main")}...HEAD'],
+                  capture_output=True,
+                  text=True
+              )
+
+              changed_files = result.stdout.strip().split('\n')
+
+              # Filter for model/schema files
+              table_files = [
+                  f for f in changed_files
+                  if any(pattern in f for pattern in ['models/', 'schemas/', 'migrations/'])
+                  and (f.endswith('.sql') or f.endswith('.yml'))
+              ]
+
+              tables = []
+              for filepath in table_files:
+                  if filepath.endswith('.sql'):
+                      table_name = extract_table_name(filepath)
+                      tables.append({
+                          'file': filepath,
+                          'table': table_name,
+                          'type': 'model'
+                      })
+
+              return tables
+
+          if __name__ == '__main__':
+              tables = find_affected_tables()
+              print(f"Found {len(tables)} affected tables:")
+              for t in tables:
+                  print(f"  - {t['table']} ({t['file']})")
+
+              with open('affected_tables.json', 'w') as f:
+                  json.dump(tables, f, indent=2)
+          EOF
+
+          python3 detect_tables.py
+
+          # Read results
+          if [ -f affected_tables.json ]; then
+            TABLE_COUNT=$(cat affected_tables.json | jq '. | length')
+            echo "count=$TABLE_COUNT" >> $GITHUB_OUTPUT
+
+            if [ "$TABLE_COUNT" -gt 0 ]; then
+              FIRST_TABLE=$(cat affected_tables.json | jq -r '.[0].table')
+              echo "first_table=$FIRST_TABLE" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "count=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Compare schemas
+        if: steps.detect-tables.outputs.count > 0
+        id: schema-diff
+        run: |
+          cat > schema_diff.py << 'EOF'
+          import json
+          import os
+          from google.cloud import bigquery
+          from typing import Dict, List
+
+          def get_table_schema(project_id: str, dataset: str, table: str) -> List[Dict]:
+              """Get schema for a BigQuery table"""
+              try:
+                  client = bigquery.Client(project=project_id)
+                  table_ref = f"{project_id}.{dataset}.{table}"
+                  table_obj = client.get_table(table_ref)
+
+                  return [
+                      {
+                          'name': field.name,
+                          'type': field.field_type,
+                          'mode': field.mode,
+                          'description': field.description or ''
+                      }
+                      for field in table_obj.schema
+                  ]
+              except Exception as e:
+                  print(f"Warning: Could not fetch schema for {project_id}.{dataset}.{table}: {str(e)}")
+                  return []
+
+          def compare_schemas(old_schema: List[Dict], new_schema: List[Dict]) -> Dict:
+              """Compare two schemas and identify changes"""
+              old_fields = {f['name']: f for f in old_schema}
+              new_fields = {f['name']: f for f in new_schema}
+
+              added = [f for f in new_schema if f['name'] not in old_fields]
+              removed = [f for f in old_schema if f['name'] not in new_fields]
+
+              modified = []
+              for name in set(old_fields.keys()) & set(new_fields.keys()):
+                  old_field = old_fields[name]
+                  new_field = new_fields[name]
+
+                  if old_field != new_field:
+                      changes = {}
+                      if old_field['type'] != new_field['type']:
+                          changes['type'] = {'old': old_field['type'], 'new': new_field['type']}
+                      if old_field['mode'] != new_field['mode']:
+                          changes['mode'] = {'old': old_field['mode'], 'new': new_field['mode']}
+
+                      if changes:
+                          modified.append({
+                              'name': name,
+                              'changes': changes
+                          })
+
+              # Determine if changes are breaking
+              is_breaking = len(removed) > 0 or any(
+                  'type' in m['changes'] or
+                  (m['changes'].get('mode', {}).get('new') == 'REQUIRED')
+                  for m in modified
+              )
+
+              return {
+                  'added': added,
+                  'removed': removed,
+                  'modified': modified,
+                  'is_breaking': is_breaking
+              }
+
+          def main():
+              project_id = os.environ['GCP_PROJECT_ID']
+              staging_dataset = os.environ['STAGING_DATASET']
+              prod_dataset = os.environ['PRODUCTION_DATASET']
+
+              with open('affected_tables.json', 'r') as f:
+                  tables = json.load(f)
+
+              all_diffs = {}
+
+              for table_info in tables:
+                  table_name = table_info['table']
+                  print(f"\nComparing schemas for: {table_name}")
+                  print("-" * 60)
+
+                  # Compare production vs staging
+                  prod_schema = get_table_schema(project_id, prod_dataset, table_name)
+                  staging_schema = get_table_schema(project_id, staging_dataset, table_name)
+
+                  if not prod_schema and not staging_schema:
+                      print(f"  ⚠️  Table not found in either environment")
+                      continue
+
+                  if not prod_schema:
+                      print(f"  ✨ New table (only in staging)")
+                      all_diffs[table_name] = {
+                          'status': 'new',
+                          'diff': None
+                      }
+                      continue
+
+                  if not staging_schema:
+                      print(f"  ⚠️  Table exists in prod but not staging")
+                      continue
+
+                  diff = compare_schemas(prod_schema, staging_schema)
+                  all_diffs[table_name] = {
+                      'status': 'modified',
+                      'diff': diff
+                  }
+
+                  print(f"  Added fields: {len(diff['added'])}")
+                  print(f"  Removed fields: {len(diff['removed'])}")
+                  print(f"  Modified fields: {len(diff['modified'])}")
+                  print(f"  Breaking changes: {'Yes' if diff['is_breaking'] else 'No'}")
+
+              # Save results
+              with open('schema_diff.json', 'w') as f:
+                  json.dump(all_diffs, f, indent=2)
+
+              # Check for any breaking changes
+              has_breaking = any(
+                  d.get('diff', {}).get('is_breaking', False)
+                  for d in all_diffs.values()
+              )
+
+              if has_breaking:
+                  print("\n❌ Breaking schema changes detected!")
+                  return 1
+              else:
+                  print("\n✅ No breaking changes detected")
+                  return 0
+
+          if __name__ == '__main__':
+              import sys
+              sys.exit(main())
+          EOF
+
+          python3 schema_diff.py || echo "Schema comparison completed with warnings"
+
+      - name: Upload schema diff report
+        if: always() && steps.detect-tables.outputs.count > 0
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema-diff-report
+          path: |
+            schema_diff.json
+            affected_tables.json
+          retention-days: 30
+
+      - name: Check for breaking changes
+        if: steps.detect-tables.outputs.count > 0
+        id: breaking-check
+        run: |
+          if [ -f schema_diff.json ]; then
+            # Check if any table has breaking changes
+            HAS_BREAKING=$(cat schema_diff.json | jq -r '
+              to_entries |
+              map(select(.value.diff.is_breaking == true)) |
+              length > 0
+            ')
+
+            echo "has_breaking=$HAS_BREAKING" >> $GITHUB_OUTPUT
+
+            if [ "$HAS_BREAKING" == "true" ]; then
+              echo "⚠️  Breaking changes detected!"
+              cat schema_diff.json | jq -r '
+                to_entries |
+                map(select(.value.diff.is_breaking == true)) |
+                .[] |
+                "Table: \(.key)\n  Removed: \(.value.diff.removed | length)\n  Modified: \(.value.diff.modified | length)"
+              '
+            fi
+          else
+            echo "has_breaking=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Comment schema diff on PR
+        if: always() && steps.detect-tables.outputs.count > 0 && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            if (!fs.existsSync('schema_diff.json')) {
+              console.log('No schema diff found');
+              return;
+            }
+
+            const schemaDiff = JSON.parse(fs.readFileSync('schema_diff.json', 'utf8'));
+            const hasBreaking = '${{ steps.breaking-check.outputs.has_breaking }}' === 'true';
+
+            let comment = `## Schema Validation Report\n\n`;
+
+            const status = hasBreaking ? '⚠️ Breaking Changes Detected' : '✅ No Breaking Changes';
+            comment += `**Status**: ${status}\n\n`;
+
+            for (const [tableName, tableData] of Object.entries(schemaDiff)) {
+              comment += `### Table: \`${tableName}\`\n\n`;
+
+              if (tableData.status === 'new') {
+                comment += `✨ **New table** (only exists in staging)\n\n`;
+                continue;
+              }
+
+              const diff = tableData.diff;
+
+              if (diff.added.length > 0) {
+                comment += `#### ✅ Added Fields (${diff.added.length})\n\n`;
+                comment += `| Field | Type | Mode |\n`;
+                comment += `|-------|------|------|\n`;
+                diff.added.forEach(f => {
+                  comment += `| \`${f.name}\` | ${f.type} | ${f.mode} |\n`;
+                });
+                comment += `\n`;
+              }
+
+              if (diff.removed.length > 0) {
+                comment += `#### ❌ Removed Fields (${diff.removed.length}) - **BREAKING**\n\n`;
+                comment += `| Field | Type | Mode |\n`;
+                comment += `|-------|------|------|\n`;
+                diff.removed.forEach(f => {
+                  comment += `| \`${f.name}\` | ${f.type} | ${f.mode} |\n`;
+                });
+                comment += `\n`;
+              }
+
+              if (diff.modified.length > 0) {
+                comment += `#### ⚠️ Modified Fields (${diff.modified.length})\n\n`;
+                comment += `| Field | Change | Old → New |\n`;
+                comment += `|-------|--------|----------|\n`;
+                diff.modified.forEach(m => {
+                  for (const [changeType, values] of Object.entries(m.changes)) {
+                    const isBreaking = changeType === 'type' || values.new === 'REQUIRED';
+                    const breakingLabel = isBreaking ? ' **BREAKING**' : '';
+                    comment += `| \`${m.name}\` | ${changeType}${breakingLabel} | ${values.old} → ${values.new} |\n`;
+                  }
+                });
+                comment += `\n`;
+              }
+
+              if (diff.added.length === 0 && diff.removed.length === 0 && diff.modified.length === 0) {
+                comment += `✅ No schema changes\n\n`;
+              }
+            }
+
+            if (hasBreaking) {
+              comment += `---\n\n`;
+              comment += `### ⚠️ Breaking Changes Detected\n\n`;
+              comment += `This PR contains schema changes that may break existing queries or applications:\n\n`;
+              comment += `- **Removed fields**: Queries selecting these fields will fail\n`;
+              comment += `- **Type changes**: May cause type errors in downstream applications\n`;
+              comment += `- **Mode changes** (NULLABLE → REQUIRED): May cause validation errors\n\n`;
+              comment += `**Recommended actions**:\n`;
+              comment += `1. Review all downstream queries and applications\n`;
+              comment += `2. Plan a migration strategy (e.g., add new field, deprecate old field)\n`;
+              comment += `3. Communicate changes to affected teams\n`;
+              comment += `4. Consider adding compatibility views\n\n`;
+            }
+
+            comment += `---\n`;
+            comment += `*Comparing \`${process.env.PRODUCTION_DATASET}\` (production) vs \`${process.env.STAGING_DATASET}\` (staging)*\n`;
+
+            try {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            } catch (error) {
+              console.log('Could not create comment:', error);
+            }
+
+      - name: Fail on breaking changes
+        if: steps.breaking-check.outputs.has_breaking == 'true'
+        run: |
+          echo "❌ Breaking schema changes detected!"
+          echo "Review the schema diff report and update queries/applications accordingly."
+          echo "To proceed anyway, add 'skip-schema-check' label to the PR."
+
+          # Check for skip label
+          if [ "${{ contains(github.event.pull_request.labels.*.name, 'skip-schema-check') }}" == "true" ]; then
+            echo "⚠️  'skip-schema-check' label found - allowing breaking changes"
+            exit 0
+          fi
+
+          exit 1

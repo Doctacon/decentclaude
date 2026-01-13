@@ -11,19 +11,32 @@ Arguments:
 Options:
   --top=<n>          Show top N partitions by size (default: 10)
   --format=<format>  Output format: text, json (default: text)
+  --no-cache         Disable metadata caching and force fresh API calls
   --help, -h         Show this help message
 
 Examples:
   bq-partition-info project.dataset.events
   bq-partition-info project.dataset.events --top=20
   bq-partition-info project.dataset.events --format=json
+  bq-partition-info project.dataset.events --no-cache
 """
 
 import sys
 import json
 import argparse
 from datetime import datetime
+from pathlib import Path
+from typing import Optional
 from google.cloud import bigquery
+
+# Add lib directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "lib"))
+
+try:
+    from bq_cache import BQMetadataCache
+    CACHE_AVAILABLE = True
+except ImportError:
+    CACHE_AVAILABLE = False
 
 
 class Colors:
@@ -46,7 +59,7 @@ def format_bytes(bytes_value: int) -> str:
     return f"{bytes_value:.2f} EB"
 
 
-def get_partition_info(client: bigquery.Client, table_id: str, top_n: int = 10) -> dict:
+def get_partition_info(client: bigquery.Client, table_id: str, top_n: int = 10, cache: Optional[BQMetadataCache] = None) -> dict:
     """
     Get detailed partitioning information for a BigQuery table.
 
@@ -54,50 +67,70 @@ def get_partition_info(client: bigquery.Client, table_id: str, top_n: int = 10) 
         client: BigQuery client
         table_id: Full table ID (project.dataset.table)
         top_n: Number of top partitions to show
+        cache: Optional BQMetadataCache instance
 
     Returns:
         Dictionary with partition information
     """
     try:
-        # Get table metadata
-        table = client.get_table(table_id)
-
         # Parse table ID
         parts = table_id.split('.')
         if len(parts) != 3:
             raise ValueError("Table ID must be in format: project.dataset.table")
         project, dataset, table_name = parts
 
-        # Check if table is partitioned
-        is_partitioned = table.time_partitioning is not None or table.range_partitioning is not None
+        if cache:
+            # Get partition info from cache
+            partition_info = cache.get_cached_partition_info(client, table_id)
+            metadata = cache.get_cached_table_metadata(client, table_id)
 
-        result = {
-            "table_id": table_id,
-            "is_partitioned": is_partitioned,
-            "partitioning_type": None,
-            "partition_field": None,
-            "partition_expiration_days": None,
-            "require_partition_filter": None,
-            "clustering_fields": table.clustering_fields,
-            "total_rows": table.num_rows,
-            "total_bytes": table.num_bytes,
-            "partitions": []
-        }
+            result = {
+                "table_id": table_id,
+                "is_partitioned": partition_info["is_partitioned"],
+                "partitioning_type": partition_info["partitioning_type"],
+                "partition_field": partition_info["partition_field"],
+                "partition_expiration_days": partition_info["partition_expiration_days"],
+                "require_partition_filter": partition_info["require_partition_filter"],
+                "clustering_fields": partition_info["clustering_fields"],
+                "total_rows": metadata["num_rows"],
+                "total_bytes": metadata["num_bytes"],
+                "partitions": []
+            }
+        else:
+            # Get table metadata directly
+            table = client.get_table(table_id)
 
-        if not is_partitioned:
+            # Check if table is partitioned
+            is_partitioned = table.time_partitioning is not None or table.range_partitioning is not None
+
+            result = {
+                "table_id": table_id,
+                "is_partitioned": is_partitioned,
+                "partitioning_type": None,
+                "partition_field": None,
+                "partition_expiration_days": None,
+                "require_partition_filter": None,
+                "clustering_fields": table.clustering_fields,
+                "total_rows": table.num_rows,
+                "total_bytes": table.num_bytes,
+                "partitions": []
+            }
+
+            if is_partitioned:
+                # Get partitioning details
+                if table.time_partitioning:
+                    result["partitioning_type"] = f"TIME ({table.time_partitioning.type_})"
+                    result["partition_field"] = table.time_partitioning.field or "_PARTITIONTIME"
+                    result["partition_expiration_days"] = table.time_partitioning.expiration_ms / (1000 * 60 * 60 * 24) if table.time_partitioning.expiration_ms else None
+                    result["require_partition_filter"] = table.time_partitioning.require_partition_filter
+
+                elif table.range_partitioning:
+                    result["partitioning_type"] = "RANGE"
+                    result["partition_field"] = table.range_partitioning.field
+                    result["require_partition_filter"] = table.require_partition_filter
+
+        if not result["is_partitioned"]:
             return result
-
-        # Get partitioning details
-        if table.time_partitioning:
-            result["partitioning_type"] = f"TIME ({table.time_partitioning.type_})"
-            result["partition_field"] = table.time_partitioning.field or "_PARTITIONTIME"
-            result["partition_expiration_days"] = table.time_partitioning.expiration_ms / (1000 * 60 * 60 * 24) if table.time_partitioning.expiration_ms else None
-            result["require_partition_filter"] = table.time_partitioning.require_partition_filter
-
-        elif table.range_partitioning:
-            result["partitioning_type"] = "RANGE"
-            result["partition_field"] = table.range_partitioning.field
-            result["require_partition_filter"] = table.require_partition_filter
 
         # Query partition metadata from INFORMATION_SCHEMA
         query = f"""
@@ -217,14 +250,21 @@ def main():
                        help="Show top N partitions by size (default: 10)")
     parser.add_argument("--format", choices=["text", "json"], default="text",
                        help="Output format (default: text)")
+    parser.add_argument("--no-cache", action="store_true",
+                       help="Disable metadata caching and force fresh API calls")
 
     args = parser.parse_args()
 
     # Initialize BigQuery client
     client = bigquery.Client()
 
+    # Initialize cache if enabled and available
+    cache = None
+    if not args.no_cache and CACHE_AVAILABLE:
+        cache = BQMetadataCache()
+
     # Get partition information
-    result = get_partition_info(client, args.table_id, args.top)
+    result = get_partition_info(client, args.table_id, args.top, cache)
 
     # Print report
     if args.format == "json":

@@ -224,3 +224,4 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "bq: BigQuery related tests")
     config.addinivalue_line("markers", "hooks: Git hooks tests")
     config.addinivalue_line("markers", "worktree: Worktree utilities tests")
+    config.addinivalue_line("markers", "skills: Skills integration tests")

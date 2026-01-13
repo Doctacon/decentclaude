@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# Bash completion for BigQuery and data utilities
+# Source this file or install to /etc/bash_completion.d/ or ~/.bash_completion.d/
+
+# Cache file for BigQuery tables
+_BQ_CACHE_FILE="${HOME}/.cache/bq-completion-cache"
+_BQ_CACHE_TTL=3600  # Cache TTL in seconds (1 hour)
+
+# List of all utilities and their options
+declare -A _UTIL_OPTIONS=(
+    [bq-profile]="--format= --sample-size= --detect-anomalies --no-cache --parallel= --progress --help -h"
+    [bq-explain]="--file= --job-id= --format= --dry-run --help -h"
+    [bq-explore]="--project= --help -h"
+    [bq-lineage]="--format= --depth= --direction= --include-views --help -h"
+    [bq-query-cost]="--format= --file= --dry-run --help -h"
+    [bq-benchmark]="--format= --iterations= --parallel= --output= --help -h"
+    [bq-cost-report]="--format= --start-date= --end-date= --project= --help -h"
+    [bq-table-compare]="--format= --check-schema --check-data --sample-size= --help -h"
+    [bq-optimize]="--format= --analyze-only --apply-recommendations --help -h"
+    [bq-partition-info]="--format= --check-usage --help -h"
+    [bq-schema-diff]="--format= --show-only= --help -h"
+    [ai-docs]="--format= --model= --output= --help -h"
+    [ai-generate]="--format= --model= --temperature= --help -h"
+    [ai-query]="--format= --model= --context= --help -h"
+    [ai-review]="--format= --model= --severity= --help -h"
+    [dbt-deps]="--help -h"
+    [dbt-docs-serve]="--port= --no-browser --help -h"
+    [dbt-model-search]="--tag= --path= --help -h"
+    [dbt-test-gen]="--model= --output= --help -h"
+    [sqlmesh-diff]="--help -h"
+    [sqlmesh-migrate]="--help -h"
+    [sqlmesh-validate]="--help -h"
+    [sqlmesh-visualize]="--port= --no-browser --help -h"
+)
+
+declare -A _UTIL_FORMAT_OPTIONS=(
+    [bq-profile]="text json markdown html"
+    [bq-explain]="text json"
+    [bq-lineage]="text json graphviz"
+    [bq-benchmark]="text json"
+    [bq-cost-report]="text json csv"
+    [bq-table-compare]="text json"
+    [bq-optimize]="text json"
+    [bq-partition-info]="text json"
+    [bq-schema-diff]="text json"
+    [ai-docs]="markdown html text"
+    [ai-generate]="text json"
+    [ai-query]="text json"
+    [ai-review]="text json"
+)
+
+# Get BigQuery table IDs from cache or environment
+_get_bq_tables() {
+    local tables=()
+
+    # Check if cache exists and is fresh
+    if [[ -f "$_BQ_CACHE_FILE" ]]; then
+        local cache_age=$(($(date +%s) - $(stat -f %m "$_BQ_CACHE_FILE" 2>/dev/null || stat -c %Y "$_BQ_CACHE_FILE" 2>/dev/null || echo 0)))
+        if [[ $cache_age -lt $_BQ_CACHE_TTL ]]; then
+            mapfile -t tables < "$_BQ_CACHE_FILE"
+            printf "%s\n" "${tables[@]}"
+            return
+        fi
+    fi
+
+    # Try to get tables from bq command
+    if command -v bq &> /dev/null; then
+        # Get project from environment or gcloud config
+        local project="${GOOGLE_CLOUD_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+        if [[ -n "$project" ]]; then
+            # List datasets and tables (this may take time, so we cache it)
+            (
+                bq ls --project_id="$project" --format=json 2>/dev/null | \
+                    jq -r '.[].id' 2>/dev/null | \
+                    while read -r dataset; do
+                        bq ls --project_id="$project" --dataset_id="${dataset}" --format=json 2>/dev/null | \
+                            jq -r --arg proj "$project" --arg ds "$dataset" '.[] | "\($proj).\($ds).\(.id)"' 2>/dev/null
+                    done
+            ) > "$_BQ_CACHE_FILE" 2>/dev/null &
+        fi
+    fi
+}
+
+# Complete table IDs for BigQuery utilities
+_complete_bq_table_id() {
+    local cur="${1}"
+    local tables
+
+    # Try to get cached tables
+    if [[ -f "$_BQ_CACHE_FILE" ]]; then
+        mapfile -t tables < "$_BQ_CACHE_FILE"
+        COMPREPLY=($(compgen -W "${tables[*]}" -- "$cur"))
+    else
+        # Fall back to simple completion if no cache
+        COMPREPLY=($(compgen -W "" -- "$cur"))
+    fi
+}
+
+# Complete format options
+_complete_format() {
+    local util="$1"
+    local cur="$2"
+    local formats="${_UTIL_FORMAT_OPTIONS[$util]}"
+
+    if [[ -n "$formats" ]]; then
+        COMPREPLY=($(compgen -W "$formats" -- "$cur"))
+    fi
+}
+
+# Main completion function for bq-* utilities
+_bq_complete() {
+    local cur prev words cword
+    _init_completion || return
+
+    local util="${words[0]##*/}"
+    local options="${_UTIL_OPTIONS[$util]}"
+
+    # Handle --option=value completion
+    if [[ "$cur" == --*=* ]]; then
+        local option="${cur%%=*}"
+        local value="${cur#*=}"
+
+        case "$option" in
+            --format)
+                _complete_format "$util" "$value"
+                return
+                ;;
+            --file|--output)
+                # File completion
+                COMPREPLY=($(compgen -f -- "$value"))
+                return
+                ;;
+            --project)
+                # Try to get GCP projects
+                if command -v gcloud &> /dev/null; then
+                    local projects=($(gcloud projects list --format="value(projectId)" 2>/dev/null))
+                    COMPREPLY=($(compgen -W "${projects[*]}" -- "$value"))
+                fi
+                return
+                ;;
+            --model)
+                # AI model completion
+                COMPREPLY=($(compgen -W "gpt-4 gpt-3.5-turbo claude-3-opus claude-3-sonnet" -- "$value"))
+                return
+                ;;
+            --direction)
+                COMPREPLY=($(compgen -W "upstream downstream both" -- "$value"))
+                return
+                ;;
+            --show-only)
+                COMPREPLY=($(compgen -W "added removed changed" -- "$value"))
+                return
+                ;;
+            --severity)
+                COMPREPLY=($(compgen -W "error warning info" -- "$value"))
+                return
+                ;;
+        esac
+    fi
+
+    # Handle option completion
+    if [[ "$cur" == -* ]]; then
+        COMPREPLY=($(compgen -W "$options" -- "$cur"))
+        return
+    fi
+
+    # Handle table ID completion for bq-* commands
+    if [[ "$util" == bq-* ]]; then
+        case "$util" in
+            bq-profile|bq-lineage|bq-partition-info|bq-optimize)
+                # These commands take table IDs
+                _complete_bq_table_id "$cur"
+                return
+                ;;
+            bq-table-compare|bq-schema-diff)
+                # These take two table IDs
+                local table_count=0
+                for word in "${words[@]:1}"; do
+                    if [[ "$word" != -* ]]; then
+                        ((table_count++))
+                    fi
+                done
+
+                if [[ $table_count -lt 2 ]]; then
+                    _complete_bq_table_id "$cur"
+                fi
+                return
+                ;;
+        esac
+    fi
+
+    # Default file completion
+    _filedir
+}
+
+# Register completion for all utilities
+for util in "${!_UTIL_OPTIONS[@]}"; do
+    complete -F _bq_complete "$util"
+done
+
+# Alias completions (if users have aliases)
+complete -F _bq_complete bq-prof
+complete -F _bq_complete bq-exp
+complete -F _bq_complete bq-lin

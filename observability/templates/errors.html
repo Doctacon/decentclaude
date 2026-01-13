@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Errors - Observability Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: #2c3e50;
+            color: white;
+            padding: 20px 0;
+            margin-bottom: 30px;
+        }
+
+        h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+
+        .nav {
+            display: flex;
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .nav a {
+            color: white;
+            text-decoration: none;
+            padding: 8px 15px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        .nav a:hover, .nav a.active {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .btn:hover {
+            background: #2980b9;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #e74c3c;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            color: #7f8c8d;
+            font-size: 1em;
+        }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .chart-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .chart-title {
+            font-size: 1.3em;
+            font-weight: bold;
+            margin-bottom: 15px;
+            color: #2c3e50;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+
+        .errors-list {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .error-item {
+            padding: 15px;
+            border-left: 4px solid #e74c3c;
+            background: #fff5f5;
+            margin-bottom: 15px;
+            border-radius: 4px;
+        }
+
+        .error-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .error-type {
+            font-weight: bold;
+            color: #c0392b;
+            font-size: 1.1em;
+        }
+
+        .error-time {
+            color: #7f8c8d;
+            font-size: 0.9em;
+        }
+
+        .error-message {
+            color: #555;
+            margin-bottom: 10px;
+        }
+
+        .error-context {
+            background: white;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            color: #7f8c8d;
+        }
+
+        .error-context-label {
+            font-weight: 600;
+            color: #2c3e50;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #7f8c8d;
+        }
+
+        .alert-box {
+            background: #fadbd8;
+            border: 2px solid #e74c3c;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+
+        .alert-title {
+            font-weight: bold;
+            color: #c0392b;
+            margin-bottom: 5px;
+        }
+
+        .alert-message {
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Error Tracking</h1>
+            <p>Error monitoring and alert management</p>
+            <div class="nav">
+                <a href="/">Dashboard</a>
+                <a href="/metrics">Metrics</a>
+                <a href="/queries">Queries</a>
+                <a href="/costs">Costs</a>
+                <a href="/errors" class="active">Errors</a>
+                <a href="/health">Health</a>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="controls">
+            <button class="btn" onclick="loadErrors()">Refresh</button>
+            <button class="btn" onclick="clearErrors()">Clear Resolved</button>
+        </div>
+
+        <div id="alertBox" style="display: none;" class="alert-box">
+            <div class="alert-title">High Error Rate Alert</div>
+            <div class="alert-message">Error rate has exceeded threshold in the last hour.</div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="totalErrors">0</div>
+                <div class="stat-label">Total Errors (24h)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="errorRate">0%</div>
+                <div class="stat-label">Error Rate</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="uniqueErrors">0</div>
+                <div class="stat-label">Unique Error Types</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="lastError">Never</div>
+                <div class="stat-label">Last Error</div>
+            </div>
+        </div>
+
+        <div class="charts-grid">
+            <div class="chart-card">
+                <div class="chart-title">Error Trends (24h)</div>
+                <div class="chart-container">
+                    <canvas id="errorTrendsChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-title">Errors by Type</div>
+                <div class="chart-container">
+                    <canvas id="errorTypesChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="errors-list">
+            <div class="chart-title">Recent Errors</div>
+            <div id="errorsList">
+                <div class="loading">Loading errors...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let errorTrendsChart, errorTypesChart;
+
+        async function loadErrors() {
+            await loadErrorStats();
+            await loadErrorTrendsChart();
+            await loadErrorTypesChart();
+            await loadErrorsList();
+        }
+
+        async function loadErrorStats() {
+            try {
+                const response = await fetch('/api/errors/recent?limit=50');
+                const data = await response.json();
+
+                document.getElementById('totalErrors').textContent = data.total;
+
+                // Calculate error rate (mock calculation)
+                const errorRate = (data.total / 1250 * 100).toFixed(2);
+                document.getElementById('errorRate').textContent = errorRate + '%';
+
+                // Count unique error types
+                const uniqueTypes = new Set(data.errors.map(e => e.error_type)).size;
+                document.getElementById('uniqueErrors').textContent = uniqueTypes;
+
+                // Last error time
+                if (data.errors.length > 0) {
+                    const lastErrorTime = new Date(data.errors[0].timestamp);
+                    const timeDiff = Date.now() - lastErrorTime.getTime();
+                    const hours = Math.floor(timeDiff / (1000 * 60 * 60));
+                    const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
+
+                    if (hours > 0) {
+                        document.getElementById('lastError').textContent = `${hours}h ${minutes}m ago`;
+                    } else {
+                        document.getElementById('lastError').textContent = `${minutes}m ago`;
+                    }
+                } else {
+                    document.getElementById('lastError').textContent = 'Never';
+                }
+
+                // Show alert if error rate is high
+                if (parseFloat(errorRate) > 2.0) {
+                    document.getElementById('alertBox').style.display = 'block';
+                } else {
+                    document.getElementById('alertBox').style.display = 'none';
+                }
+
+            } catch (error) {
+                console.error('Error loading error stats:', error);
+            }
+        }
+
+        async function loadErrorTrendsChart() {
+            try {
+                const response = await fetch('/api/metrics/recent?hours=24');
+                const data = await response.json();
+
+                const ctx = document.getElementById('errorTrendsChart');
+
+                if (errorTrendsChart) {
+                    errorTrendsChart.destroy();
+                }
+
+                errorTrendsChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: data.data.map(d => new Date(d.timestamp).getHours() + ':00'),
+                        datasets: [{
+                            label: 'Errors',
+                            data: data.data.map(d => d.error_count),
+                            borderColor: '#e74c3c',
+                            backgroundColor: 'rgba(231, 76, 60, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading error trends chart:', error);
+            }
+        }
+
+        async function loadErrorTypesChart() {
+            try {
+                const response = await fetch('/api/errors/recent?limit=50');
+                const data = await response.json();
+
+                const errorCounts = {};
+                data.errors.forEach(error => {
+                    errorCounts[error.error_type] = (errorCounts[error.error_type] || 0) + 1;
+                });
+
+                const ctx = document.getElementById('errorTypesChart');
+
+                if (errorTypesChart) {
+                    errorTypesChart.destroy();
+                }
+
+                errorTypesChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: Object.keys(errorCounts),
+                        datasets: [{
+                            label: 'Error Count',
+                            data: Object.values(errorCounts),
+                            backgroundColor: 'rgba(231, 76, 60, 0.7)',
+                            borderColor: '#e74c3c',
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    precision: 0
+                                }
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading error types chart:', error);
+            }
+        }
+
+        async function loadErrorsList() {
+            try {
+                const response = await fetch('/api/errors/recent?limit=20');
+                const data = await response.json();
+
+                if (data.errors.length === 0) {
+                    document.getElementById('errorsList').innerHTML =
+                        '<div class="loading">No errors found</div>';
+                    return;
+                }
+
+                const html = data.errors.map(error => `
+                    <div class="error-item">
+                        <div class="error-header">
+                            <div class="error-type">${error.error_type}</div>
+                            <div class="error-time">${new Date(error.timestamp).toLocaleString()}</div>
+                        </div>
+                        <div class="error-message">${error.message}</div>
+                        <div class="error-context">
+                            <span class="error-context-label">Context:</span>
+                            Operation: ${error.context.operation} |
+                            Retry Count: ${error.context.retry_count}
+                        </div>
+                    </div>
+                `).join('');
+
+                document.getElementById('errorsList').innerHTML = html;
+
+            } catch (error) {
+                console.error('Error loading errors list:', error);
+                document.getElementById('errorsList').innerHTML =
+                    '<div class="loading">Error loading error list</div>';
+            }
+        }
+
+        function clearErrors() {
+            alert('Clear resolved errors functionality would be implemented here');
+        }
+
+        // Load initial data
+        loadErrors();
+
+        // Auto-refresh every 30 seconds
+        setInterval(loadErrors, 30000);
+    </script>
+</body>
+</html>

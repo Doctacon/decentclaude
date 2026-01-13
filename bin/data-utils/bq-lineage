@@ -25,7 +25,23 @@ import sys
 import json
 import argparse
 from typing import List, Set
+from pathlib import Path
 from google.cloud import bigquery
+
+# Add lib directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "lib"))
+
+try:
+    from common_errors import (
+        validate_table_id,
+        handle_api_error,
+        error_context,
+        log_error,
+        DataError,
+    )
+    ERROR_HANDLING_AVAILABLE = True
+except ImportError:
+    ERROR_HANDLING_AVAILABLE = False
 
 
 class Colors:
@@ -184,8 +200,19 @@ def get_lineage(client: bigquery.Client, table_id: str, direction: str = 'both',
     Returns:
         Dictionary with lineage information
     """
+    # Validate table ID format
+    if ERROR_HANDLING_AVAILABLE:
+        validate_table_id(table_id)
+
     parts = table_id.split('.')
     if len(parts) != 3:
+        if ERROR_HANDLING_AVAILABLE:
+            from common_errors import ValidationError
+            raise ValidationError(
+                "Table ID must be in format: project.dataset.table",
+                context={"table_id": table_id},
+                suggestion="Use format like: myproject.mydataset.mytable"
+            )
         raise ValueError("Table ID must be in format: project.dataset.table")
     project, dataset, _ = parts
     dataset_id = f"{project}.{dataset}"

@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Queries - Observability Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: #2c3e50;
+            color: white;
+            padding: 20px 0;
+            margin-bottom: 30px;
+        }
+
+        h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+
+        .nav {
+            display: flex;
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .nav a {
+            color: white;
+            text-decoration: none;
+            padding: 8px 15px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        .nav a:hover, .nav a.active {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .btn:hover {
+            background: #2980b9;
+        }
+
+        .queries-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .card-title {
+            font-size: 1.3em;
+            font-weight: bold;
+            margin-bottom: 20px;
+            color: #2c3e50;
+        }
+
+        .queries-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .queries-table th,
+        .queries-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ecf0f1;
+        }
+
+        .queries-table th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #2c3e50;
+            position: sticky;
+            top: 0;
+        }
+
+        .queries-table tr:hover {
+            background: #f8f9fa;
+        }
+
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: bold;
+        }
+
+        .status-badge.success {
+            background: #d5f4e6;
+            color: #27ae60;
+        }
+
+        .status-badge.error {
+            background: #fadbd8;
+            color: #c0392b;
+        }
+
+        .query-type {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            font-weight: bold;
+            background: #e8f4f8;
+            color: #2980b9;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #7f8c8d;
+        }
+
+        .pagination {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .pagination button {
+            padding: 8px 15px;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .pagination button:hover {
+            background: #f8f9fa;
+        }
+
+        .pagination button.active {
+            background: #3498db;
+            color: white;
+            border-color: #3498db;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Query Execution History</h1>
+            <p>Detailed query performance and execution logs</p>
+            <div class="nav">
+                <a href="/">Dashboard</a>
+                <a href="/metrics">Metrics</a>
+                <a href="/queries" class="active">Queries</a>
+                <a href="/costs">Costs</a>
+                <a href="/errors">Errors</a>
+                <a href="/health">Health</a>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="controls">
+            <button class="btn" onclick="loadQueries()">Refresh</button>
+            <button class="btn" onclick="exportQueries()">Export CSV</button>
+        </div>
+
+        <div class="queries-card">
+            <div class="card-title">Recent Queries</div>
+            <div style="overflow-x: auto;">
+                <table class="queries-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Type</th>
+                            <th>Status</th>
+                            <th>Duration</th>
+                            <th>Rows</th>
+                            <th>Bytes Processed</th>
+                            <th>Timestamp</th>
+                        </tr>
+                    </thead>
+                    <tbody id="queriesTableBody">
+                        <tr>
+                            <td colspan="7" class="loading">Loading queries...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="pagination" id="pagination"></div>
+        </div>
+    </div>
+
+    <script>
+        let currentPage = 1;
+        const pageSize = 50;
+
+        async function loadQueries() {
+            try {
+                const response = await fetch(`/api/queries/recent?limit=${pageSize}`);
+                const data = await response.json();
+
+                const tableHtml = data.queries.map(query => `
+                    <tr>
+                        <td>${query.id}</td>
+                        <td><span class="query-type">${query.query_type}</span></td>
+                        <td><span class="status-badge ${query.status}">${query.status}</span></td>
+                        <td>${query.duration_seconds}s</td>
+                        <td>${query.rows_returned.toLocaleString()}</td>
+                        <td>${(query.bytes_processed / 1024).toFixed(2)} KB</td>
+                        <td>${new Date(query.timestamp).toLocaleString()}</td>
+                    </tr>
+                `).join('');
+
+                document.getElementById('queriesTableBody').innerHTML = tableHtml ||
+                    '<tr><td colspan="7" class="loading">No queries found</td></tr>';
+
+            } catch (error) {
+                console.error('Error loading queries:', error);
+                document.getElementById('queriesTableBody').innerHTML =
+                    '<tr><td colspan="7" class="loading">Error loading queries</td></tr>';
+            }
+        }
+
+        function exportQueries() {
+            // Simple CSV export
+            alert('CSV export functionality would be implemented here');
+        }
+
+        // Load initial data
+        loadQueries();
+
+        // Auto-refresh every 30 seconds
+        setInterval(loadQueries, 30000);
+    </script>
+</body>
+</html>

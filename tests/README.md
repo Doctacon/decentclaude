@@ -14,7 +14,8 @@ tests/
 │   ├── test_bq_partition_info.py
 │   └── test_bq_lineage.py
 ├── integration/             # Integration tests with mocked services
-│   └── test_bq_integration.py
+│   ├── test_bq_integration.py
+│   └── test_skills.py       # Skills integration tests
 └── bats/                    # Bash tests for shell utilities
     ├── test_git_hooks.bats
     └── test_worktree_utils.bats
@@ -70,9 +71,15 @@ pytest -m integration
 pytest -m bq
 ```
 
+**Skills tests only:**
+```bash
+pytest -m skills
+```
+
 **Run tests for a specific file:**
 ```bash
 pytest tests/unit/test_data_quality.py
+pytest tests/integration/test_skills.py
 ```
 
 ### Run with Coverage Report
@@ -97,6 +104,7 @@ Tests are organized with markers for easy filtering:
 - `@pytest.mark.bq` - Tests requiring BigQuery client
 - `@pytest.mark.hooks` - Tests for git hooks
 - `@pytest.mark.worktree` - Tests for worktree utilities
+- `@pytest.mark.skills` - Tests for Skills utility invocation
 
 ## Coverage Requirements
 
@@ -139,6 +147,73 @@ Example:
     run bin/worktree-utils/wt-switch --list
     [ "$status" -eq 0 ]
 }
+```
+
+## Skills Integration Tests
+
+The `tests/integration/test_skills.py` file contains comprehensive tests for Skills that invoke CLI utilities. These tests validate that Skills correctly:
+
+1. **Invoke utilities with correct parameters** - Verify command-line arguments are properly formatted
+2. **Parse utility output** - Test JSON and text output parsing
+3. **Handle errors gracefully** - Ensure failures are caught and handled
+4. **Support multiple workflows** - Test cross-skill integration patterns
+
+### Skills Covered
+
+- **data-lineage-doc**: Tests for `bq-lineage` utility invocation with JSON and Mermaid output
+- **schema-doc-generator**: Tests for `bq-schema-diff` utility for schema comparison
+- **sql-optimizer**: Tests for `bq-optimize` and `bq-explain` utilities
+- **doc-generator**: Tests for `ai-generate` utility (when available)
+
+### Test Approach
+
+Skills tests use mocked subprocess calls to:
+- Avoid external dependencies (BigQuery, APIs)
+- Ensure fast, deterministic test execution
+- Validate utility invocations without running actual commands
+- Test error handling with simulated failures
+
+### Example
+
+```python
+@pytest.mark.integration
+@pytest.mark.skills
+def test_invokes_bq_lineage_with_correct_params(mock_subprocess, successful_subprocess_result):
+    """Test that data-lineage-doc skill invokes bq-lineage correctly"""
+    successful_subprocess_result.stdout = json_output
+    mock_subprocess.return_value = successful_subprocess_result
+
+    result = subprocess.run(
+        ["bin/data-utils/bq-lineage", "project.dataset.table", "--format=json"],
+        capture_output=True,
+        text=True,
+        check=True
+    )
+
+    mock_subprocess.assert_called_once_with(
+        ["bin/data-utils/bq-lineage", "project.dataset.table", "--format=json"],
+        capture_output=True,
+        text=True,
+        check=True
+    )
+```
+
+### Running Skills Tests
+
+```bash
+# Run all skills tests
+pytest -m skills
+
+# Run specific skill test file
+pytest tests/integration/test_skills.py
+
+# Run tests for specific skill
+pytest tests/integration/test_skills.py -k "lineage"
+pytest tests/integration/test_skills.py -k "schema"
+pytest tests/integration/test_skills.py -k "optimizer"
+
+# Run with verbose output
+pytest tests/integration/test_skills.py -v
 ```
 
 ## Continuous Integration

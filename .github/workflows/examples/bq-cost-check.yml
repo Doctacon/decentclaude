@@ -1,0 +1,286 @@
+# BigQuery Cost Check Workflow
+#
+# Estimates query costs and blocks PRs exceeding threshold
+# Runs: On PRs that change SQL files
+# Duration: ~1-2 minutes
+#
+# Required Secrets:
+#   - GOOGLE_APPLICATION_CREDENTIALS_JSON (service account JSON, base64 encoded)
+#   - GCP_PROJECT_ID
+#
+# Optional Environment Variables:
+#   - COST_THRESHOLD_GB (default: 100)
+#
+# Usage:
+#   1. Copy to .github/workflows/bq-cost-check.yml
+#   2. Set up GCP service account with bigquery.jobUser role
+#   3. Add credentials to GitHub secrets
+
+name: BigQuery Cost Check
+
+on:
+  pull_request:
+    paths:
+      - '**.sql'
+      - 'queries/**'
+      - 'models/**'
+
+env:
+  COST_THRESHOLD_GB: 100  # Adjust this threshold for your needs
+  COST_PER_TB: 5.00       # BigQuery on-demand pricing (USD per TB)
+
+jobs:
+  cost-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history for diff
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install BigQuery client
+        run: |
+          pip install --upgrade pip
+          pip install google-cloud-bigquery tabulate
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+
+      - name: Get changed SQL files
+        id: changed-files
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep '\.sql$' || echo "")
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No SQL files changed"
+            echo "files=" >> $GITHUB_OUTPUT
+            echo "count=0" >> $GITHUB_OUTPUT
+          else
+            echo "Changed SQL files:"
+            echo "$CHANGED_FILES"
+            # Convert to JSON array for easier parsing
+            FILES_JSON=$(echo "$CHANGED_FILES" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "files=$FILES_JSON" >> $GITHUB_OUTPUT
+            echo "count=$(echo "$CHANGED_FILES" | wc -l | xargs)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Estimate query costs
+        if: steps.changed-files.outputs.count > 0
+        id: cost-estimate
+        run: |
+          cat > estimate_costs.py << 'EOF'
+          import json
+          import os
+          import sys
+          from google.cloud import bigquery
+          from pathlib import Path
+
+          def estimate_query_cost(query, filename):
+              """Estimate the cost of running a BigQuery query"""
+              try:
+                  client = bigquery.Client()
+                  job_config = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
+                  query_job = client.query(query, job_config=job_config)
+
+                  bytes_processed = query_job.total_bytes_processed
+                  gb_processed = bytes_processed / (1024**3)
+                  tb_processed = bytes_processed / (1024**4)
+
+                  cost_per_tb = float(os.environ.get('COST_PER_TB', '5.00'))
+                  estimated_cost = tb_processed * cost_per_tb
+
+                  return {
+                      'filename': filename,
+                      'bytes': bytes_processed,
+                      'gb': round(gb_processed, 3),
+                      'tb': round(tb_processed, 6),
+                      'cost_usd': round(estimated_cost, 4),
+                      'error': None
+                  }
+
+              except Exception as e:
+                  return {
+                      'filename': filename,
+                      'bytes': 0,
+                      'gb': 0,
+                      'tb': 0,
+                      'cost_usd': 0,
+                      'error': str(e)
+                  }
+
+          def main():
+              files_json = os.environ.get('CHANGED_FILES', '[]')
+              files = json.loads(files_json)
+
+              results = []
+              total_gb = 0
+              total_cost = 0
+
+              for filename in files:
+                  filepath = Path(filename)
+                  if not filepath.exists():
+                      print(f"Skipping {filename} (file not found)")
+                      continue
+
+                  print(f"\nAnalyzing: {filename}")
+
+                  try:
+                      with open(filepath, 'r') as f:
+                          query = f.read()
+
+                      result = estimate_query_cost(query, filename)
+                      results.append(result)
+
+                      if result['error']:
+                          print(f"  ⚠️  Error: {result['error']}")
+                      else:
+                          print(f"  📊 Bytes: {result['bytes']:,}")
+                          print(f"  💾 Size: {result['gb']:.3f} GB")
+                          print(f"  💰 Cost: ${result['cost_usd']:.4f}")
+                          total_gb += result['gb']
+                          total_cost += result['cost_usd']
+
+                  except Exception as e:
+                      print(f"  ❌ Failed to read file: {str(e)}")
+
+              # Output summary
+              print("\n" + "="*60)
+              print("COST SUMMARY")
+              print("="*60)
+              print(f"Total queries analyzed: {len([r for r in results if not r['error']])}")
+              print(f"Total data to process: {total_gb:.3f} GB")
+              print(f"Estimated cost: ${total_cost:.4f}")
+              print(f"Cost threshold: {os.environ.get('COST_THRESHOLD_GB', '100')} GB")
+
+              threshold_gb = float(os.environ.get('COST_THRESHOLD_GB', '100'))
+
+              # Write results to file for GitHub Actions
+              with open('cost_results.json', 'w') as f:
+                  json.dump({
+                      'results': results,
+                      'summary': {
+                          'total_gb': round(total_gb, 3),
+                          'total_cost_usd': round(total_cost, 4),
+                          'threshold_gb': threshold_gb,
+                          'within_threshold': total_gb <= threshold_gb,
+                          'queries_analyzed': len([r for r in results if not r['error']]),
+                          'queries_failed': len([r for r in results if r['error']])
+                      }
+                  }, f, indent=2)
+
+              # Exit with error if over threshold
+              if total_gb > threshold_gb:
+                  print(f"\n❌ FAILED: Total cost ({total_gb:.3f} GB) exceeds threshold ({threshold_gb} GB)")
+                  sys.exit(1)
+              else:
+                  print(f"\n✅ PASSED: Cost is within threshold")
+                  sys.exit(0)
+
+          if __name__ == '__main__':
+              main()
+          EOF
+
+          export CHANGED_FILES='${{ steps.changed-files.outputs.files }}'
+          python3 estimate_costs.py
+
+      - name: Upload cost report
+        if: always() && steps.changed-files.outputs.count > 0
+        uses: actions/upload-artifact@v4
+        with:
+          name: cost-report
+          path: cost_results.json
+          retention-days: 30
+
+      - name: Comment cost summary on PR
+        if: always() && steps.changed-files.outputs.count > 0 && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            if (!fs.existsSync('cost_results.json')) {
+              console.log('No cost results found');
+              return;
+            }
+
+            const results = JSON.parse(fs.readFileSync('cost_results.json', 'utf8'));
+            const summary = results.summary;
+
+            const status = summary.within_threshold ? '✅ Passed' : '❌ Failed';
+            const statusEmoji = summary.within_threshold ? '✅' : '❌';
+
+            let comment = `## BigQuery Cost Check ${status}\n\n`;
+
+            comment += `### Summary\n\n`;
+            comment += `| Metric | Value |\n`;
+            comment += `|--------|-------|\n`;
+            comment += `| Queries analyzed | ${summary.queries_analyzed} |\n`;
+            comment += `| Total data to process | **${summary.total_gb} GB** |\n`;
+            comment += `| Estimated cost | **$${summary.total_cost_usd}** |\n`;
+            comment += `| Threshold | ${summary.threshold_gb} GB |\n`;
+            comment += `| Status | ${statusEmoji} ${summary.within_threshold ? 'Within threshold' : 'Exceeds threshold'} |\n\n`;
+
+            if (results.results.length > 0) {
+              comment += `### Per-File Analysis\n\n`;
+              comment += `| File | Size (GB) | Cost (USD) | Status |\n`;
+              comment += `|------|-----------|------------|--------|\n`;
+
+              results.results.forEach(r => {
+                const fileStatus = r.error ? '⚠️ Error' : '✅';
+                const gb = r.error ? 'N/A' : r.gb.toFixed(3);
+                const cost = r.error ? 'N/A' : `$${r.cost_usd.toFixed(4)}`;
+
+                comment += `| \`${r.filename}\` | ${gb} | ${cost} | ${fileStatus} |\n`;
+
+                if (r.error) {
+                  comment += `| colspan="4" | Error: ${r.error} |\n`;
+                }
+              });
+            }
+
+            if (!summary.within_threshold) {
+              comment += `\n### ⚠️ Action Required\n\n`;
+              comment += `This PR will process **${summary.total_gb} GB** of data, which exceeds the threshold of **${summary.threshold_gb} GB**.\n\n`;
+              comment += `**Recommendations**:\n`;
+              comment += `1. Add WHERE clauses to filter data\n`;
+              comment += `2. Use partitioning to limit scanned data\n`;
+              comment += `3. Select only needed columns instead of SELECT *\n`;
+              comment += `4. Use clustered columns in WHERE clauses\n`;
+            }
+
+            comment += `\n---\n`;
+            comment += `*Cost estimate based on BigQuery on-demand pricing ($${process.env.COST_PER_TB}/TB)*\n`;
+
+            try {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            } catch (error) {
+              console.log('Could not create comment:', error);
+            }
+
+      - name: Fail if over threshold
+        if: always() && steps.changed-files.outputs.count > 0
+        run: |
+          if [ -f cost_results.json ]; then
+            WITHIN_THRESHOLD=$(cat cost_results.json | jq -r '.summary.within_threshold')
+
+            if [ "$WITHIN_THRESHOLD" != "true" ]; then
+              echo "❌ Cost check failed - queries exceed threshold"
+              exit 1
+            fi
+          fi

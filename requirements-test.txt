@@ -6,6 +6,7 @@ pytest>=7.4.0
 pytest-cov>=4.1.0
 pytest-mock>=3.11.0
 pytest-timeout>=2.1.0
+pytest-benchmark>=4.0.0  # For performance benchmarking
 
 # For BigQuery utilities testing
 google-cloud-bigquery>=3.11.0

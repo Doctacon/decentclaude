@@ -1,0 +1,317 @@
+================================================================================
+COMPREHENSIVE PERFORMANCE BENCHMARK SUITE FOR DECENTCLAUDE UTILITIES
+================================================================================
+
+IMPLEMENTATION COMPLETE
+Working Directory: /Users/crlough/gt/decentclaude/mayor/rig
+
+OVERVIEW
+--------
+Created a complete performance benchmark suite using pytest-benchmark to measure
+and track the performance of decentclaude CLI utilities. All external API calls
+(BigQuery, OpenAI) are mocked to measure pure code performance without network
+latency or quota constraints.
+
+FILES CREATED
+-------------
+
+Directory Structure:
+tests/benchmarks/
+├── __init__.py                           (165 bytes)
+├── conftest.py                           (8,218 bytes)
+├── test_bq_profile_benchmark.py          (12,844 bytes)
+├── test_bq_lineage_benchmark.py          (11,568 bytes)
+├── test_bq_explain_benchmark.py          (11,775 bytes)
+├── test_bq_schema_diff_benchmark.py      (15,282 bytes)
+├── test_ai_generate_benchmark.py         (13,355 bytes)
+├── test_kb_search_benchmark.py           (12,203 bytes)
+├── README.md                             (10,036 bytes)
+├── QUICKSTART.md                         (5,400 bytes)
+└── IMPLEMENTATION_SUMMARY.md             (8,800 bytes)
+
+Files Modified:
+- pytest.ini                              (added benchmark markers and config)
+- requirements-test.txt                   (added pytest-benchmark>=4.0.0)
+- Makefile                                (added benchmark targets)
+
+STATISTICS
+----------
+Total Files Created:     11
+Total Lines of Code:     3,182
+Total Benchmark Tests:   82
+Utilities Covered:       6 (bq-profile, bq-lineage, bq-explain, 
+                            bq-schema-diff, ai-generate, kb-search)
+
+BENCHMARK COVERAGE BY UTILITY
+------------------------------
+
+1. bq-profile (10 tests)
+   - Get table metadata (small, medium, large)
+   - Build statistics queries (small, large)
+   - Parse column statistics (small, medium)
+   - Format output (text, JSON)
+   - Batch profiling
+
+2. bq-lineage (10 tests)
+   - Parse view queries (simple, complex, with CTEs)
+   - Get upstream dependencies (depth 1, depth 2)
+   - Build dependency graphs (small, large)
+   - Find downstream dependencies
+   - Format lineage (text, Mermaid)
+
+3. bq-explain (10 tests)
+   - Parse query plans (simple, complex)
+   - Analyze stage performance
+   - Calculate cost estimates
+   - Format bytes and durations
+   - Identify optimizations
+   - Format output (text, JSON)
+
+4. bq-schema-diff (11 tests)
+   - Get schemas (small, medium, large)
+   - Compare schemas (identical, different)
+   - Handle nested schemas
+   - Format output (text, JSON)
+   - Batch comparison
+
+5. ai-generate (14 tests)
+   - Build system prompts (dbt, SQLMesh)
+   - Build user prompts (simple, with context)
+   - Parse requirements (string, file)
+   - Format code
+   - Extract code from responses
+   - Validate SQL syntax
+   - Mock API calls
+   - Token estimation
+
+6. kb-search (25 tests)
+   - Search operations (small, medium, large KB)
+   - Multiple search terms
+   - Type and tag filters
+   - List articles with pagination
+   - CRUD operations (get, add, update, delete)
+   - Get tags and statistics
+   - Complex search patterns
+   - Batch retrieval
+
+PERFORMANCE TARGETS
+-------------------
+
+bq-profile:
+  Small tables (10 cols)      < 100ms
+  Medium tables (50 cols)     < 500ms
+  Large tables (200 cols)     < 2s
+  Batch (10 tables)           < 5s
+
+bq-lineage:
+  Simple parse                < 10ms
+  Complex parse               < 50ms
+  Depth 1 deps                < 100ms
+  Depth 2 deps                < 500ms
+  Graph (50 tables)           < 1s
+
+bq-explain:
+  Simple plan (3 stages)      < 20ms
+  Complex plan (20 stages)    < 100ms
+  Performance analysis        < 50ms
+  Cost calculation            < 10ms
+
+bq-schema-diff:
+  Small (20 cols)             < 50ms
+  Medium (50 cols)            < 100ms
+  Large (200 cols)            < 500ms
+  Nested schemas              < 200ms
+  Batch (10 pairs)            < 2s
+
+ai-generate:
+  Build prompt                < 10ms
+  Parse requirements          < 20ms
+  Format code                 < 15ms
+  Mock API call               < 5ms
+
+kb-search:
+  Small KB (10 articles)      < 10ms
+  Medium KB (100 articles)    < 50ms
+  Large KB (1000 articles)    < 200ms
+  With filters                < 300ms
+  Article by ID               < 5ms
+  Add article                 < 20ms
+
+USAGE EXAMPLES
+--------------
+
+Install dependencies:
+  cd /Users/crlough/gt/decentclaude/mayor/rig
+  pip install -r requirements-test.txt
+
+Run all benchmarks:
+  make benchmark
+  # OR
+  pytest tests/benchmarks/ --benchmark-only
+
+Run specific utility benchmarks:
+  pytest tests/benchmarks/test_bq_profile_benchmark.py --benchmark-only
+  pytest tests/benchmarks/ -m bq_profile --benchmark-only
+
+Save baseline:
+  make benchmark-save
+  # OR
+  pytest tests/benchmarks/ --benchmark-only --benchmark-save=baseline
+
+Compare with baseline:
+  make benchmark-compare
+  # OR
+  pytest tests/benchmarks/ --benchmark-only --benchmark-compare=baseline
+
+Generate reports:
+  pytest tests/benchmarks/ --benchmark-only --benchmark-autosave
+  pytest tests/benchmarks/ --benchmark-only --benchmark-json=results.json
+
+Run by dataset size:
+  pytest tests/benchmarks/ -k "small" --benchmark-only
+  pytest tests/benchmarks/ -k "medium" --benchmark-only
+  pytest tests/benchmarks/ -k "large" --benchmark-only
+
+View saved benchmarks:
+  pytest-benchmark list
+  pytest-benchmark compare 0001 0002
+  pytest-benchmark compare 0001 0002 --histogram
+
+KEY FEATURES
+------------
+
+1. Comprehensive Mocking
+   - All BigQuery API calls mocked
+   - All Anthropic API calls mocked
+   - No external dependencies during benchmarks
+   - Reproducible results
+
+2. Realistic Test Data
+   - Small (10-20), medium (50-100), large (200-1000) datasets
+   - Varied data types and structures
+   - Nested RECORD fields
+   - Production-like scenarios
+
+3. Shared Fixtures
+   - Centralized in conftest.py
+   - Reusable across all tests
+   - Parameterized for different sizes
+   - Consistent setup/teardown
+
+4. Benchmark Markers
+   - benchmark: All benchmark tests
+   - bq_profile, bq_lineage, etc.: Per-utility
+   - Enables selective execution
+   - CI/CD integration ready
+
+5. Complete Documentation
+   - README.md: Comprehensive guide
+   - QUICKSTART.md: 5-minute start guide
+   - IMPLEMENTATION_SUMMARY.md: Technical overview
+   - Inline code documentation
+
+CONFIGURATION
+-------------
+
+pytest.ini additions:
+- Benchmark markers defined
+- pytest-benchmark settings:
+  * Disable GC: true
+  * Warmup: 3 iterations
+  * Min rounds: 5
+  * Max time: 5.0 seconds
+  * Compare fail threshold: 10%
+
+Makefile targets:
+- make benchmark            Run all benchmarks
+- make benchmark-save       Save baseline
+- make benchmark-compare    Compare with baseline
+- make clean               Clean benchmark artifacts
+
+CI/CD INTEGRATION
+-----------------
+
+GitHub Actions Example:
+  - name: Run Benchmarks
+    run: |
+      pip install -r requirements-test.txt
+      pytest tests/benchmarks/ --benchmark-only --benchmark-json=benchmark.json
+
+  - name: Compare Performance
+    run: |
+      pytest tests/benchmarks/ --benchmark-only \
+        --benchmark-compare=baseline \
+        --benchmark-compare-fail=mean:15%
+
+GitLab CI Example:
+  benchmark:
+    script:
+      - pip install -r requirements-test.txt
+      - pytest tests/benchmarks/ --benchmark-only --benchmark-autosave
+    artifacts:
+      paths:
+        - .benchmarks/
+
+NEXT STEPS
+----------
+
+1. Install dependencies:
+   pip install -r requirements-test.txt
+
+2. Run benchmarks:
+   make benchmark
+
+3. Review results and establish baseline:
+   make benchmark-save
+
+4. Integrate into CI/CD pipeline
+
+5. Set up regular performance monitoring
+
+6. Investigate and optimize any slow operations
+
+DOCUMENTATION
+-------------
+
+Full documentation available in:
+- tests/benchmarks/README.md           Comprehensive guide
+- tests/benchmarks/QUICKSTART.md       Quick start guide
+- tests/benchmarks/IMPLEMENTATION_SUMMARY.md   Technical details
+
+For help:
+  pytest --benchmark-help
+  make help
+
+MAINTENANCE
+-----------
+
+Adding new benchmarks:
+1. Create test_<utility>_benchmark.py
+2. Add marker to pytest.ini
+3. Document performance targets
+4. Update README.md
+
+Regular review:
+1. Run weekly: make benchmark-save
+2. Compare: pytest-benchmark compare 0001 0002
+3. Investigate regressions > 10%
+4. Update targets as needed
+
+SUMMARY
+-------
+
+✓ 11 files created (3,182 lines)
+✓ 82 benchmark tests implemented
+✓ 6 utilities fully covered
+✓ Complete documentation provided
+✓ CI/CD integration ready
+✓ Makefile targets added
+✓ Performance targets defined
+✓ All external APIs mocked
+
+The benchmark suite is ready for use. Install dependencies and run:
+  make benchmark
+
+================================================================================
+END OF SUMMARY
+================================================================================

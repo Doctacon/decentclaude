@@ -32,6 +32,20 @@ from pathlib import Path
 from typing import Optional, Dict, List
 from google.cloud import bigquery
 
+# Add lib directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "lib"))
+
+try:
+    from common_errors import (
+        handle_api_error,
+        error_context,
+        log_error,
+        ValidationError,
+    )
+    ERROR_HANDLING_AVAILABLE = True
+except ImportError:
+    ERROR_HANDLING_AVAILABLE = False
+
 
 class Colors:
     """ANSI color codes for terminal output"""
@@ -108,8 +122,12 @@ def analyze_query_plan(client: bigquery.Client, query: str, dry_run: bool = Fals
         return extract_job_info(query_job, query)
 
     except Exception as e:
-        print(f"{Colors.RED}Error analyzing query: {str(e)}{Colors.RESET}", file=sys.stderr)
-        sys.exit(1)
+        if ERROR_HANDLING_AVAILABLE:
+            log_error(e, context={"operation": "analyze_query", "dry_run": dry_run})
+            raise handle_api_error(e, resource_type="query") from e
+        else:
+            print(f"{Colors.RED}Error analyzing query: {str(e)}{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
 
 
 def analyze_job(client: bigquery.Client, job_id: str) -> Dict:
@@ -128,8 +146,12 @@ def analyze_job(client: bigquery.Client, job_id: str) -> Dict:
         return extract_job_info(job, job.query)
 
     except Exception as e:
-        print(f"{Colors.RED}Error retrieving job {job_id}: {str(e)}{Colors.RESET}", file=sys.stderr)
-        sys.exit(1)
+        if ERROR_HANDLING_AVAILABLE:
+            log_error(e, context={"job_id": job_id, "operation": "analyze_job"})
+            raise handle_api_error(e, resource_type="job") from e
+        else:
+            print(f"{Colors.RED}Error retrieving job {job_id}: {str(e)}{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
 
 
 def extract_job_info(job, query: str) -> Dict:

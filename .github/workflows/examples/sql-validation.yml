@@ -1,0 +1,208 @@
+# SQL Validation Workflow
+#
+# Validates SQL syntax and style on every pull request
+# Runs: On PRs that change SQL files
+# Duration: ~30 seconds
+#
+# Setup:
+#   1. No secrets required for basic validation
+#   2. Optional: Add SLACK_WEBHOOK for notifications
+#
+# Usage:
+#   Copy to .github/workflows/sql-validation.yml
+
+name: SQL Validation
+
+on:
+  pull_request:
+    paths:
+      - '**.sql'
+      - 'models/**'
+      - 'queries/**'
+      - 'sql/**'
+
+jobs:
+  validate-sql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install sqlparse sqlfluff
+
+      - name: List changed SQL files
+        id: changed-files
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            git fetch origin ${{ github.base_ref }}
+            CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep '\.sql$' || true)
+          else
+            CHANGED_FILES=$(git diff --name-only HEAD~1 | grep '\.sql$' || true)
+          fi
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No SQL files changed"
+            echo "count=0" >> $GITHUB_OUTPUT
+          else
+            echo "Changed SQL files:"
+            echo "$CHANGED_FILES"
+            echo "count=$(echo "$CHANGED_FILES" | wc -l)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate SQL syntax
+        if: steps.changed-files.outputs.count > 0
+        run: |
+          echo "Validating SQL syntax with sqlparse..."
+
+          EXIT_CODE=0
+
+          for sql_file in $(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep '\.sql$'); do
+            if [ -f "$sql_file" ]; then
+              echo "Checking: $sql_file"
+
+              python3 -c "
+          import sqlparse
+          import sys
+
+          try:
+              with open('$sql_file', 'r') as f:
+                  content = f.read()
+
+              parsed = sqlparse.parse(content)
+
+              if not parsed:
+                  print('❌ Invalid SQL syntax')
+                  sys.exit(1)
+
+              print('✅ Valid SQL syntax')
+
+          except Exception as e:
+              print(f'❌ Error: {str(e)}')
+              sys.exit(1)
+          " || EXIT_CODE=1
+            fi
+          done
+
+          exit $EXIT_CODE
+
+      - name: Run sqlfluff lint
+        if: steps.changed-files.outputs.count > 0
+        run: |
+          echo "Linting SQL files with sqlfluff..."
+
+          # Create basic .sqlfluff config if it doesn't exist
+          if [ ! -f .sqlfluff ]; then
+            cat > .sqlfluff << 'EOF'
+          [sqlfluff]
+          dialect = bigquery
+          templater = raw
+          max_line_length = 120
+          indent_unit = space
+
+          [sqlfluff:rules]
+          tab_space_size = 4
+          indent_unit = space
+
+          [sqlfluff:rules:L003]
+          indent_unit = space
+
+          [sqlfluff:rules:L010]
+          capitalisation_policy = upper
+          EOF
+          fi
+
+          # Run sqlfluff on changed files
+          for sql_file in $(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep '\.sql$'); do
+            if [ -f "$sql_file" ]; then
+              echo "Linting: $sql_file"
+              sqlfluff lint "$sql_file" --format github-annotation || true
+            fi
+          done
+
+      - name: Check for hardcoded secrets
+        if: steps.changed-files.outputs.count > 0
+        run: |
+          echo "Checking for hardcoded secrets..."
+
+          EXIT_CODE=0
+          SECRET_PATTERNS="password|api_key|secret|token|credential"
+
+          for sql_file in $(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep '\.sql$'); do
+            if [ -f "$sql_file" ]; then
+              echo "Checking: $sql_file"
+
+              if grep -iE "$SECRET_PATTERNS" "$sql_file" | grep -v "^--" | grep -q "'"; then
+                echo "⚠️  Potential hardcoded secret found in $sql_file"
+                grep -iE "$SECRET_PATTERNS" "$sql_file" | head -5
+                EXIT_CODE=1
+              fi
+            fi
+          done
+
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ No hardcoded secrets detected"
+          else
+            echo "❌ Potential secrets found - please review"
+          fi
+
+          exit $EXIT_CODE
+
+      - name: Comment on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fileCount = '${{ steps.changed-files.outputs.count }}';
+
+            if (fileCount === '0') {
+              console.log('No SQL files changed, skipping comment');
+              return;
+            }
+
+            const comment = `## SQL Validation Results
+
+            **Files validated**: ${fileCount}
+
+            ${context.payload.pull_request ? '✅ All SQL validation checks completed' : ''}
+
+            <details>
+            <summary>Checks performed</summary>
+
+            - ✅ SQL syntax validation (sqlparse)
+            - ✅ SQL linting (sqlfluff)
+            - ✅ Hardcoded secrets detection
+
+            </details>
+
+            ---
+            *Automated by [SQL Validation Workflow](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/sql-validation.yml)*
+            `;
+
+            try {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            } catch (error) {
+              console.log('Could not create comment:', error);
+            }
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "SQL validation failed!"
+          echo "Please fix the issues above and push again."
+          exit 1

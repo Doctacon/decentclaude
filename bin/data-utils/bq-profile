@@ -3,15 +3,18 @@
 bq-profile - Generate comprehensive data profiles for BigQuery tables
 
 Usage:
-  bq-profile <table_id> [options]
+  bq-profile <table_id> [table_id...] [options]
 
 Arguments:
-  table_id   Table ID (format: project.dataset.table)
+  table_id   One or more table IDs (format: project.dataset.table)
 
 Options:
   --format=<format>     Output format: text, json, markdown, html (default: text)
   --sample-size=<n>     Number of sample rows to include (default: 10)
   --detect-anomalies    Enable anomaly detection for numeric columns
+  --no-cache            Disable metadata caching and force fresh API calls
+  --parallel=<n>        Number of parallel workers for batch profiling (default: 4)
+  --progress            Show progress bar during batch profiling
   --help, -h            Show this help message
 
 Examples:
@@ -19,15 +22,48 @@ Examples:
   bq-profile project.dataset.orders --format=json
   bq-profile project.dataset.sales --format=markdown --detect-anomalies
   bq-profile project.dataset.events --format=html --sample-size=20
+  bq-profile project.dataset.table --no-cache
+  bq-profile --parallel 4 --progress table1 table2 table3 table4
 """
 
 import sys
 import json
 import argparse
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from pathlib import Path
 from google.cloud import bigquery
 from datetime import datetime
+from multiprocessing import Pool, cpu_count
+from functools import partial
+
+# Add lib directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "lib"))
+
+try:
+    from bq_cache import BQMetadataCache
+    CACHE_AVAILABLE = True
+except ImportError:
+    CACHE_AVAILABLE = False
+
+try:
+    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn
+    from rich.console import Console
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+
+try:
+    from common_errors import (
+        validate_table_id,
+        handle_api_error,
+        error_context,
+        log_error,
+        ConfigError,
+        DataError,
+    )
+    ERROR_HANDLING_AVAILABLE = True
+except ImportError:
+    ERROR_HANDLING_AVAILABLE = False
 
 
 class Colors:
@@ -42,36 +78,48 @@ class Colors:
     BOLD = '\033[1m'
 
 
-def get_table_metadata(client: bigquery.Client, table_id: str) -> Dict[str, Any]:
+def get_table_metadata(client: bigquery.Client, table_id: str, cache: Optional[BQMetadataCache] = None) -> Dict[str, Any]:
     """
     Get basic table metadata.
 
     Args:
         client: BigQuery client
         table_id: Full table ID
+        cache: Optional BQMetadataCache instance
 
     Returns:
         Dictionary with table metadata
     """
     try:
-        table = client.get_table(table_id)
-        return {
-            "table_id": table_id,
-            "project": table.project,
-            "dataset": table.dataset_id,
-            "table_name": table.table_id,
-            "table_type": table.table_type,
-            "num_rows": table.num_rows,
-            "num_bytes": table.num_bytes,
-            "created": table.created.isoformat() if table.created else None,
-            "modified": table.modified.isoformat() if table.modified else None,
-            "description": table.description or "",
-            "schema": [{"name": field.name, "type": field.field_type, "mode": field.mode}
-                      for field in table.schema]
-        }
+        # Get metadata from cache or API
+        if cache:
+            metadata = cache.get_cached_table_metadata(client, table_id)
+            schema_list = cache.get_cached_schema(client, table_id)
+            metadata["schema"] = schema_list
+            return metadata
+        else:
+            table = client.get_table(table_id)
+            return {
+                "table_id": table_id,
+                "project": table.project,
+                "dataset": table.dataset_id,
+                "table_name": table.table_id,
+                "table_type": table.table_type,
+                "num_rows": table.num_rows,
+                "num_bytes": table.num_bytes,
+                "created": table.created.isoformat() if table.created else None,
+                "modified": table.modified.isoformat() if table.modified else None,
+                "description": table.description or "",
+                "schema": [{"name": field.name, "type": field.field_type, "mode": field.mode}
+                          for field in table.schema]
+            }
     except Exception as e:
-        print(f"{Colors.RED}Error getting table metadata: {str(e)}{Colors.RESET}", file=sys.stderr)
-        sys.exit(1)
+        if ERROR_HANDLING_AVAILABLE:
+            log_error(e, context={"table_id": table_id, "operation": "get_table_metadata"})
+            raise handle_api_error(e, resource_type="table") from e
+        else:
+            print(f"{Colors.RED}Error getting table metadata: {str(e)}{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
 
 
 def get_column_statistics(client: bigquery.Client, table_id: str, schema: List[Dict]) -> Dict[str, Any]:
@@ -185,8 +233,16 @@ def get_column_statistics(client: bigquery.Client, table_id: str, schema: List[D
         return stats
 
     except Exception as e:
-        print(f"{Colors.RED}Error calculating column statistics: {str(e)}{Colors.RESET}", file=sys.stderr)
-        sys.exit(1)
+        if ERROR_HANDLING_AVAILABLE:
+            log_error(e, context={"table_id": table_id, "operation": "get_column_statistics"})
+            raise DataError(
+                f"Failed to calculate column statistics for table {table_id}",
+                context={"original_error": str(e)},
+                suggestion=f"Verify table exists and contains data: bq show {table_id}"
+            ) from e
+        else:
+            print(f"{Colors.RED}Error calculating column statistics: {str(e)}{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
 
 
 def get_sample_values(client: bigquery.Client, table_id: str, sample_size: int = 10) -> List[Dict]:
@@ -307,7 +363,7 @@ def get_data_type_distribution(metadata: Dict[str, Any]) -> Dict[str, int]:
 
 
 def generate_profile(client: bigquery.Client, table_id: str, sample_size: int = 10,
-                     detect_anomalies: bool = False) -> Dict[str, Any]:
+                     detect_anomalies: bool = False, cache: Optional[BQMetadataCache] = None) -> Dict[str, Any]:
     """
     Generate comprehensive data profile for a BigQuery table.
 
@@ -316,15 +372,19 @@ def generate_profile(client: bigquery.Client, table_id: str, sample_size: int = 
         table_id: Full table ID
         sample_size: Number of sample rows
         detect_anomalies: Whether to detect anomalies
+        cache: Optional BQMetadataCache instance
 
     Returns:
         Complete profile dictionary
     """
     print(f"{Colors.CYAN}Profiling table: {table_id}{Colors.RESET}", file=sys.stderr)
 
+    if cache:
+        print(f"{Colors.BLUE}Using metadata cache...{Colors.RESET}", file=sys.stderr)
+
     # Get metadata
     print(f"{Colors.BLUE}Gathering table metadata...{Colors.RESET}", file=sys.stderr)
-    metadata = get_table_metadata(client, table_id)
+    metadata = get_table_metadata(client, table_id, cache)
 
     # Get column statistics
     print(f"{Colors.BLUE}Calculating column statistics...{Colors.RESET}", file=sys.stderr)
@@ -861,23 +921,208 @@ def print_html_report(profile: Dict[str, Any]):
     print(html)
 
 
+def profile_single_table(table_id: str, sample_size: int, detect_anomalies: bool,
+                         use_cache: bool) -> Dict[str, Any]:
+    """
+    Profile a single table (wrapper for parallel execution).
+
+    Args:
+        table_id: Table ID to profile
+        sample_size: Number of sample rows
+        detect_anomalies: Whether to detect anomalies
+        use_cache: Whether to use metadata cache
+
+    Returns:
+        Profile dictionary
+    """
+    try:
+        # Create new client for this process
+        client = bigquery.Client()
+
+        # Initialize cache if enabled
+        cache = None
+        if use_cache and CACHE_AVAILABLE:
+            cache = BQMetadataCache()
+
+        # Generate profile
+        profile = generate_profile(
+            client,
+            table_id,
+            sample_size=sample_size,
+            detect_anomalies=detect_anomalies,
+            cache=cache
+        )
+
+        return {
+            'table_id': table_id,
+            'success': True,
+            'profile': profile
+        }
+    except Exception as e:
+        return {
+            'table_id': table_id,
+            'success': False,
+            'error': str(e)
+        }
+
+
+def generate_batch_profile(table_ids: List[str], sample_size: int, detect_anomalies: bool,
+                           use_cache: bool, num_workers: int, show_progress: bool) -> List[Dict[str, Any]]:
+    """
+    Generate profiles for multiple tables in parallel.
+
+    Args:
+        table_ids: List of table IDs to profile
+        sample_size: Number of sample rows
+        detect_anomalies: Whether to detect anomalies
+        use_cache: Whether to use metadata cache
+        num_workers: Number of parallel workers
+        show_progress: Whether to show progress bar
+
+    Returns:
+        List of profile results
+    """
+    # Create partial function with fixed arguments
+    profile_func = partial(
+        profile_single_table,
+        sample_size=sample_size,
+        detect_anomalies=detect_anomalies,
+        use_cache=use_cache
+    )
+
+    results = []
+
+    if show_progress and RICH_AVAILABLE:
+        console = Console()
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeRemainingColumn(),
+            console=console
+        ) as progress:
+            task = progress.add_task(f"Profiling {len(table_ids)} tables", total=len(table_ids))
+
+            with Pool(num_workers) as pool:
+                for result in pool.imap_unordered(profile_func, table_ids):
+                    results.append(result)
+                    status = "✓" if result['success'] else "✗"
+                    progress.console.print(f"{status} {result['table_id']}")
+                    progress.advance(task)
+    else:
+        # No progress bar
+        with Pool(num_workers) as pool:
+            results = list(pool.map(profile_func, table_ids))
+
+    return results
+
+
+def print_batch_summary(results: List[Dict[str, Any]], output_format: str):
+    """
+    Print summary of batch profiling results.
+
+    Args:
+        results: List of profile results
+        output_format: Output format (text, json, markdown, html)
+    """
+    successful = [r for r in results if r['success']]
+    failed = [r for r in results if not r['success']]
+
+    if output_format == "json":
+        # JSON output with all profiles
+        output = {
+            'batch_summary': {
+                'total_tables': len(results),
+                'successful': len(successful),
+                'failed': len(failed),
+                'timestamp': datetime.utcnow().isoformat()
+            },
+            'profiles': [
+                {
+                    'table_id': r['table_id'],
+                    'profile': r.get('profile')
+                } for r in successful
+            ],
+            'errors': [
+                {
+                    'table_id': r['table_id'],
+                    'error': r.get('error')
+                } for r in failed
+            ]
+        }
+        print(json.dumps(output, indent=2, default=str))
+    else:
+        # Text summary
+        print(f"\n{Colors.CYAN}{Colors.BOLD}{'=' * 80}{Colors.RESET}")
+        print(f"{Colors.CYAN}{Colors.BOLD}Batch Profile Summary{Colors.RESET}")
+        print(f"{Colors.CYAN}{Colors.BOLD}{'=' * 80}{Colors.RESET}\n")
+
+        print(f"{Colors.BOLD}Results:{Colors.RESET}")
+        print(f"  Total tables: {len(results)}")
+        print(f"  {Colors.GREEN}Successful: {len(successful)}{Colors.RESET}")
+        if failed:
+            print(f"  {Colors.RED}Failed: {len(failed)}{Colors.RESET}")
+
+        if failed:
+            print(f"\n{Colors.RED}{Colors.BOLD}Failed tables:{Colors.RESET}")
+            for result in failed:
+                print(f"  {Colors.RED}✗{Colors.RESET} {result['table_id']}: {result['error']}")
+
+        print(f"\n{Colors.CYAN}{'=' * 80}{Colors.RESET}\n")
+
+        # Print individual profiles
+        for i, result in enumerate(successful):
+            if i > 0:
+                print(f"\n{Colors.CYAN}{'─' * 80}{Colors.RESET}\n")
+
+            if output_format == "markdown":
+                print_markdown_report(result['profile'])
+            elif output_format == "html":
+                print_html_report(result['profile'])
+            else:
+                print_text_report(result['profile'])
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate comprehensive data profiles for BigQuery tables",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
-    parser.add_argument("table_id", help="Table ID (project.dataset.table)")
+    parser.add_argument("table_id", nargs='+', help="One or more table IDs (project.dataset.table)")
     parser.add_argument("--format", choices=["text", "json", "markdown", "html"],
                        default="text", help="Output format (default: text)")
     parser.add_argument("--sample-size", type=int, default=10,
                        help="Number of sample rows to include (default: 10)")
     parser.add_argument("--detect-anomalies", action="store_true",
                        help="Enable anomaly detection for numeric columns")
+    parser.add_argument("--no-cache", action="store_true",
+                       help="Disable metadata caching and force fresh API calls")
+    parser.add_argument("--parallel", type=int, default=4,
+                       help="Number of parallel workers for batch profiling (default: 4)")
+    parser.add_argument("--progress", action="store_true",
+                       help="Show progress bar during batch profiling")
 
     args = parser.parse_args()
 
-    # Initialize BigQuery client
+    # Validate parallel workers
+    max_workers = cpu_count() * 2
+    if args.parallel < 1:
+        args.parallel = 1
+    elif args.parallel > max_workers:
+        print(f"{Colors.YELLOW}Warning: Limiting workers to {max_workers} (system max){Colors.RESET}",
+              file=sys.stderr)
+        args.parallel = max_workers
+
+    # Check for rich library if progress requested
+    if args.progress and not RICH_AVAILABLE:
+        print(f"{Colors.YELLOW}Warning: rich library not installed. Install with: pip install rich{Colors.RESET}",
+              file=sys.stderr)
+        print(f"{Colors.YELLOW}Continuing without progress bar...{Colors.RESET}", file=sys.stderr)
+        args.progress = False
+
+    # Initialize BigQuery client for initial checks
     try:
         client = bigquery.Client()
     except Exception as e:
@@ -887,23 +1132,61 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
-    # Generate profile
-    profile = generate_profile(
-        client,
-        args.table_id,
-        sample_size=args.sample_size,
-        detect_anomalies=args.detect_anomalies
-    )
+    # Check cache availability
+    if args.no_cache:
+        print(f"{Colors.YELLOW}Cache disabled by --no-cache flag{Colors.RESET}", file=sys.stderr)
+    elif not CACHE_AVAILABLE:
+        print(f"{Colors.YELLOW}Cache module not available{Colors.RESET}", file=sys.stderr)
 
-    # Print report in requested format
-    if args.format == "json":
-        print_json_report(profile)
-    elif args.format == "markdown":
-        print_markdown_report(profile)
-    elif args.format == "html":
-        print_html_report(profile)
+    # Determine if we're in batch mode
+    table_ids = args.table_id
+    use_cache = not args.no_cache
+
+    if len(table_ids) > 1:
+        # Batch mode with parallel processing
+        print(f"{Colors.CYAN}Batch profiling {len(table_ids)} tables with {args.parallel} workers{Colors.RESET}",
+              file=sys.stderr)
+
+        results = generate_batch_profile(
+            table_ids,
+            sample_size=args.sample_size,
+            detect_anomalies=args.detect_anomalies,
+            use_cache=use_cache,
+            num_workers=args.parallel,
+            show_progress=args.progress
+        )
+
+        # Print batch summary
+        print_batch_summary(results, args.format)
+
+        # Exit with error if any failed
+        if any(not r['success'] for r in results):
+            sys.exit(1)
     else:
-        print_text_report(profile)
+        # Single table mode
+        # Initialize cache if enabled and available
+        cache = None
+        if use_cache and CACHE_AVAILABLE:
+            cache = BQMetadataCache()
+
+        # Generate profile
+        profile = generate_profile(
+            client,
+            table_ids[0],
+            sample_size=args.sample_size,
+            detect_anomalies=args.detect_anomalies,
+            cache=cache
+        )
+
+        # Print report in requested format
+        if args.format == "json":
+            print_json_report(profile)
+        elif args.format == "markdown":
+            print_markdown_report(profile)
+        elif args.format == "html":
+            print_html_report(profile)
+        else:
+            print_text_report(profile)
 
 
 if __name__ == "__main__":

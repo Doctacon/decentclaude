@@ -31,6 +31,20 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 from google.cloud import bigquery
 
+# Add lib directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "lib"))
+
+try:
+    from common_errors import (
+        handle_api_error,
+        error_context,
+        log_error,
+        ValidationError,
+    )
+    ERROR_HANDLING_AVAILABLE = True
+except ImportError:
+    ERROR_HANDLING_AVAILABLE = False
+
 
 class Colors:
     """ANSI color codes for terminal output"""

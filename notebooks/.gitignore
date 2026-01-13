@@ -1,0 +1,52 @@
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# IPython
+profile_default/
+ipython_config.py
+
+# Jupyter artifacts
+.jupyter/
+
+# Environment variables
+.env
+.env.local
+
+# Output files
+*.html
+*.pdf
+outputs/
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local data files
+data/
+*.csv
+*.json
+!requirements-notebooks.txt
+
+# Logs
+*.log
+
+# Generated reports
+reports/

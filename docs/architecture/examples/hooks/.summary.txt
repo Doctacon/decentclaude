@@ -1,0 +1,43 @@
+Hook Examples Created
+====================
+
+Location: /Users/crlough/gt/decentclaude/mayor/rig/examples/hooks/
+
+Files Created:
+1. PreToolUse__sql-validation.sh (164 lines)
+   - Validates SQL queries before execution
+   - Checks for anti-patterns and syntax errors
+   - Configurable via environment variables
+
+2. PostToolUse__auto-formatting.sh (217 lines)
+   - Auto-formats code files after Write/Edit
+   - Supports Python, SQL, JavaScript, Go, Rust, Shell
+   - Graceful fallback if formatters not installed
+
+3. PostToolUse__cost-tracking.sh (218 lines)
+   - Tracks BigQuery query costs
+   - Maintains session and daily budgets
+   - Provides cost-saving recommendations
+
+4. README.md (10KB)
+   - Comprehensive documentation
+   - Installation instructions
+   - Usage examples and best practices
+   - Debugging guide
+
+5. test-hooks.sh (81 lines)
+   - Test suite for all hooks
+   - Validates hook behavior
+   - Example usage patterns
+
+All scripts are:
+- Executable (chmod +x applied)
+- Well-documented with inline comments
+- Production-ready with error handling
+- Configurable via environment variables
+- Follow bash best practices (set -euo pipefail)
+
+Installation:
+  cp examples/hooks/*.sh ~/.claude/hooks/
+  chmod +x ~/.claude/hooks/*.sh
+

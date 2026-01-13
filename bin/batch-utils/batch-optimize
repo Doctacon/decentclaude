@@ -1,0 +1,759 @@
+#!/usr/bin/env python3
+"""
+batch-optimize - Analyze and optimize multiple BigQuery queries
+
+Usage:
+  batch-optimize <query_file> [<query_file>...] [options]
+  batch-optimize --dir=<directory> [options]
+  batch-optimize --file=<list_file> [options]
+  cat queries.txt | batch-optimize --stdin [options]
+
+Arguments:
+  query_file   One or more SQL query files to analyze
+
+Options:
+  --dir=<path>            Analyze all .sql files in directory (recursive)
+  --file=<path>           Read query file list from file
+  --stdin                 Read query file paths from stdin
+  --pattern=<pattern>     Filter SQL files by name pattern (regex)
+  --parallel=<n>          Number of parallel workers (default: 4)
+  --format=<format>       Output format: text, json, markdown, html (default: text)
+  --output=<path>         Write output to file instead of stdout
+  --progress              Show progress bar
+  --quiet                 Suppress individual query output, only show summary
+  --continue-on-error     Continue processing if individual queries fail
+  --log=<path>            Write detailed log file
+  --prioritize            Prioritize recommendations by cost savings
+  --top=<n>               Show top N queries by cost/optimization potential (default: 10)
+  --min-cost=<gb>         Only include queries processing >= N GB (default: 0)
+  --help, -h              Show this help message
+
+Input File Formats:
+  Text: one query file path per line
+  JSON: [{"path": "/path/to/query.sql", "name": "optional"}]
+
+Examples:
+  # Optimize multiple query files
+  batch-optimize queries/fact_*.sql
+
+  # Optimize all queries in directory
+  batch-optimize --dir=sql/ --pattern=".*_daily\\.sql" --parallel=8
+
+  # Optimize from file list with prioritization
+  batch-optimize --file=queries.txt --prioritize --format=html --output=report.html
+
+  # Optimize from stdin with cost filtering
+  find sql/ -name "*.sql" | batch-optimize --stdin --min-cost=10 --progress
+
+  # Generate JSON report with top costly queries
+  batch-optimize --dir=sql/ --format=json --top=20 --output=optimizations.json
+
+  # Continue on errors with detailed logging
+  batch-optimize --dir=sql/ --continue-on-error --log=optimize.log
+"""
+
+import sys
+import json
+import argparse
+import re
+from pathlib import Path
+from typing import Dict, List, Any, Optional, Tuple
+from datetime import datetime
+from multiprocessing import Pool, cpu_count
+from functools import partial
+import subprocess
+
+try:
+    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn
+    from rich.console import Console
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+class BatchOptimizer:
+    """Batch optimizer for multiple BigQuery queries"""
+
+    def __init__(self, args):
+        self.args = args
+        self.queries = []
+        self.results = []
+        self.errors = []
+        self.start_time = None
+        self.end_time = None
+        self.log_file = None
+
+        if args.log:
+            self.log_file = open(args.log, 'w')
+
+    def log(self, message: str, level: str = "INFO"):
+        """Write to log file if configured"""
+        if self.log_file:
+            timestamp = datetime.now().isoformat()
+            self.log_file.write(f"[{timestamp}] [{level}] {message}\n")
+            self.log_file.flush()
+
+    def load_queries(self) -> List[Dict[str, str]]:
+        """Load query files from various sources"""
+        queries = []
+
+        # Load from direct arguments
+        if self.args.query_files:
+            for query_file in self.args.query_files:
+                path = Path(query_file)
+                if path.exists():
+                    queries.append({
+                        "path": str(path.absolute()),
+                        "name": path.stem
+                    })
+                else:
+                    print(f"{Colors.YELLOW}Warning: File not found: {query_file}{Colors.RESET}", file=sys.stderr)
+
+        # Load from directory
+        elif self.args.dir:
+            dir_path = Path(self.args.dir)
+            if not dir_path.exists():
+                print(f"{Colors.RED}Error: Directory not found: {self.args.dir}{Colors.RESET}", file=sys.stderr)
+                sys.exit(1)
+
+            self.log(f"Loading queries from directory: {self.args.dir}")
+
+            pattern = re.compile(self.args.pattern) if self.args.pattern else None
+
+            for sql_file in dir_path.rglob("*.sql"):
+                if pattern is None or pattern.search(sql_file.name):
+                    queries.append({
+                        "path": str(sql_file.absolute()),
+                        "name": sql_file.stem
+                    })
+
+        # Load from file
+        elif self.args.file:
+            file_path = Path(self.args.file)
+            if not file_path.exists():
+                print(f"{Colors.RED}Error: File not found: {self.args.file}{Colors.RESET}", file=sys.stderr)
+                sys.exit(1)
+
+            self.log(f"Loading queries from file: {self.args.file}")
+
+            if file_path.suffix.lower() == '.json':
+                with open(file_path) as f:
+                    data = json.load(f)
+                    for item in data:
+                        if isinstance(item, str):
+                            path = Path(item)
+                            if path.exists():
+                                queries.append({
+                                    "path": str(path.absolute()),
+                                    "name": path.stem
+                                })
+                        elif isinstance(item, dict) and 'path' in item:
+                            path = Path(item['path'])
+                            if path.exists():
+                                queries.append({
+                                    "path": str(path.absolute()),
+                                    "name": item.get('name', path.stem)
+                                })
+            else:
+                # Assume text file
+                with open(file_path) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            path = Path(line)
+                            if path.exists():
+                                queries.append({
+                                    "path": str(path.absolute()),
+                                    "name": path.stem
+                                })
+
+        # Load from stdin
+        elif self.args.stdin:
+            self.log("Loading queries from stdin")
+            for line in sys.stdin:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    path = Path(line)
+                    if path.exists():
+                        queries.append({
+                            "path": str(path.absolute()),
+                            "name": path.stem
+                        })
+
+        else:
+            print(f"{Colors.RED}Error: No query source specified{Colors.RESET}", file=sys.stderr)
+            print("Use one of: query_files, --dir, --file, or --stdin", file=sys.stderr)
+            sys.exit(1)
+
+        self.log(f"Loaded {len(queries)} query files")
+        return queries
+
+    def optimize_query(self, query_info: Dict[str, str]) -> Tuple[Optional[Dict], Optional[str]]:
+        """Optimize a single query using bq-optimize"""
+        query_path = query_info['path']
+
+        try:
+            self.log(f"Optimizing query: {query_path}")
+
+            # Build bq-optimize command
+            cmd = [
+                str(Path(__file__).parent.parent / "data-utils" / "bq-optimize"),
+                f"--file={query_path}",
+                "--format=json"
+            ]
+
+            # Run bq-optimize
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+            if result.returncode == 0:
+                optimization_data = json.loads(result.stdout)
+                optimization_data['_query_name'] = query_info['name']
+                optimization_data['_query_path'] = query_path
+
+                # Extract cost information
+                estimated_cost = optimization_data.get('estimated_cost', {})
+                gb_processed = estimated_cost.get('gb_processed', 0)
+
+                # Skip if below minimum cost threshold
+                if gb_processed < self.args.min_cost:
+                    self.log(f"Skipping {query_path}: {gb_processed:.2f} GB < {self.args.min_cost} GB threshold")
+                    return None, None
+
+                # Calculate optimization potential
+                recommendations = optimization_data.get('recommendations', [])
+                optimization_data['_optimization_score'] = self._calculate_optimization_score(
+                    optimization_data
+                )
+
+                self.log(f"Successfully optimized: {query_path}")
+                return optimization_data, None
+            else:
+                error_msg = result.stderr.strip() or "Unknown error"
+                self.log(f"Failed to optimize {query_path}: {error_msg}", "ERROR")
+                return None, f"{query_path}: {error_msg}"
+
+        except subprocess.TimeoutExpired:
+            error_msg = f"Timeout after 120 seconds"
+            self.log(f"Timeout optimizing {query_path}", "ERROR")
+            return None, f"{query_path}: {error_msg}"
+        except Exception as e:
+            error_msg = str(e)
+            self.log(f"Exception optimizing {query_path}: {error_msg}", "ERROR")
+            return None, f"{query_path}: {error_msg}"
+
+    def _calculate_optimization_score(self, optimization_data: Dict) -> float:
+        """Calculate an optimization score based on potential savings"""
+        score = 0.0
+
+        # Base score from GB processed
+        estimated_cost = optimization_data.get('estimated_cost', {})
+        gb_processed = estimated_cost.get('gb_processed', 0)
+        score += gb_processed
+
+        # Add weight for number of recommendations
+        recommendations = optimization_data.get('recommendations', [])
+        score += len(recommendations) * 10
+
+        # Add weight for high/critical severity recommendations
+        for rec in recommendations:
+            severity = rec.get('severity', '').lower()
+            if severity == 'critical':
+                score += 50
+            elif severity == 'high':
+                score += 25
+            elif severity == 'medium':
+                score += 10
+
+        return score
+
+    def optimize_queries_parallel(self, queries: List[Dict[str, str]]) -> Tuple[List[Dict], List[str]]:
+        """Optimize queries in parallel"""
+        results = []
+        errors = []
+
+        if self.args.progress and RICH_AVAILABLE:
+            console = Console()
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                TimeRemainingColumn(),
+                console=console
+            ) as progress:
+                task = progress.add_task("Optimizing queries...", total=len(queries))
+
+                with Pool(processes=self.args.parallel) as pool:
+                    for result, error in pool.imap_unordered(self.optimize_query, queries):
+                        if result:
+                            results.append(result)
+                        if error:
+                            errors.append(error)
+                            if not self.args.continue_on_error:
+                                pool.terminate()
+                                break
+                        progress.update(task, advance=1)
+        else:
+            # No progress bar
+            with Pool(processes=self.args.parallel) as pool:
+                for result, error in pool.imap_unordered(self.optimize_query, queries):
+                    if result:
+                        results.append(result)
+                    if error:
+                        errors.append(error)
+                        if not self.args.continue_on_error:
+                            pool.terminate()
+                            break
+
+        return results, errors
+
+    def generate_aggregate_analysis(self, results: List[Dict]) -> Dict[str, Any]:
+        """Generate aggregate analysis across all optimizations"""
+        analysis = {
+            "total_queries": len(results),
+            "total_gb_processed": 0,
+            "total_recommendations": 0,
+            "severity_breakdown": {
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0
+            },
+            "top_queries_by_cost": [],
+            "top_queries_by_optimization": [],
+            "most_common_recommendations": {}
+        }
+
+        # Collect stats
+        for result in results:
+            estimated_cost = result.get('estimated_cost', {})
+            gb_processed = estimated_cost.get('gb_processed', 0)
+            analysis['total_gb_processed'] += gb_processed
+
+            recommendations = result.get('recommendations', [])
+            analysis['total_recommendations'] += len(recommendations)
+
+            # Count severity
+            for rec in recommendations:
+                severity = rec.get('severity', 'low').lower()
+                if severity in analysis['severity_breakdown']:
+                    analysis['severity_breakdown'][severity] += 1
+
+                # Count recommendation types
+                rec_type = rec.get('type', 'unknown')
+                analysis['most_common_recommendations'][rec_type] = \
+                    analysis['most_common_recommendations'].get(rec_type, 0) + 1
+
+        # Sort and get top queries
+        top_n = self.args.top
+
+        # Top by cost
+        analysis['top_queries_by_cost'] = sorted(
+            results,
+            key=lambda x: x.get('estimated_cost', {}).get('gb_processed', 0),
+            reverse=True
+        )[:top_n]
+
+        # Top by optimization potential
+        if self.args.prioritize:
+            analysis['top_queries_by_optimization'] = sorted(
+                results,
+                key=lambda x: x.get('_optimization_score', 0),
+                reverse=True
+            )[:top_n]
+
+        return analysis
+
+    def format_output_text(self, results: List[Dict], analysis: Dict, errors: List[str]) -> str:
+        """Format output as text"""
+        output = []
+
+        output.append(f"{Colors.BOLD}Batch Optimization Report{Colors.RESET}")
+        output.append("=" * 80)
+        output.append(f"Generated: {datetime.now().isoformat()}")
+        output.append(f"Queries analyzed: {len(results)}")
+        output.append(f"Errors: {len(errors)}")
+        output.append(f"Execution time: {(self.end_time - self.start_time).total_seconds():.2f}s")
+        output.append("")
+
+        # Show errors
+        if errors:
+            output.append(f"{Colors.RED}Errors:{Colors.RESET}")
+            for error in errors:
+                output.append(f"  {error}")
+            output.append("")
+
+        # Aggregate analysis
+        output.append(f"{Colors.BOLD}Aggregate Analysis{Colors.RESET}")
+        output.append("-" * 80)
+        output.append(f"Total queries analyzed: {analysis['total_queries']}")
+        output.append(f"Total data processed: {analysis['total_gb_processed']:.2f} GB")
+        output.append(f"Total recommendations: {analysis['total_recommendations']}")
+        output.append("")
+
+        output.append("Severity breakdown:")
+        for severity, count in sorted(analysis['severity_breakdown'].items(),
+                                     key=lambda x: ['critical', 'high', 'medium', 'low'].index(x[0])):
+            output.append(f"  {severity.capitalize()}: {count}")
+        output.append("")
+
+        # Most common recommendations
+        if analysis['most_common_recommendations']:
+            output.append(f"{Colors.BOLD}Most Common Recommendations:{Colors.RESET}")
+            sorted_recs = sorted(analysis['most_common_recommendations'].items(),
+                               key=lambda x: x[1], reverse=True)[:10]
+            for rec_type, count in sorted_recs:
+                output.append(f"  {rec_type}: {count}")
+            output.append("")
+
+        # Top queries by cost
+        if analysis['top_queries_by_cost']:
+            output.append(f"{Colors.BOLD}Top Queries by Cost:{Colors.RESET}")
+            for i, query in enumerate(analysis['top_queries_by_cost'], 1):
+                gb = query.get('estimated_cost', {}).get('gb_processed', 0)
+                output.append(f"  {i}. {query['_query_name']}: {gb:.2f} GB")
+            output.append("")
+
+        # Top queries by optimization potential
+        if self.args.prioritize and analysis['top_queries_by_optimization']:
+            output.append(f"{Colors.BOLD}Top Queries by Optimization Potential:{Colors.RESET}")
+            for i, query in enumerate(analysis['top_queries_by_optimization'], 1):
+                score = query.get('_optimization_score', 0)
+                rec_count = len(query.get('recommendations', []))
+                output.append(f"  {i}. {query['_query_name']}: score {score:.1f} ({rec_count} recommendations)")
+            output.append("")
+
+        # Individual query details
+        if not self.args.quiet:
+            output.append(f"{Colors.BOLD}Individual Query Optimizations{Colors.RESET}")
+            output.append("-" * 80)
+
+            # Sort by optimization score if prioritizing
+            queries_to_show = results
+            if self.args.prioritize:
+                queries_to_show = sorted(results, key=lambda x: x.get('_optimization_score', 0), reverse=True)
+
+            for result in queries_to_show[:self.args.top if self.args.prioritize else None]:
+                output.append(f"\n{Colors.CYAN}{result['_query_name']}{Colors.RESET}")
+                output.append(f"  Path: {result['_query_path']}")
+
+                estimated_cost = result.get('estimated_cost', {})
+                output.append(f"  Estimated processing: {estimated_cost.get('gb_processed', 0):.2f} GB")
+
+                recommendations = result.get('recommendations', [])
+                if recommendations:
+                    output.append(f"  Recommendations ({len(recommendations)}):")
+                    for rec in recommendations[:5]:  # Show top 5
+                        severity = rec.get('severity', 'low')
+                        output.append(f"    [{severity.upper()}] {rec.get('message', '')}")
+
+        return "\n".join(output)
+
+    def format_output_json(self, results: List[Dict], analysis: Dict, errors: List[str]) -> str:
+        """Format output as JSON"""
+        output = {
+            "metadata": {
+                "generated": datetime.now().isoformat(),
+                "queries_analyzed": len(results),
+                "errors": len(errors),
+                "execution_time_seconds": (self.end_time - self.start_time).total_seconds()
+            },
+            "errors": errors,
+            "aggregate_analysis": analysis,
+            "optimizations": results
+        }
+
+        return json.dumps(output, indent=2)
+
+    def format_output_markdown(self, results: List[Dict], analysis: Dict, errors: List[str]) -> str:
+        """Format output as Markdown"""
+        output = []
+
+        output.append("# Batch Optimization Report\n")
+        output.append(f"**Generated:** {datetime.now().isoformat()}  ")
+        output.append(f"**Queries analyzed:** {len(results)}  ")
+        output.append(f"**Errors:** {len(errors)}  ")
+        output.append(f"**Execution time:** {(self.end_time - self.start_time).total_seconds():.2f}s\n")
+
+        # Errors
+        if errors:
+            output.append("## Errors\n")
+            for error in errors:
+                output.append(f"- {error}")
+            output.append("")
+
+        # Aggregate analysis
+        output.append("## Aggregate Analysis\n")
+        output.append(f"- **Total queries:** {analysis['total_queries']}")
+        output.append(f"- **Total data processed:** {analysis['total_gb_processed']:.2f} GB")
+        output.append(f"- **Total recommendations:** {analysis['total_recommendations']}\n")
+
+        output.append("### Severity Breakdown\n")
+        for severity, count in sorted(analysis['severity_breakdown'].items(),
+                                     key=lambda x: ['critical', 'high', 'medium', 'low'].index(x[0])):
+            output.append(f"- **{severity.capitalize()}:** {count}")
+        output.append("")
+
+        # Most common recommendations
+        if analysis['most_common_recommendations']:
+            output.append("### Most Common Recommendations\n")
+            sorted_recs = sorted(analysis['most_common_recommendations'].items(),
+                               key=lambda x: x[1], reverse=True)[:10]
+            output.append("| Recommendation Type | Count |")
+            output.append("|---------------------|-------|")
+            for rec_type, count in sorted_recs:
+                output.append(f"| {rec_type} | {count} |")
+            output.append("")
+
+        # Top queries by cost
+        if analysis['top_queries_by_cost']:
+            output.append("### Top Queries by Cost\n")
+            output.append("| Rank | Query | GB Processed |")
+            output.append("|------|-------|--------------|")
+            for i, query in enumerate(analysis['top_queries_by_cost'], 1):
+                gb = query.get('estimated_cost', {}).get('gb_processed', 0)
+                output.append(f"| {i} | {query['_query_name']} | {gb:.2f} |")
+            output.append("")
+
+        # Top by optimization potential
+        if self.args.prioritize and analysis['top_queries_by_optimization']:
+            output.append("### Top Queries by Optimization Potential\n")
+            output.append("| Rank | Query | Score | Recommendations |")
+            output.append("|------|-------|-------|-----------------|")
+            for i, query in enumerate(analysis['top_queries_by_optimization'], 1):
+                score = query.get('_optimization_score', 0)
+                rec_count = len(query.get('recommendations', []))
+                output.append(f"| {i} | {query['_query_name']} | {score:.1f} | {rec_count} |")
+            output.append("")
+
+        # Individual details
+        if not self.args.quiet:
+            output.append("## Individual Query Optimizations\n")
+            queries_to_show = results
+            if self.args.prioritize:
+                queries_to_show = sorted(results, key=lambda x: x.get('_optimization_score', 0), reverse=True)
+
+            for result in queries_to_show[:self.args.top if self.args.prioritize else None]:
+                output.append(f"### {result['_query_name']}\n")
+                output.append(f"**Path:** `{result['_query_path']}`\n")
+
+                estimated_cost = result.get('estimated_cost', {})
+                output.append(f"**Estimated processing:** {estimated_cost.get('gb_processed', 0):.2f} GB\n")
+
+                recommendations = result.get('recommendations', [])
+                if recommendations:
+                    output.append(f"**Recommendations ({len(recommendations)}):**\n")
+                    for rec in recommendations[:5]:
+                        severity = rec.get('severity', 'low')
+                        output.append(f"- **[{severity.upper()}]** {rec.get('message', '')}")
+                    output.append("")
+
+        return "\n".join(output)
+
+    def format_output_html(self, results: List[Dict], analysis: Dict, errors: List[str]) -> str:
+        """Format output as HTML"""
+        html = []
+
+        html.append("<!DOCTYPE html>")
+        html.append("<html><head>")
+        html.append("<title>Batch Optimization Report</title>")
+        html.append("<style>")
+        html.append("body { font-family: Arial, sans-serif; margin: 20px; }")
+        html.append("h1, h2, h3 { color: #333; }")
+        html.append("table { border-collapse: collapse; width: 100%; margin: 20px 0; }")
+        html.append("th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }")
+        html.append("th { background-color: #4CAF50; color: white; }")
+        html.append("tr:nth-child(even) { background-color: #f2f2f2; }")
+        html.append(".error { color: red; }")
+        html.append(".critical { color: red; font-weight: bold; }")
+        html.append(".high { color: orange; font-weight: bold; }")
+        html.append(".medium { color: #ff9800; }")
+        html.append(".low { color: #666; }")
+        html.append(".metadata { color: #666; font-size: 0.9em; }")
+        html.append("</style>")
+        html.append("</head><body>")
+
+        html.append("<h1>Batch Optimization Report</h1>")
+        html.append(f"<div class='metadata'>")
+        html.append(f"<strong>Generated:</strong> {datetime.now().isoformat()}<br>")
+        html.append(f"<strong>Queries analyzed:</strong> {len(results)}<br>")
+        html.append(f"<strong>Errors:</strong> {len(errors)}<br>")
+        html.append(f"<strong>Execution time:</strong> {(self.end_time - self.start_time).total_seconds():.2f}s")
+        html.append("</div>")
+
+        # Errors
+        if errors:
+            html.append("<h2>Errors</h2>")
+            html.append("<ul class='error'>")
+            for error in errors:
+                html.append(f"<li>{error}</li>")
+            html.append("</ul>")
+
+        # Aggregate analysis
+        html.append("<h2>Aggregate Analysis</h2>")
+        html.append("<ul>")
+        html.append(f"<li><strong>Total queries:</strong> {analysis['total_queries']}</li>")
+        html.append(f"<li><strong>Total data processed:</strong> {analysis['total_gb_processed']:.2f} GB</li>")
+        html.append(f"<li><strong>Total recommendations:</strong> {analysis['total_recommendations']}</li>")
+        html.append("</ul>")
+
+        html.append("<h3>Severity Breakdown</h3>")
+        html.append("<ul>")
+        for severity, count in sorted(analysis['severity_breakdown'].items(),
+                                     key=lambda x: ['critical', 'high', 'medium', 'low'].index(x[0])):
+            html.append(f"<li class='{severity}'><strong>{severity.capitalize()}:</strong> {count}</li>")
+        html.append("</ul>")
+
+        # Most common recommendations
+        if analysis['most_common_recommendations']:
+            html.append("<h3>Most Common Recommendations</h3>")
+            html.append("<table>")
+            html.append("<tr><th>Recommendation Type</th><th>Count</th></tr>")
+            sorted_recs = sorted(analysis['most_common_recommendations'].items(),
+                               key=lambda x: x[1], reverse=True)[:10]
+            for rec_type, count in sorted_recs:
+                html.append(f"<tr><td>{rec_type}</td><td>{count}</td></tr>")
+            html.append("</table>")
+
+        # Top queries by cost
+        if analysis['top_queries_by_cost']:
+            html.append("<h3>Top Queries by Cost</h3>")
+            html.append("<table>")
+            html.append("<tr><th>Rank</th><th>Query</th><th>GB Processed</th></tr>")
+            for i, query in enumerate(analysis['top_queries_by_cost'], 1):
+                gb = query.get('estimated_cost', {}).get('gb_processed', 0)
+                html.append(f"<tr><td>{i}</td><td>{query['_query_name']}</td><td>{gb:.2f}</td></tr>")
+            html.append("</table>")
+
+        # Top by optimization potential
+        if self.args.prioritize and analysis['top_queries_by_optimization']:
+            html.append("<h3>Top Queries by Optimization Potential</h3>")
+            html.append("<table>")
+            html.append("<tr><th>Rank</th><th>Query</th><th>Score</th><th>Recommendations</th></tr>")
+            for i, query in enumerate(analysis['top_queries_by_optimization'], 1):
+                score = query.get('_optimization_score', 0)
+                rec_count = len(query.get('recommendations', []))
+                html.append(f"<tr><td>{i}</td><td>{query['_query_name']}</td><td>{score:.1f}</td><td>{rec_count}</td></tr>")
+            html.append("</table>")
+
+        # Individual details
+        if not self.args.quiet:
+            html.append("<h2>Individual Query Optimizations</h2>")
+            queries_to_show = results
+            if self.args.prioritize:
+                queries_to_show = sorted(results, key=lambda x: x.get('_optimization_score', 0), reverse=True)
+
+            for result in queries_to_show[:self.args.top if self.args.prioritize else None]:
+                html.append(f"<h3>{result['_query_name']}</h3>")
+                html.append(f"<p><strong>Path:</strong> <code>{result['_query_path']}</code></p>")
+
+                estimated_cost = result.get('estimated_cost', {})
+                html.append(f"<p><strong>Estimated processing:</strong> {estimated_cost.get('gb_processed', 0):.2f} GB</p>")
+
+                recommendations = result.get('recommendations', [])
+                if recommendations:
+                    html.append(f"<p><strong>Recommendations ({len(recommendations)}):</strong></p>")
+                    html.append("<ul>")
+                    for rec in recommendations[:5]:
+                        severity = rec.get('severity', 'low')
+                        html.append(f"<li class='{severity}'><strong>[{severity.upper()}]</strong> {rec.get('message', '')}</li>")
+                    html.append("</ul>")
+
+        html.append("</body></html>")
+        return "\n".join(html)
+
+    def run(self):
+        """Main execution method"""
+        self.start_time = datetime.now()
+
+        # Load queries
+        self.queries = self.load_queries()
+
+        if not self.queries:
+            print(f"{Colors.RED}Error: No queries to optimize{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"{Colors.CYAN}Optimizing {len(self.queries)} queries with {self.args.parallel} workers...{Colors.RESET}",
+              file=sys.stderr if self.args.output else sys.stdout)
+
+        # Optimize queries
+        self.results, self.errors = self.optimize_queries_parallel(self.queries)
+
+        self.end_time = datetime.now()
+
+        # Generate aggregate analysis
+        self.log("Generating aggregate analysis")
+        analysis = self.generate_aggregate_analysis(self.results)
+
+        # Format output
+        if self.args.format == 'json':
+            output = self.format_output_json(self.results, analysis, self.errors)
+        elif self.args.format == 'markdown':
+            output = self.format_output_markdown(self.results, analysis, self.errors)
+        elif self.args.format == 'html':
+            output = self.format_output_html(self.results, analysis, self.errors)
+        else:
+            output = self.format_output_text(self.results, analysis, self.errors)
+
+        # Write output
+        if self.args.output:
+            with open(self.args.output, 'w') as f:
+                f.write(output)
+            print(f"{Colors.GREEN}Report written to: {self.args.output}{Colors.RESET}", file=sys.stderr)
+        else:
+            print(output)
+
+        # Close log file
+        if self.log_file:
+            self.log_file.close()
+
+        # Exit with error if there were failures
+        if self.errors and not self.args.continue_on_error:
+            sys.exit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Analyze and optimize multiple BigQuery queries",
+                                     add_help=False)
+    parser.add_argument('query_files', nargs='*', help='Query files to optimize')
+    parser.add_argument('--dir', help='Analyze all .sql files in directory')
+    parser.add_argument('--file', help='Read query file list from file')
+    parser.add_argument('--stdin', action='store_true', help='Read query file paths from stdin')
+    parser.add_argument('--pattern', help='Filter SQL files by name pattern (regex)')
+    parser.add_argument('--parallel', type=int, default=4, help='Number of parallel workers')
+    parser.add_argument('--format', choices=['text', 'json', 'markdown', 'html'], default='text',
+                       help='Output format')
+    parser.add_argument('--output', help='Write output to file')
+    parser.add_argument('--progress', action='store_true', help='Show progress bar')
+    parser.add_argument('--quiet', action='store_true', help='Suppress individual query output')
+    parser.add_argument('--continue-on-error', action='store_true', help='Continue on errors')
+    parser.add_argument('--log', help='Write detailed log file')
+    parser.add_argument('--prioritize', action='store_true', help='Prioritize by cost savings')
+    parser.add_argument('--top', type=int, default=10, help='Show top N queries')
+    parser.add_argument('--min-cost', type=float, default=0, help='Minimum GB processed to include')
+    parser.add_argument('--help', '-h', action='store_true', help='Show help message')
+
+    args = parser.parse_args()
+
+    if args.help:
+        print(__doc__)
+        sys.exit(0)
+
+    optimizer = BatchOptimizer(args)
+    optimizer.run()
+
+
+if __name__ == '__main__':
+    main()

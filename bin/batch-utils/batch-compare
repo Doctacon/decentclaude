@@ -1,0 +1,690 @@
+#!/usr/bin/env python3
+"""
+batch-compare - Compare multiple BigQuery table pairs with aggregated reporting
+
+Usage:
+  batch-compare <table_a:table_b> [<table_a:table_b>...] [options]
+  batch-compare --file=<file> [options]
+  cat pairs.txt | batch-compare --stdin [options]
+
+Arguments:
+  table_pairs   One or more table pairs (format: table_a:table_b or table_a|table_b)
+
+Options:
+  --file=<path>           Read table pairs from file
+  --stdin                 Read table pairs from stdin (one per line)
+  --parallel=<n>          Number of parallel workers (default: 4)
+  --format=<format>       Output format: text, json, markdown, html (default: text)
+  --output=<path>         Write output to file instead of stdout
+  --sample-size=<n>       Number of rows to sample (default: 100)
+  --skip-stats            Skip statistical comparisons (faster)
+  --skip-samples          Skip sample data comparison
+  --progress              Show progress bar
+  --quiet                 Suppress individual comparison output, only show summary
+  --continue-on-error     Continue processing if individual comparisons fail
+  --log=<path>            Write detailed log file
+  --critical-only         Only report critical differences (schema changes, large diffs)
+  --threshold=<pct>       Row count difference threshold for critical alert (default: 10%)
+  --help, -h              Show this help message
+
+Input File Formats:
+  Text: one pair per line (table_a:table_b or table_a|table_b)
+  CSV: table_a,table_b,optional_name
+  JSON: [{"table_a": "...", "table_b": "...", "name": "optional"}]
+
+Examples:
+  # Compare multiple pairs directly
+  batch-compare project.staging.users:project.prod.users project.staging.orders:project.prod.orders
+
+  # Compare from file with progress
+  batch-compare --file=pairs.txt --parallel=8 --progress
+
+  # Compare and generate HTML report with critical differences only
+  batch-compare --file=pairs.csv --critical-only --format=html --output=report.html
+
+  # Compare from stdin
+  cat pairs.txt | batch-compare --stdin --format=json --output=differences.json
+
+  # Continue on errors with detailed logging
+  batch-compare --file=pairs.txt --continue-on-error --log=compare.log
+
+  # Fast comparison skipping statistics
+  batch-compare --file=pairs.txt --skip-stats --skip-samples --quiet
+"""
+
+import sys
+import json
+import csv
+import argparse
+from pathlib import Path
+from typing import Dict, List, Any, Optional, Tuple
+from datetime import datetime
+from multiprocessing import Pool, cpu_count
+from functools import partial
+import subprocess
+import re
+
+try:
+    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn
+    from rich.console import Console
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+class BatchComparer:
+    """Batch comparer for multiple BigQuery table pairs"""
+
+    def __init__(self, args):
+        self.args = args
+        self.pairs = []
+        self.results = []
+        self.errors = []
+        self.start_time = None
+        self.end_time = None
+        self.log_file = None
+
+        if args.log:
+            self.log_file = open(args.log, 'w')
+
+    def log(self, message: str, level: str = "INFO"):
+        """Write to log file if configured"""
+        if self.log_file:
+            timestamp = datetime.now().isoformat()
+            self.log_file.write(f"[{timestamp}] [{level}] {message}\n")
+            self.log_file.flush()
+
+    def load_pairs(self) -> List[Dict[str, str]]:
+        """Load table pairs from various sources"""
+        pairs = []
+
+        # Load from direct arguments
+        if self.args.table_pairs:
+            for pair_str in self.args.table_pairs:
+                # Support both : and | as separators
+                if ':' in pair_str:
+                    table_a, table_b = pair_str.split(':', 1)
+                elif '|' in pair_str:
+                    table_a, table_b = pair_str.split('|', 1)
+                else:
+                    print(f"{Colors.RED}Error: Invalid pair format: {pair_str}{Colors.RESET}", file=sys.stderr)
+                    print("Use format: table_a:table_b or table_a|table_b", file=sys.stderr)
+                    sys.exit(1)
+
+                pairs.append({
+                    "table_a": table_a.strip(),
+                    "table_b": table_b.strip(),
+                    "name": f"{table_a.split('.')[-1]} vs {table_b.split('.')[-1]}"
+                })
+
+        # Load from file
+        elif self.args.file:
+            file_path = Path(self.args.file)
+            if not file_path.exists():
+                print(f"{Colors.RED}Error: File not found: {self.args.file}{Colors.RESET}", file=sys.stderr)
+                sys.exit(1)
+
+            self.log(f"Loading pairs from file: {self.args.file}")
+
+            # Detect file format
+            if file_path.suffix.lower() == '.json':
+                with open(file_path) as f:
+                    data = json.load(f)
+                    for item in data:
+                        if isinstance(item, dict) and 'table_a' in item and 'table_b' in item:
+                            pairs.append({
+                                "table_a": item['table_a'],
+                                "table_b": item['table_b'],
+                                "name": item.get('name', f"{item['table_a'].split('.')[-1]} vs {item['table_b'].split('.')[-1]}")
+                            })
+            elif file_path.suffix.lower() == '.csv':
+                with open(file_path) as f:
+                    reader = csv.reader(f)
+                    for row in reader:
+                        if len(row) >= 2:
+                            table_a = row[0].strip()
+                            table_b = row[1].strip()
+                            name = row[2].strip() if len(row) > 2 else f"{table_a.split('.')[-1]} vs {table_b.split('.')[-1]}"
+                            pairs.append({
+                                "table_a": table_a,
+                                "table_b": table_b,
+                                "name": name
+                            })
+            else:
+                # Assume text file
+                with open(file_path) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            if ':' in line:
+                                table_a, table_b = line.split(':', 1)
+                            elif '|' in line:
+                                table_a, table_b = line.split('|', 1)
+                            else:
+                                continue
+
+                            pairs.append({
+                                "table_a": table_a.strip(),
+                                "table_b": table_b.strip(),
+                                "name": f"{table_a.strip().split('.')[-1]} vs {table_b.strip().split('.')[-1]}"
+                            })
+
+        # Load from stdin
+        elif self.args.stdin:
+            self.log("Loading pairs from stdin")
+            for line in sys.stdin:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    if ':' in line:
+                        table_a, table_b = line.split(':', 1)
+                    elif '|' in line:
+                        table_a, table_b = line.split('|', 1)
+                    else:
+                        continue
+
+                    pairs.append({
+                        "table_a": table_a.strip(),
+                        "table_b": table_b.strip(),
+                        "name": f"{table_a.strip().split('.')[-1]} vs {table_b.strip().split('.')[-1]}"
+                    })
+
+        else:
+            print(f"{Colors.RED}Error: No table pairs specified{Colors.RESET}", file=sys.stderr)
+            print("Use one of: table_pairs, --file, or --stdin", file=sys.stderr)
+            sys.exit(1)
+
+        self.log(f"Loaded {len(pairs)} table pairs")
+        return pairs
+
+    def compare_pair(self, pair_info: Dict[str, str]) -> Tuple[Optional[Dict], Optional[str]]:
+        """Compare a single table pair using bq-table-compare"""
+        table_a = pair_info['table_a']
+        table_b = pair_info['table_b']
+
+        try:
+            self.log(f"Comparing: {table_a} vs {table_b}")
+
+            # Build bq-table-compare command
+            cmd = [
+                str(Path(__file__).parent.parent / "data-utils" / "bq-table-compare"),
+                table_a,
+                table_b,
+                "--format=json"
+            ]
+
+            if self.args.sample_size:
+                cmd.append(f"--sample-size={self.args.sample_size}")
+
+            if self.args.skip_stats:
+                cmd.append("--skip-stats")
+
+            if self.args.skip_samples:
+                cmd.append("--skip-samples")
+
+            # Run bq-table-compare
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+
+            if result.returncode == 0:
+                comparison_data = json.loads(result.stdout)
+                comparison_data['_pair_name'] = pair_info['name']
+                comparison_data['_table_a'] = table_a
+                comparison_data['_table_b'] = table_b
+
+                # Determine if this is a critical difference
+                comparison_data['_is_critical'] = self._is_critical_difference(comparison_data)
+
+                self.log(f"Successfully compared: {table_a} vs {table_b}")
+                return comparison_data, None
+            else:
+                error_msg = result.stderr.strip() or "Unknown error"
+                self.log(f"Failed to compare {table_a} vs {table_b}: {error_msg}", "ERROR")
+                return None, f"{table_a} vs {table_b}: {error_msg}"
+
+        except subprocess.TimeoutExpired:
+            error_msg = f"Timeout after 300 seconds"
+            self.log(f"Timeout comparing {table_a} vs {table_b}", "ERROR")
+            return None, f"{table_a} vs {table_b}: {error_msg}"
+        except Exception as e:
+            error_msg = str(e)
+            self.log(f"Exception comparing {table_a} vs {table_b}: {error_msg}", "ERROR")
+            return None, f"{table_a} vs {table_b}: {error_msg}"
+
+    def _is_critical_difference(self, comparison: Dict) -> bool:
+        """Determine if a comparison result contains critical differences"""
+        # Schema differences are always critical
+        schema = comparison.get('schema', {})
+        if schema.get('columns_only_in_a') or schema.get('columns_only_in_b') or schema.get('type_differences'):
+            return True
+
+        # Large row count differences
+        row_counts = comparison.get('row_counts', {})
+        count_a = row_counts.get('table_a', 0)
+        count_b = row_counts.get('table_b', 0)
+
+        if count_a > 0 or count_b > 0:
+            diff_pct = abs(count_a - count_b) / max(count_a, count_b, 1) * 100
+            if diff_pct > self.args.threshold:
+                return True
+
+        return False
+
+    def compare_pairs_parallel(self, pairs: List[Dict[str, str]]) -> Tuple[List[Dict], List[str]]:
+        """Compare pairs in parallel"""
+        results = []
+        errors = []
+
+        if self.args.progress and RICH_AVAILABLE:
+            console = Console()
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                TimeRemainingColumn(),
+                console=console
+            ) as progress:
+                task = progress.add_task("Comparing table pairs...", total=len(pairs))
+
+                with Pool(processes=self.args.parallel) as pool:
+                    for result, error in pool.imap_unordered(self.compare_pair, pairs):
+                        if result:
+                            results.append(result)
+                        if error:
+                            errors.append(error)
+                            if not self.args.continue_on_error:
+                                pool.terminate()
+                                break
+                        progress.update(task, advance=1)
+        else:
+            # No progress bar
+            with Pool(processes=self.args.parallel) as pool:
+                for result, error in pool.imap_unordered(self.compare_pair, pairs):
+                    if result:
+                        results.append(result)
+                    if error:
+                        errors.append(error)
+                        if not self.args.continue_on_error:
+                            pool.terminate()
+                            break
+
+        return results, errors
+
+    def generate_aggregate_analysis(self, results: List[Dict]) -> Dict[str, Any]:
+        """Generate aggregate analysis across all comparisons"""
+        analysis = {
+            "total_comparisons": len(results),
+            "critical_differences": 0,
+            "schema_differences": 0,
+            "row_count_differences": 0,
+            "identical_tables": 0,
+            "critical_pairs": []
+        }
+
+        for result in results:
+            if result.get('_is_critical'):
+                analysis['critical_differences'] += 1
+                analysis['critical_pairs'].append({
+                    "name": result.get('_pair_name'),
+                    "table_a": result.get('_table_a'),
+                    "table_b": result.get('_table_b'),
+                    "summary": result.get('summary', {})
+                })
+
+            schema = result.get('schema', {})
+            if schema.get('columns_only_in_a') or schema.get('columns_only_in_b') or schema.get('type_differences'):
+                analysis['schema_differences'] += 1
+
+            row_counts = result.get('row_counts', {})
+            if row_counts.get('table_a') != row_counts.get('table_b'):
+                analysis['row_count_differences'] += 1
+
+            summary = result.get('summary', {})
+            if summary.get('identical', False):
+                analysis['identical_tables'] += 1
+
+        return analysis
+
+    def format_output_text(self, results: List[Dict], analysis: Dict, errors: List[str]) -> str:
+        """Format output as text"""
+        output = []
+
+        output.append(f"{Colors.BOLD}Batch Comparison Report{Colors.RESET}")
+        output.append("=" * 80)
+        output.append(f"Generated: {datetime.now().isoformat()}")
+        output.append(f"Comparisons completed: {len(results)}")
+        output.append(f"Errors: {len(errors)}")
+        output.append(f"Execution time: {(self.end_time - self.start_time).total_seconds():.2f}s")
+        output.append("")
+
+        # Show errors
+        if errors:
+            output.append(f"{Colors.RED}Errors:{Colors.RESET}")
+            for error in errors:
+                output.append(f"  {error}")
+            output.append("")
+
+        # Aggregate analysis
+        output.append(f"{Colors.BOLD}Aggregate Analysis{Colors.RESET}")
+        output.append("-" * 80)
+        output.append(f"Total comparisons: {analysis['total_comparisons']}")
+        output.append(f"Critical differences: {analysis['critical_differences']}")
+        output.append(f"Schema differences: {analysis['schema_differences']}")
+        output.append(f"Row count differences: {analysis['row_count_differences']}")
+        output.append(f"Identical tables: {analysis['identical_tables']}")
+        output.append("")
+
+        # Critical pairs
+        if analysis['critical_pairs']:
+            output.append(f"{Colors.RED}{Colors.BOLD}Critical Differences:{Colors.RESET}")
+            for pair in analysis['critical_pairs']:
+                output.append(f"\n  {pair['name']}")
+                output.append(f"    {pair['table_a']}")
+                output.append(f"    {pair['table_b']}")
+                summary = pair.get('summary', {})
+                if summary:
+                    output.append(f"    Status: {summary.get('status', 'unknown')}")
+            output.append("")
+
+        # Individual comparisons (if not quiet and not critical-only)
+        if not self.args.quiet:
+            if self.args.critical_only:
+                results_to_show = [r for r in results if r.get('_is_critical')]
+            else:
+                results_to_show = results
+
+            if results_to_show:
+                output.append(f"{Colors.BOLD}Individual Comparisons{Colors.RESET}")
+                output.append("-" * 80)
+
+                for result in results_to_show:
+                    output.append(f"\n{Colors.CYAN}{result.get('_pair_name')}{Colors.RESET}")
+                    output.append(f"  Table A: {result.get('_table_a')}")
+                    output.append(f"  Table B: {result.get('_table_b')}")
+
+                    summary = result.get('summary', {})
+                    output.append(f"  Status: {summary.get('status', 'unknown')}")
+
+                    row_counts = result.get('row_counts', {})
+                    output.append(f"  Rows A: {row_counts.get('table_a', 0):,}")
+                    output.append(f"  Rows B: {row_counts.get('table_b', 0):,}")
+
+                    schema = result.get('schema', {})
+                    if schema.get('columns_only_in_a'):
+                        output.append(f"  {Colors.YELLOW}Columns only in A: {', '.join(schema['columns_only_in_a'])}{Colors.RESET}")
+                    if schema.get('columns_only_in_b'):
+                        output.append(f"  {Colors.YELLOW}Columns only in B: {', '.join(schema['columns_only_in_b'])}{Colors.RESET}")
+
+        return "\n".join(output)
+
+    def format_output_json(self, results: List[Dict], analysis: Dict, errors: List[str]) -> str:
+        """Format output as JSON"""
+        output = {
+            "metadata": {
+                "generated": datetime.now().isoformat(),
+                "comparisons_completed": len(results),
+                "errors": len(errors),
+                "execution_time_seconds": (self.end_time - self.start_time).total_seconds()
+            },
+            "errors": errors,
+            "aggregate_analysis": analysis,
+            "comparisons": results
+        }
+
+        return json.dumps(output, indent=2)
+
+    def format_output_markdown(self, results: List[Dict], analysis: Dict, errors: List[str]) -> str:
+        """Format output as Markdown"""
+        output = []
+
+        output.append("# Batch Comparison Report\n")
+        output.append(f"**Generated:** {datetime.now().isoformat()}  ")
+        output.append(f"**Comparisons completed:** {len(results)}  ")
+        output.append(f"**Errors:** {len(errors)}  ")
+        output.append(f"**Execution time:** {(self.end_time - self.start_time).total_seconds():.2f}s\n")
+
+        # Errors
+        if errors:
+            output.append("## Errors\n")
+            for error in errors:
+                output.append(f"- {error}")
+            output.append("")
+
+        # Aggregate analysis
+        output.append("## Aggregate Analysis\n")
+        output.append(f"- **Total comparisons:** {analysis['total_comparisons']}")
+        output.append(f"- **Critical differences:** {analysis['critical_differences']}")
+        output.append(f"- **Schema differences:** {analysis['schema_differences']}")
+        output.append(f"- **Row count differences:** {analysis['row_count_differences']}")
+        output.append(f"- **Identical tables:** {analysis['identical_tables']}\n")
+
+        # Critical pairs
+        if analysis['critical_pairs']:
+            output.append("## Critical Differences\n")
+            output.append("| Pair | Table A | Table B | Status |")
+            output.append("|------|---------|---------|--------|")
+            for pair in analysis['critical_pairs']:
+                summary = pair.get('summary', {})
+                output.append(f"| {pair['name']} | {pair['table_a']} | {pair['table_b']} | {summary.get('status', 'unknown')} |")
+            output.append("")
+
+        # Individual comparisons
+        if not self.args.quiet:
+            if self.args.critical_only:
+                results_to_show = [r for r in results if r.get('_is_critical')]
+            else:
+                results_to_show = results
+
+            if results_to_show:
+                output.append("## Individual Comparisons\n")
+                for result in results_to_show:
+                    output.append(f"### {result.get('_pair_name')}\n")
+                    output.append(f"- **Table A:** {result.get('_table_a')}")
+                    output.append(f"- **Table B:** {result.get('_table_b')}")
+
+                    summary = result.get('summary', {})
+                    output.append(f"- **Status:** {summary.get('status', 'unknown')}")
+
+                    row_counts = result.get('row_counts', {})
+                    output.append(f"- **Rows A:** {row_counts.get('table_a', 0):,}")
+                    output.append(f"- **Rows B:** {row_counts.get('table_b', 0):,}")
+
+                    schema = result.get('schema', {})
+                    if schema.get('columns_only_in_a'):
+                        output.append(f"- **Columns only in A:** {', '.join(schema['columns_only_in_a'])}")
+                    if schema.get('columns_only_in_b'):
+                        output.append(f"- **Columns only in B:** {', '.join(schema['columns_only_in_b'])}")
+                    output.append("")
+
+        return "\n".join(output)
+
+    def format_output_html(self, results: List[Dict], analysis: Dict, errors: List[str]) -> str:
+        """Format output as HTML"""
+        html = []
+
+        html.append("<!DOCTYPE html>")
+        html.append("<html><head>")
+        html.append("<title>Batch Comparison Report</title>")
+        html.append("<style>")
+        html.append("body { font-family: Arial, sans-serif; margin: 20px; }")
+        html.append("h1, h2, h3 { color: #333; }")
+        html.append("table { border-collapse: collapse; width: 100%; margin: 20px 0; }")
+        html.append("th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }")
+        html.append("th { background-color: #4CAF50; color: white; }")
+        html.append("tr:nth-child(even) { background-color: #f2f2f2; }")
+        html.append(".error { color: red; }")
+        html.append(".warning { color: orange; }")
+        html.append(".critical { background-color: #ffebee; }")
+        html.append(".metadata { color: #666; font-size: 0.9em; }")
+        html.append("</style>")
+        html.append("</head><body>")
+
+        html.append("<h1>Batch Comparison Report</h1>")
+        html.append(f"<div class='metadata'>")
+        html.append(f"<strong>Generated:</strong> {datetime.now().isoformat()}<br>")
+        html.append(f"<strong>Comparisons completed:</strong> {len(results)}<br>")
+        html.append(f"<strong>Errors:</strong> {len(errors)}<br>")
+        html.append(f"<strong>Execution time:</strong> {(self.end_time - self.start_time).total_seconds():.2f}s")
+        html.append("</div>")
+
+        # Errors
+        if errors:
+            html.append("<h2>Errors</h2>")
+            html.append("<ul class='error'>")
+            for error in errors:
+                html.append(f"<li>{error}</li>")
+            html.append("</ul>")
+
+        # Aggregate analysis
+        html.append("<h2>Aggregate Analysis</h2>")
+        html.append("<ul>")
+        html.append(f"<li><strong>Total comparisons:</strong> {analysis['total_comparisons']}</li>")
+        html.append(f"<li><strong>Critical differences:</strong> {analysis['critical_differences']}</li>")
+        html.append(f"<li><strong>Schema differences:</strong> {analysis['schema_differences']}</li>")
+        html.append(f"<li><strong>Row count differences:</strong> {analysis['row_count_differences']}</li>")
+        html.append(f"<li><strong>Identical tables:</strong> {analysis['identical_tables']}</li>")
+        html.append("</ul>")
+
+        # Critical pairs
+        if analysis['critical_pairs']:
+            html.append("<h2>Critical Differences</h2>")
+            html.append("<table>")
+            html.append("<tr><th>Pair</th><th>Table A</th><th>Table B</th><th>Status</th></tr>")
+            for pair in analysis['critical_pairs']:
+                summary = pair.get('summary', {})
+                html.append(f"<tr class='critical'>")
+                html.append(f"<td>{pair['name']}</td>")
+                html.append(f"<td>{pair['table_a']}</td>")
+                html.append(f"<td>{pair['table_b']}</td>")
+                html.append(f"<td>{summary.get('status', 'unknown')}</td>")
+                html.append("</tr>")
+            html.append("</table>")
+
+        # Individual comparisons
+        if not self.args.quiet:
+            if self.args.critical_only:
+                results_to_show = [r for r in results if r.get('_is_critical')]
+            else:
+                results_to_show = results
+
+            if results_to_show:
+                html.append("<h2>Individual Comparisons</h2>")
+                for result in results_to_show:
+                    html.append(f"<h3>{result.get('_pair_name')}</h3>")
+                    html.append("<ul>")
+                    html.append(f"<li><strong>Table A:</strong> {result.get('_table_a')}</li>")
+                    html.append(f"<li><strong>Table B:</strong> {result.get('_table_b')}</li>")
+
+                    summary = result.get('summary', {})
+                    html.append(f"<li><strong>Status:</strong> {summary.get('status', 'unknown')}</li>")
+
+                    row_counts = result.get('row_counts', {})
+                    html.append(f"<li><strong>Rows A:</strong> {row_counts.get('table_a', 0):,}</li>")
+                    html.append(f"<li><strong>Rows B:</strong> {row_counts.get('table_b', 0):,}</li>")
+
+                    schema = result.get('schema', {})
+                    if schema.get('columns_only_in_a'):
+                        html.append(f"<li class='warning'><strong>Columns only in A:</strong> {', '.join(schema['columns_only_in_a'])}</li>")
+                    if schema.get('columns_only_in_b'):
+                        html.append(f"<li class='warning'><strong>Columns only in B:</strong> {', '.join(schema['columns_only_in_b'])}</li>")
+
+                    html.append("</ul>")
+
+        html.append("</body></html>")
+        return "\n".join(html)
+
+    def run(self):
+        """Main execution method"""
+        self.start_time = datetime.now()
+
+        # Load pairs
+        self.pairs = self.load_pairs()
+
+        if not self.pairs:
+            print(f"{Colors.RED}Error: No table pairs to compare{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"{Colors.CYAN}Comparing {len(self.pairs)} table pairs with {self.args.parallel} workers...{Colors.RESET}",
+              file=sys.stderr if self.args.output else sys.stdout)
+
+        # Compare pairs
+        self.results, self.errors = self.compare_pairs_parallel(self.pairs)
+
+        self.end_time = datetime.now()
+
+        # Generate aggregate analysis
+        self.log("Generating aggregate analysis")
+        analysis = self.generate_aggregate_analysis(self.results)
+
+        # Format output
+        if self.args.format == 'json':
+            output = self.format_output_json(self.results, analysis, self.errors)
+        elif self.args.format == 'markdown':
+            output = self.format_output_markdown(self.results, analysis, self.errors)
+        elif self.args.format == 'html':
+            output = self.format_output_html(self.results, analysis, self.errors)
+        else:
+            output = self.format_output_text(self.results, analysis, self.errors)
+
+        # Write output
+        if self.args.output:
+            with open(self.args.output, 'w') as f:
+                f.write(output)
+            print(f"{Colors.GREEN}Report written to: {self.args.output}{Colors.RESET}", file=sys.stderr)
+        else:
+            print(output)
+
+        # Close log file
+        if self.log_file:
+            self.log_file.close()
+
+        # Exit with error if there were failures
+        if self.errors and not self.args.continue_on_error:
+            sys.exit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Compare multiple BigQuery table pairs with aggregated reporting",
+                                     add_help=False)
+    parser.add_argument('table_pairs', nargs='*', help='Table pairs to compare (format: table_a:table_b)')
+    parser.add_argument('--file', help='Read table pairs from file')
+    parser.add_argument('--stdin', action='store_true', help='Read table pairs from stdin')
+    parser.add_argument('--parallel', type=int, default=4, help='Number of parallel workers')
+    parser.add_argument('--format', choices=['text', 'json', 'markdown', 'html'], default='text',
+                       help='Output format')
+    parser.add_argument('--output', help='Write output to file')
+    parser.add_argument('--sample-size', type=int, help='Number of rows to sample')
+    parser.add_argument('--skip-stats', action='store_true', help='Skip statistical comparisons')
+    parser.add_argument('--skip-samples', action='store_true', help='Skip sample data comparison')
+    parser.add_argument('--progress', action='store_true', help='Show progress bar')
+    parser.add_argument('--quiet', action='store_true', help='Suppress individual comparison output')
+    parser.add_argument('--continue-on-error', action='store_true', help='Continue on errors')
+    parser.add_argument('--log', help='Write detailed log file')
+    parser.add_argument('--critical-only', action='store_true', help='Only report critical differences')
+    parser.add_argument('--threshold', type=float, default=10.0,
+                       help='Row count difference threshold for critical alert (percentage)')
+    parser.add_argument('--help', '-h', action='store_true', help='Show help message')
+
+    args = parser.parse_args()
+
+    if args.help:
+        print(__doc__)
+        sys.exit(0)
+
+    comparer = BatchComparer(args)
+    comparer.run()
+
+
+if __name__ == '__main__':
+    main()

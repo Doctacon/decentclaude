@@ -1,0 +1,15 @@
+# Core observability dependencies
+
+# Optional: Prometheus metrics (enable with METRICS_ENABLED=true)
+prometheus-client>=0.19.0
+
+# Optional: Datadog integration (enable with DATADOG_ENABLED=true)
+datadog>=0.48.0
+
+# Optional: Sentry error tracking (enable with SENTRY_ENABLED=true)
+sentry-sdk>=1.40.0
+
+# Optional: For health check HTTP requests
+requests>=2.31.0
+
+# Note: google-cloud-bigquery is already a dependency for the main project

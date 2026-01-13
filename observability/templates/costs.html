@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Costs - Observability Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: #2c3e50;
+            color: white;
+            padding: 20px 0;
+            margin-bottom: 30px;
+        }
+
+        h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+
+        .nav {
+            display: flex;
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .nav a {
+            color: white;
+            text-decoration: none;
+            padding: 8px 15px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        .nav a:hover, .nav a.active {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        select {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: white;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .btn:hover {
+            background: #2980b9;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #f39c12;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            color: #7f8c8d;
+            font-size: 1em;
+        }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(600px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .chart-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .chart-title {
+            font-size: 1.3em;
+            font-weight: bold;
+            margin-bottom: 15px;
+            color: #2c3e50;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+
+        .budget-card {
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .budget-bar {
+            width: 100%;
+            height: 30px;
+            background: #ecf0f1;
+            border-radius: 15px;
+            overflow: hidden;
+            margin: 15px 0;
+        }
+
+        .budget-progress {
+            height: 100%;
+            background: linear-gradient(90deg, #27ae60, #f39c12);
+            transition: width 0.3s ease;
+        }
+
+        .budget-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.9em;
+            color: #7f8c8d;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Cost Trends & Budget</h1>
+            <p>BigQuery cost tracking and budget monitoring</p>
+            <div class="nav">
+                <a href="/">Dashboard</a>
+                <a href="/metrics">Metrics</a>
+                <a href="/queries">Queries</a>
+                <a href="/costs" class="active">Costs</a>
+                <a href="/errors">Errors</a>
+                <a href="/health">Health</a>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="controls">
+            <div class="control-group">
+                <label>Period:</label>
+                <select id="period">
+                    <option value="daily" selected>Daily</option>
+                    <option value="weekly">Weekly</option>
+                    <option value="monthly">Monthly</option>
+                </select>
+            </div>
+            <button class="btn" onclick="loadCostData()">Refresh</button>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="todayCost">$0.00</div>
+                <div class="stat-label">Today's Cost</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="monthCost">$0.00</div>
+                <div class="stat-label">This Month</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="avgDailyCost">$0.00</div>
+                <div class="stat-label">Avg Daily Cost</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="projectedCost">$0.00</div>
+                <div class="stat-label">Projected Monthly</div>
+            </div>
+        </div>
+
+        <div class="budget-card">
+            <div class="chart-title">Monthly Budget</div>
+            <div class="budget-bar">
+                <div class="budget-progress" id="budgetProgress" style="width: 0%"></div>
+            </div>
+            <div class="budget-labels">
+                <span id="spentLabel">$0.00 spent</span>
+                <span id="budgetLabel">$100.00 budget</span>
+            </div>
+        </div>
+
+        <div class="charts-grid">
+            <div class="chart-card">
+                <div class="chart-title">Cost Trends</div>
+                <div class="chart-container">
+                    <canvas id="costTrendsChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-title">Cost by Query Type</div>
+                <div class="chart-container">
+                    <canvas id="costByTypeChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-title">Data Processing Volume</div>
+                <div class="chart-container">
+                    <canvas id="volumeChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-title">Cost Efficiency</div>
+                <div class="chart-container">
+                    <canvas id="efficiencyChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let costTrendsChart, costByTypeChart, volumeChart, efficiencyChart;
+
+        async function loadCostData() {
+            const period = document.getElementById('period').value;
+            await loadCostStats();
+            await loadCostTrendsChart(period);
+            await loadCostByTypeChart();
+            await loadVolumeChart(period);
+            await loadEfficiencyChart(period);
+        }
+
+        async function loadCostStats() {
+            try {
+                const response = await fetch('/api/costs/trends?period=daily');
+                const data = await response.json();
+
+                const totalCost = data.trends.reduce((sum, t) => sum + t.cost_usd, 0);
+                const avgDailyCost = totalCost / data.trends.length;
+                const projectedMonthly = avgDailyCost * 30;
+
+                document.getElementById('todayCost').textContent =
+                    '$' + data.trends[data.trends.length - 1].cost_usd.toFixed(2);
+                document.getElementById('monthCost').textContent =
+                    '$' + totalCost.toFixed(2);
+                document.getElementById('avgDailyCost').textContent =
+                    '$' + avgDailyCost.toFixed(2);
+                document.getElementById('projectedCost').textContent =
+                    '$' + projectedMonthly.toFixed(2);
+
+                // Update budget bar
+                const budget = 100.00;
+                const percentage = (totalCost / budget) * 100;
+                document.getElementById('budgetProgress').style.width = Math.min(percentage, 100) + '%';
+                document.getElementById('spentLabel').textContent = '$' + totalCost.toFixed(2) + ' spent';
+                document.getElementById('budgetLabel').textContent = '$' + budget.toFixed(2) + ' budget';
+
+            } catch (error) {
+                console.error('Error loading cost stats:', error);
+            }
+        }
+
+        async function loadCostTrendsChart(period) {
+            try {
+                const response = await fetch(`/api/costs/trends?period=${period}`);
+                const data = await response.json();
+
+                const ctx = document.getElementById('costTrendsChart');
+
+                if (costTrendsChart) {
+                    costTrendsChart.destroy();
+                }
+
+                costTrendsChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: data.trends.map(t => t.period),
+                        datasets: [{
+                            label: 'Cost (USD)',
+                            data: data.trends.map(t => t.cost_usd),
+                            borderColor: '#f39c12',
+                            backgroundColor: 'rgba(243, 156, 18, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading cost trends chart:', error);
+            }
+        }
+
+        async function loadCostByTypeChart() {
+            const ctx = document.getElementById('costByTypeChart');
+
+            if (costByTypeChart) {
+                costByTypeChart.destroy();
+            }
+
+            costByTypeChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'],
+                    datasets: [{
+                        data: [45, 25, 20, 10],
+                        backgroundColor: [
+                            'rgba(52, 152, 219, 0.8)',
+                            'rgba(39, 174, 96, 0.8)',
+                            'rgba(243, 156, 18, 0.8)',
+                            'rgba(231, 76, 60, 0.8)'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        }
+                    }
+                }
+            });
+        }
+
+        async function loadVolumeChart(period) {
+            try {
+                const response = await fetch(`/api/costs/trends?period=${period}`);
+                const data = await response.json();
+
+                const ctx = document.getElementById('volumeChart');
+
+                if (volumeChart) {
+                    volumeChart.destroy();
+                }
+
+                volumeChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: data.trends.map(t => t.period),
+                        datasets: [{
+                            label: 'Bytes Processed (GB)',
+                            data: data.trends.map(t => t.bytes_processed / (1024 * 1024 * 1024)),
+                            backgroundColor: 'rgba(155, 89, 182, 0.7)',
+                            borderColor: '#9b59b6',
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading volume chart:', error);
+            }
+        }
+
+        async function loadEfficiencyChart(period) {
+            try {
+                const response = await fetch(`/api/costs/trends?period=${period}`);
+                const data = await response.json();
+
+                const ctx = document.getElementById('efficiencyChart');
+
+                if (efficiencyChart) {
+                    efficiencyChart.destroy();
+                }
+
+                efficiencyChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: data.trends.map(t => t.period),
+                        datasets: [{
+                            label: 'Cost per Query ($)',
+                            data: data.trends.map(t => t.cost_usd / t.queries),
+                            borderColor: '#e74c3c',
+                            backgroundColor: 'rgba(231, 76, 60, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading efficiency chart:', error);
+            }
+        }
+
+        // Load initial data
+        loadCostData();
+
+        // Auto-refresh every 60 seconds
+        setInterval(loadCostData, 60000);
+    </script>
+</body>
+</html>

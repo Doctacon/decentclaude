@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Observability Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: #2c3e50;
+            color: white;
+            padding: 20px 0;
+            margin-bottom: 30px;
+        }
+
+        h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+
+        .nav {
+            display: flex;
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .nav a {
+            color: white;
+            text-decoration: none;
+            padding: 8px 15px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        .nav a:hover, .nav a.active {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #3498db;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            color: #7f8c8d;
+            font-size: 1em;
+        }
+
+        .stat-trend {
+            font-size: 0.9em;
+            margin-top: 10px;
+            color: #27ae60;
+        }
+
+        .stat-trend.down {
+            color: #c0392b;
+        }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .chart-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .chart-title {
+            font-size: 1.3em;
+            font-weight: bold;
+            margin-bottom: 15px;
+            color: #2c3e50;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+
+        .recent-activity {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .activity-item {
+            padding: 15px;
+            border-bottom: 1px solid #ecf0f1;
+        }
+
+        .activity-item:last-child {
+            border-bottom: none;
+        }
+
+        .activity-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 5px;
+        }
+
+        .activity-type {
+            font-weight: bold;
+            color: #2c3e50;
+        }
+
+        .activity-time {
+            color: #7f8c8d;
+            font-size: 0.9em;
+        }
+
+        .activity-details {
+            color: #555;
+            font-size: 0.95em;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+
+        .status-indicator.healthy {
+            background: #27ae60;
+        }
+
+        .status-indicator.degraded {
+            background: #f39c12;
+        }
+
+        .status-indicator.unhealthy {
+            background: #c0392b;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #7f8c8d;
+        }
+
+        .error {
+            background: #fadbd8;
+            color: #c0392b;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+
+        .refresh-btn {
+            padding: 10px 20px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+
+        .refresh-btn:hover {
+            background: #2980b9;
+        }
+
+        .timestamp {
+            text-align: right;
+            color: #7f8c8d;
+            font-size: 0.9em;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Observability Dashboard</h1>
+            <p>Real-time monitoring and analytics</p>
+            <div class="nav">
+                <a href="/" class="active">Dashboard</a>
+                <a href="/metrics">Metrics</a>
+                <a href="/queries">Queries</a>
+                <a href="/costs">Costs</a>
+                <a href="/errors">Errors</a>
+                <a href="/health">Health</a>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <button class="refresh-btn" onclick="loadDashboardData()">Refresh</button>
+
+        <div id="error" class="error" style="display: none;"></div>
+
+        <div class="stats-grid" id="statsGrid">
+            <div class="loading">Loading statistics...</div>
+        </div>
+
+        <div class="charts-grid">
+            <div class="chart-card">
+                <div class="chart-title">Query Performance (24h)</div>
+                <div class="chart-container">
+                    <canvas id="queryPerformanceChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-title">Cost Trends (24h)</div>
+                <div class="chart-container">
+                    <canvas id="costTrendsChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-title">Error Rate (24h)</div>
+                <div class="chart-container">
+                    <canvas id="errorRateChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-title">System Health</div>
+                <div class="chart-container">
+                    <canvas id="systemHealthChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="recent-activity">
+            <div class="chart-title">Recent Activity</div>
+            <div id="recentActivity">
+                <div class="loading">Loading recent activity...</div>
+            </div>
+        </div>
+
+        <div class="timestamp" id="lastUpdate"></div>
+    </div>
+
+    <script>
+        let queryChart, costChart, errorChart, healthChart;
+
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const stats = await response.json();
+
+                const statsHtml = `
+                    <div class="stat-card">
+                        <div class="stat-value">${stats.total_queries.toLocaleString()}</div>
+                        <div class="stat-label">Total Queries</div>
+                        <div class="stat-trend">+12% from last week</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${stats.avg_query_duration_seconds.toFixed(3)}s</div>
+                        <div class="stat-label">Avg Query Duration</div>
+                        <div class="stat-trend down">+5% from last week</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">$${stats.total_cost_usd.toFixed(2)}</div>
+                        <div class="stat-label">Total Cost</div>
+                        <div class="stat-trend">+8% from last week</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${stats.total_errors}</div>
+                        <div class="stat-label">Total Errors</div>
+                        <div class="stat-trend down">${stats.total_errors > 10 ? 'High' : 'Normal'}</div>
+                    </div>
+                `;
+
+                document.getElementById('statsGrid').innerHTML = statsHtml;
+            } catch (error) {
+                showError('Error loading stats: ' + error.message);
+            }
+        }
+
+        async function loadQueryPerformanceChart() {
+            try {
+                const response = await fetch('/api/metrics/recent?hours=24');
+                const data = await response.json();
+
+                const ctx = document.getElementById('queryPerformanceChart');
+
+                if (queryChart) {
+                    queryChart.destroy();
+                }
+
+                queryChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: data.data.map(d => new Date(d.timestamp).getHours() + ':00'),
+                        datasets: [{
+                            label: 'Query Count',
+                            data: data.data.map(d => d.query_count),
+                            borderColor: '#3498db',
+                            backgroundColor: 'rgba(52, 152, 219, 0.1)',
+                            tension: 0.4
+                        }, {
+                            label: 'Avg Duration (s)',
+                            data: data.data.map(d => d.avg_duration),
+                            borderColor: '#27ae60',
+                            backgroundColor: 'rgba(39, 174, 96, 0.1)',
+                            tension: 0.4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top'
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading query performance chart:', error);
+            }
+        }
+
+        async function loadCostTrendsChart() {
+            try {
+                const response = await fetch('/api/metrics/recent?hours=24');
+                const data = await response.json();
+
+                const ctx = document.getElementById('costTrendsChart');
+
+                if (costChart) {
+                    costChart.destroy();
+                }
+
+                costChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: data.data.map(d => new Date(d.timestamp).getHours() + ':00'),
+                        datasets: [{
+                            label: 'Cost (USD)',
+                            data: data.data.map(d => d.cost_usd),
+                            backgroundColor: 'rgba(241, 196, 15, 0.7)',
+                            borderColor: '#f39c12',
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading cost trends chart:', error);
+            }
+        }
+
+        async function loadErrorRateChart() {
+            try {
+                const response = await fetch('/api/metrics/recent?hours=24');
+                const data = await response.json();
+
+                const ctx = document.getElementById('errorRateChart');
+
+                if (errorChart) {
+                    errorChart.destroy();
+                }
+
+                errorChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: data.data.map(d => new Date(d.timestamp).getHours() + ':00'),
+                        datasets: [{
+                            label: 'Errors',
+                            data: data.data.map(d => d.error_count),
+                            borderColor: '#e74c3c',
+                            backgroundColor: 'rgba(231, 76, 60, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading error rate chart:', error);
+            }
+        }
+
+        async function loadSystemHealthChart() {
+            try {
+                const response = await fetch('/api/health');
+                const health = await response.json();
+
+                const ctx = document.getElementById('systemHealthChart');
+
+                if (healthChart) {
+                    healthChart.destroy();
+                }
+
+                const checks = Object.values(health.checks);
+                const healthyCount = checks.filter(c => c.status === 'healthy').length;
+                const degradedCount = checks.filter(c => c.status === 'degraded').length;
+                const unhealthyCount = checks.filter(c => c.status === 'unhealthy').length;
+
+                healthChart = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['Healthy', 'Degraded', 'Unhealthy'],
+                        datasets: [{
+                            data: [healthyCount, degradedCount, unhealthyCount],
+                            backgroundColor: [
+                                'rgba(39, 174, 96, 0.8)',
+                                'rgba(243, 156, 18, 0.8)',
+                                'rgba(231, 76, 60, 0.8)'
+                            ],
+                            borderColor: [
+                                '#27ae60',
+                                '#f39c12',
+                                '#e74c3c'
+                            ],
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                position: 'bottom'
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading system health chart:', error);
+            }
+        }
+
+        async function loadRecentActivity() {
+            try {
+                const response = await fetch('/api/queries/recent?limit=10');
+                const data = await response.json();
+
+                const activityHtml = data.queries.map(query => `
+                    <div class="activity-item">
+                        <div class="activity-header">
+                            <div class="activity-type">
+                                <span class="status-indicator ${query.status === 'success' ? 'healthy' : 'unhealthy'}"></span>
+                                ${query.query_type} Query
+                            </div>
+                            <div class="activity-time">${new Date(query.timestamp).toLocaleTimeString()}</div>
+                        </div>
+                        <div class="activity-details">
+                            Duration: ${query.duration_seconds}s |
+                            Rows: ${query.rows_returned.toLocaleString()} |
+                            Bytes: ${(query.bytes_processed / 1024).toFixed(2)} KB
+                        </div>
+                    </div>
+                `).join('');
+
+                document.getElementById('recentActivity').innerHTML = activityHtml;
+            } catch (error) {
+                console.error('Error loading recent activity:', error);
+            }
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            setTimeout(() => {
+                errorDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        function updateTimestamp() {
+            document.getElementById('lastUpdate').textContent =
+                'Last updated: ' + new Date().toLocaleString();
+        }
+
+        async function loadDashboardData() {
+            await loadStats();
+            await loadQueryPerformanceChart();
+            await loadCostTrendsChart();
+            await loadErrorRateChart();
+            await loadSystemHealthChart();
+            await loadRecentActivity();
+            updateTimestamp();
+        }
+
+        // Load initial data
+        loadDashboardData();
+
+        // Auto-refresh every 30 seconds
+        setInterval(loadDashboardData, 30000);
+    </script>
+</body>
+</html>

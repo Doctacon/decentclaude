@@ -4,6 +4,8 @@ bq-table-compare - Detailed comparison of two BigQuery tables
 
 Usage:
   bq-table-compare <table_a> <table_b> [options]
+  bq-table-compare --pairs-file=<file> [options]
+  echo "table1:table2" | bq-table-compare --parallel 2
 
 Arguments:
   table_a    First table ID (format: project.dataset.table)
@@ -14,12 +16,16 @@ Options:
   --sample-size=<n>     Number of rows to sample for comparison (default: 100)
   --skip-stats          Skip statistical comparisons (faster)
   --skip-samples        Skip sample data comparison
+  --parallel=<n>        Number of parallel workers for batch comparison (default: 4)
+  --progress            Show progress bar during batch comparison
+  --pairs-file=<file>   Read table pairs from file (one pair per line, format: table_a:table_b)
   --help, -h            Show this help message
 
 Examples:
   bq-table-compare project.staging.users project.prod.users
   bq-table-compare myproject.dataset.table_v1 myproject.dataset.table_v2 --format=json
   bq-table-compare project.staging.data project.prod.data --sample-size=1000
+  bq-table-compare --parallel 2 --pairs-file=table_pairs.txt --progress
 """
 
 import sys
@@ -28,6 +34,15 @@ import argparse
 from typing import Dict, List, Set, Tuple, Any, Optional
 from google.cloud import bigquery
 from datetime import datetime
+from multiprocessing import Pool, cpu_count
+from functools import partial
+
+try:
+    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn
+    from rich.console import Console
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
 
 
 class Colors:
@@ -401,14 +416,238 @@ def print_json_report(table_a_id: str, table_b_id: str, results: dict):
     print(json.dumps(output, indent=2, default=str))
 
 
+def compare_single_pair_wrapper(table_pair: Tuple[str, str], sample_size: int,
+                                skip_stats: bool, skip_samples: bool) -> Dict:
+    """
+    Compare a single pair of tables (wrapper for parallel execution).
+
+    Args:
+        table_pair: Tuple of (table_a, table_b)
+        sample_size: Number of rows to sample
+        skip_stats: Skip statistical comparisons
+        skip_samples: Skip sample data comparison
+
+    Returns:
+        Comparison result dictionary
+    """
+    table_a, table_b = table_pair
+
+    try:
+        # Create new client for this process
+        client = bigquery.Client()
+
+        # Run comparison
+        comparer = TableComparison(
+            client,
+            table_a,
+            table_b,
+            sample_size=sample_size,
+            skip_stats=skip_stats,
+            skip_samples=skip_samples
+        )
+        results = comparer.run_comparison()
+
+        return {
+            'table_a': table_a,
+            'table_b': table_b,
+            'success': True,
+            'results': results,
+            'identical': results['summary']['identical']
+        }
+    except Exception as e:
+        return {
+            'table_a': table_a,
+            'table_b': table_b,
+            'success': False,
+            'error': str(e)
+        }
+
+
+def compare_batch_pairs(table_pairs: List[Tuple[str, str]], sample_size: int,
+                       skip_stats: bool, skip_samples: bool, num_workers: int,
+                       show_progress: bool) -> List[Dict]:
+    """
+    Compare multiple table pairs in parallel.
+
+    Args:
+        table_pairs: List of (table_a, table_b) tuples
+        sample_size: Number of rows to sample
+        skip_stats: Skip statistical comparisons
+        skip_samples: Skip sample data comparison
+        num_workers: Number of parallel workers
+        show_progress: Whether to show progress bar
+
+    Returns:
+        List of comparison results
+    """
+    # Create partial function with fixed arguments
+    compare_func = partial(
+        compare_single_pair_wrapper,
+        sample_size=sample_size,
+        skip_stats=skip_stats,
+        skip_samples=skip_samples
+    )
+
+    results = []
+
+    if show_progress and RICH_AVAILABLE:
+        console = Console()
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeRemainingColumn(),
+            console=console
+        ) as progress:
+            task = progress.add_task(f"Comparing {len(table_pairs)} pairs", total=len(table_pairs))
+
+            with Pool(num_workers) as pool:
+                for result in pool.imap_unordered(compare_func, table_pairs):
+                    results.append(result)
+                    if result['success']:
+                        status = "✓" if result['identical'] else "≠"
+                    else:
+                        status = "✗"
+                    progress.console.print(f"{status} {result['table_a']} vs {result['table_b']}")
+                    progress.advance(task)
+    else:
+        # No progress bar
+        with Pool(num_workers) as pool:
+            results = list(pool.map(compare_func, table_pairs))
+
+    return results
+
+
+def print_batch_summary(results: List[Dict], output_format: str):
+    """
+    Print summary of batch comparison results.
+
+    Args:
+        results: List of comparison results
+        output_format: Output format (text, json)
+    """
+    successful = [r for r in results if r['success']]
+    failed = [r for r in results if not r['success']]
+    identical = [r for r in successful if r['identical']]
+    different = [r for r in successful if not r['identical']]
+
+    if output_format == "json":
+        # JSON output with all comparisons
+        output = {
+            'batch_summary': {
+                'total_pairs': len(results),
+                'successful': len(successful),
+                'failed': len(failed),
+                'identical': len(identical),
+                'different': len(different),
+                'timestamp': datetime.now().isoformat()
+            },
+            'comparisons': [
+                {
+                    'table_a': r['table_a'],
+                    'table_b': r['table_b'],
+                    'identical': r.get('identical', False),
+                    'results': r.get('results', {})
+                } for r in successful
+            ],
+            'errors': [
+                {
+                    'table_a': r['table_a'],
+                    'table_b': r['table_b'],
+                    'error': r.get('error')
+                } for r in failed
+            ]
+        }
+        print(json.dumps(output, indent=2, default=str))
+    else:
+        # Text summary
+        print(f"\n{Colors.CYAN}{Colors.BOLD}{'=' * 80}{Colors.RESET}")
+        print(f"{Colors.CYAN}{Colors.BOLD}Batch Table Comparison Summary{Colors.RESET}")
+        print(f"{Colors.CYAN}{Colors.BOLD}{'=' * 80}{Colors.RESET}\n")
+
+        print(f"{Colors.BOLD}Results:{Colors.RESET}")
+        print(f"  Total pairs: {len(results)}")
+        print(f"  {Colors.GREEN}Successful: {len(successful)}{Colors.RESET}")
+        print(f"  {Colors.GREEN}Identical: {len(identical)}{Colors.RESET}")
+        print(f"  {Colors.YELLOW}Different: {len(different)}{Colors.RESET}")
+        if failed:
+            print(f"  {Colors.RED}Failed: {len(failed)}{Colors.RESET}")
+
+        if failed:
+            print(f"\n{Colors.RED}{Colors.BOLD}Failed comparisons:{Colors.RESET}")
+            for result in failed:
+                print(f"  {Colors.RED}✗{Colors.RESET} {result['table_a']} vs {result['table_b']}: {result['error']}")
+
+        if different:
+            print(f"\n{Colors.YELLOW}{Colors.BOLD}Different tables:{Colors.RESET}")
+            for result in different:
+                comp_results = result['results']
+                summary = comp_results['summary']
+
+                print(f"\n  {Colors.BLUE}{result['table_a']}{Colors.RESET} vs {Colors.BLUE}{result['table_b']}{Colors.RESET}")
+                print(f"    Issues found: {summary['issues_found']}")
+                for issue in summary['issues'][:3]:
+                    print(f"      - {issue}")
+                if len(summary['issues']) > 3:
+                    print(f"      ... and {len(summary['issues']) - 3} more")
+
+        if identical:
+            print(f"\n{Colors.GREEN}{Colors.BOLD}Identical tables: {len(identical)}{Colors.RESET}")
+
+        print(f"\n{Colors.CYAN}{'=' * 80}{Colors.RESET}\n")
+
+
+def parse_table_pairs(args) -> List[Tuple[str, str]]:
+    """
+    Parse table pairs from various sources.
+
+    Args:
+        args: Parsed command-line arguments
+
+    Returns:
+        List of (table_a, table_b) tuples
+    """
+    pairs = []
+
+    # From command line arguments
+    if args.table_a and args.table_b:
+        pairs.append((args.table_a, args.table_b))
+
+    # From file
+    if args.pairs_file:
+        try:
+            with open(args.pairs_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        if ':' in line:
+                            table_a, table_b = line.split(':', 1)
+                            pairs.append((table_a.strip(), table_b.strip()))
+        except Exception as e:
+            print(f"{Colors.RED}Error reading pairs file: {str(e)}{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
+
+    # From stdin
+    if not sys.stdin.isatty() and not args.table_a:
+        for line in sys.stdin:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                if ':' in line:
+                    table_a, table_b = line.split(':', 1)
+                    pairs.append((table_a.strip(), table_b.strip()))
+
+    return pairs
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Detailed comparison of two BigQuery tables",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
-    parser.add_argument("table_a", help="First table ID (project.dataset.table)")
-    parser.add_argument("table_b", help="Second table ID (project.dataset.table)")
+    parser.add_argument("table_a", nargs='?', help="First table ID (project.dataset.table)")
+    parser.add_argument("table_b", nargs='?', help="Second table ID (project.dataset.table)")
     parser.add_argument("--format", choices=["text", "json"], default="text",
                        help="Output format (default: text)")
     parser.add_argument("--sample-size", type=int, default=100,
@@ -417,34 +656,94 @@ def main():
                        help="Skip statistical comparisons")
     parser.add_argument("--skip-samples", action="store_true",
                        help="Skip sample data comparison")
+    parser.add_argument("--parallel", type=int, default=4,
+                       help="Number of parallel workers for batch comparison (default: 4)")
+    parser.add_argument("--progress", action="store_true",
+                       help="Show progress bar during batch comparison")
+    parser.add_argument("--pairs-file", type=str,
+                       help="Read table pairs from file (one pair per line, format: table_a:table_b)")
 
     args = parser.parse_args()
 
-    # Initialize BigQuery client
-    client = bigquery.Client()
+    # Parse table pairs
+    table_pairs = parse_table_pairs(args)
 
-    # Run comparison
-    comparer = TableComparison(
-        client,
-        args.table_a,
-        args.table_b,
-        sample_size=args.sample_size,
-        skip_stats=args.skip_stats,
-        skip_samples=args.skip_samples
-    )
-    results = comparer.run_comparison()
-
-    # Print report
-    if args.format == "json":
-        print_json_report(args.table_a, args.table_b, results)
-    else:
-        print_text_report(args.table_a, args.table_b, results)
-
-    # Exit with status code
-    if not results['summary']['identical']:
+    if not table_pairs:
+        print(f"{Colors.RED}Error: No table pairs provided{Colors.RESET}", file=sys.stderr)
+        print(f"{Colors.YELLOW}Provide pairs via arguments, --pairs-file, or stdin{Colors.RESET}",
+              file=sys.stderr)
         sys.exit(1)
+
+    # Validate parallel workers
+    max_workers = cpu_count() * 2
+    if args.parallel < 1:
+        args.parallel = 1
+    elif args.parallel > max_workers:
+        print(f"{Colors.YELLOW}Warning: Limiting workers to {max_workers} (system max){Colors.RESET}",
+              file=sys.stderr)
+        args.parallel = max_workers
+
+    # Check for rich library if progress requested
+    if args.progress and not RICH_AVAILABLE:
+        print(f"{Colors.YELLOW}Warning: rich library not installed. Install with: pip install rich{Colors.RESET}",
+              file=sys.stderr)
+        print(f"{Colors.YELLOW}Continuing without progress bar...{Colors.RESET}", file=sys.stderr)
+        args.progress = False
+
+    # Initialize BigQuery client
+    try:
+        client = bigquery.Client()
+    except Exception as e:
+        print(f"{Colors.RED}Error initializing BigQuery client: {str(e)}{Colors.RESET}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    if len(table_pairs) > 1:
+        # Batch mode with parallel processing
+        print(f"{Colors.CYAN}Comparing {len(table_pairs)} pairs with {args.parallel} workers{Colors.RESET}",
+              file=sys.stderr)
+
+        results = compare_batch_pairs(
+            table_pairs,
+            sample_size=args.sample_size,
+            skip_stats=args.skip_stats,
+            skip_samples=args.skip_samples,
+            num_workers=args.parallel,
+            show_progress=args.progress
+        )
+
+        # Print batch summary
+        print_batch_summary(results, args.format)
+
+        # Exit with error if any failed or different
+        if any(not r['success'] or not r.get('identical', False) for r in results):
+            sys.exit(1)
     else:
-        sys.exit(0)
+        # Single pair mode
+        table_a, table_b = table_pairs[0]
+
+        # Run comparison
+        comparer = TableComparison(
+            client,
+            table_a,
+            table_b,
+            sample_size=args.sample_size,
+            skip_stats=args.skip_stats,
+            skip_samples=args.skip_samples
+        )
+        results = comparer.run_comparison()
+
+        # Print report
+        if args.format == "json":
+            print_json_report(table_a, table_b, results)
+        else:
+            print_text_report(table_a, table_b, results)
+
+        # Exit with status code
+        if not results['summary']['identical']:
+            sys.exit(1)
+        else:
+            sys.exit(0)
 
 
 if __name__ == "__main__":

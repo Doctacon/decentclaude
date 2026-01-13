@@ -1,0 +1,332 @@
+#compdef bq-profile bq-explain bq-explore bq-lineage bq-query-cost bq-benchmark bq-cost-report bq-table-compare bq-optimize bq-partition-info bq-schema-diff ai-docs ai-generate ai-query ai-review dbt-deps dbt-docs-serve dbt-model-search dbt-test-gen sqlmesh-diff sqlmesh-migrate sqlmesh-validate sqlmesh-visualize
+
+# Zsh completion for BigQuery and data utilities
+# Install to a directory in your $fpath, e.g., ~/.zsh/completion/
+
+# Cache configuration
+typeset -g _BQ_CACHE_FILE="${HOME}/.cache/bq-completion-cache"
+typeset -g _BQ_CACHE_TTL=3600
+
+# Get BigQuery table IDs with caching
+_bq_tables() {
+    local -a tables
+    local cache_file="$_BQ_CACHE_FILE"
+    local cache_age
+
+    # Check cache freshness
+    if [[ -f "$cache_file" ]]; then
+        cache_age=$(( $(date +%s) - $(stat -f %m "$cache_file" 2>/dev/null || stat -c %Y "$cache_file" 2>/dev/null || echo 0) ))
+        if (( cache_age < _BQ_CACHE_TTL )); then
+            tables=("${(@f)$(cat $cache_file)}")
+            _describe 'table' tables
+            return
+        fi
+    fi
+
+    # Refresh cache in background
+    if (( cache_age >= _BQ_CACHE_TTL )) || [[ ! -f "$cache_file" ]]; then
+        _bq_refresh_cache &
+    fi
+
+    # Use existing cache if available
+    if [[ -f "$cache_file" ]]; then
+        tables=("${(@f)$(cat $cache_file)}")
+        _describe 'table' tables
+    fi
+}
+
+# Refresh table cache in background
+_bq_refresh_cache() {
+    local project="${GOOGLE_CLOUD_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+    local cache_dir="${_BQ_CACHE_FILE:h}"
+
+    [[ -d "$cache_dir" ]] || mkdir -p "$cache_dir"
+
+    if [[ -n "$project" ]] && command -v bq &>/dev/null; then
+        (
+            bq ls --project_id="$project" --format=json 2>/dev/null | \
+                jq -r '.[].id' 2>/dev/null | \
+                while read -r dataset; do
+                    bq ls --project_id="$project" --dataset_id="${dataset}" --format=json 2>/dev/null | \
+                        jq -r --arg proj "$project" --arg ds "$dataset" '.[] | "\($proj).\($ds).\(.id)"' 2>/dev/null
+                done
+        ) > "$_BQ_CACHE_FILE.tmp" 2>/dev/null && mv "$_BQ_CACHE_FILE.tmp" "$_BQ_CACHE_FILE"
+    fi
+}
+
+# Get GCP projects
+_gcp_projects() {
+    local -a projects
+    if command -v gcloud &>/dev/null; then
+        projects=(${(f)"$(gcloud projects list --format='value(projectId)' 2>/dev/null)"})
+        _describe 'project' projects
+    fi
+}
+
+# Format options
+_format_options() {
+    local -a formats
+    case "$service" in
+        bq-profile)
+            formats=('text:Plain text output' 'json:JSON format' 'markdown:Markdown format' 'html:HTML report')
+            ;;
+        bq-explain)
+            formats=('text:Plain text output' 'json:JSON format')
+            ;;
+        bq-lineage)
+            formats=('text:Plain text output' 'json:JSON format' 'graphviz:DOT format for visualization')
+            ;;
+        bq-benchmark|bq-table-compare|bq-optimize|bq-partition-info|bq-schema-diff)
+            formats=('text:Plain text output' 'json:JSON format')
+            ;;
+        bq-cost-report)
+            formats=('text:Plain text output' 'json:JSON format' 'csv:CSV format')
+            ;;
+        ai-docs)
+            formats=('markdown:Markdown format' 'html:HTML format' 'text:Plain text')
+            ;;
+        ai-generate|ai-query|ai-review)
+            formats=('text:Plain text output' 'json:JSON format')
+            ;;
+    esac
+    _describe 'format' formats
+}
+
+# AI model options
+_ai_models() {
+    local -a models
+    models=(
+        'gpt-4:OpenAI GPT-4'
+        'gpt-3.5-turbo:OpenAI GPT-3.5 Turbo'
+        'claude-3-opus:Anthropic Claude 3 Opus'
+        'claude-3-sonnet:Anthropic Claude 3 Sonnet'
+        'claude-3-haiku:Anthropic Claude 3 Haiku'
+    )
+    _describe 'model' models
+}
+
+# Lineage direction options
+_lineage_directions() {
+    local -a directions
+    directions=(
+        'upstream:Show tables this depends on'
+        'downstream:Show tables that depend on this'
+        'both:Show both upstream and downstream'
+    )
+    _describe 'direction' directions
+}
+
+# Schema diff filter options
+_schema_diff_filters() {
+    local -a filters
+    filters=(
+        'added:Show only added columns'
+        'removed:Show only removed columns'
+        'changed:Show only changed columns'
+    )
+    _describe 'filter' filters
+}
+
+# Severity levels for AI review
+_severity_levels() {
+    local -a levels
+    levels=(
+        'error:Show only errors'
+        'warning:Show errors and warnings'
+        'info:Show all findings'
+    )
+    _describe 'severity' levels
+}
+
+# Main completion function
+_bq_utils() {
+    local curcontext="$curcontext" state line
+    typeset -A opt_args
+    local service="${words[1]:t}"
+
+    case "$service" in
+        bq-profile)
+            _arguments -C \
+                '1: :_bq_tables' \
+                '*: :_bq_tables' \
+                '--format=[Output format]:format:_format_options' \
+                '--sample-size=[Number of sample rows]:sample size:(10 20 50 100)' \
+                '--detect-anomalies[Enable anomaly detection]' \
+                '--no-cache[Disable metadata caching]' \
+                '--parallel=[Number of parallel workers]:workers:(1 2 4 8 16)' \
+                '--progress[Show progress bar]' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        bq-explain)
+            _arguments -C \
+                '1: :_guard "^-*" "SQL query"' \
+                '--file=[Read query from file]:file:_files -g "*.sql"' \
+                '--job-id=[Analyze existing job]:job id:' \
+                '--format=[Output format]:format:_format_options' \
+                '--dry-run[Analyze without executing]' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        bq-explore)
+            _arguments -C \
+                '--project=[BigQuery project ID]:project:_gcp_projects' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        bq-lineage)
+            _arguments -C \
+                '1: :_bq_tables' \
+                '--format=[Output format]:format:_format_options' \
+                '--depth=[Maximum depth to traverse]:depth:(1 2 3 4 5)' \
+                '--direction=[Lineage direction]:direction:_lineage_directions' \
+                '--include-views[Include view dependencies]' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        bq-query-cost)
+            _arguments -C \
+                '1: :_guard "^-*" "SQL query"' \
+                '--format=[Output format]:format:_format_options' \
+                '--file=[Read query from file]:file:_files -g "*.sql"' \
+                '--dry-run[Estimate without executing]' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        bq-benchmark)
+            _arguments -C \
+                '1: :_files -g "*.sql"' \
+                '--format=[Output format]:format:_format_options' \
+                '--iterations=[Number of iterations]:iterations:(1 5 10 20 50)' \
+                '--parallel=[Number of parallel executions]:parallel:(1 2 4 8)' \
+                '--output=[Output file]:file:_files' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        bq-cost-report)
+            _arguments -C \
+                '--format=[Output format]:format:_format_options' \
+                '--start-date=[Start date (YYYY-MM-DD)]:date:' \
+                '--end-date=[End date (YYYY-MM-DD)]:date:' \
+                '--project=[Project ID]:project:_gcp_projects' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        bq-table-compare)
+            _arguments -C \
+                '1: :_bq_tables' \
+                '2: :_bq_tables' \
+                '--format=[Output format]:format:_format_options' \
+                '--check-schema[Compare table schemas]' \
+                '--check-data[Compare table data]' \
+                '--sample-size=[Sample size for data comparison]:size:(100 1000 10000)' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        bq-optimize)
+            _arguments -C \
+                '1: :_bq_tables' \
+                '--format=[Output format]:format:_format_options' \
+                '--analyze-only[Only analyze, do not apply]' \
+                '--apply-recommendations[Apply optimization recommendations]' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        bq-partition-info)
+            _arguments -C \
+                '1: :_bq_tables' \
+                '--format=[Output format]:format:_format_options' \
+                '--check-usage[Check partition usage statistics]' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        bq-schema-diff)
+            _arguments -C \
+                '1: :_bq_tables' \
+                '2: :_bq_tables' \
+                '--format=[Output format]:format:_format_options' \
+                '--show-only=[Filter results]:filter:_schema_diff_filters' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        ai-docs)
+            _arguments -C \
+                '1: :_files' \
+                '*: :_files' \
+                '--format=[Output format]:format:_format_options' \
+                '--model=[AI model to use]:model:_ai_models' \
+                '--output=[Output file]:file:_files' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        ai-generate)
+            _arguments -C \
+                '1: :_guard "^-*" "prompt"' \
+                '--format=[Output format]:format:_format_options' \
+                '--model=[AI model to use]:model:_ai_models' \
+                '--temperature=[Sampling temperature]:temperature:(0.0 0.3 0.5 0.7 1.0)' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        ai-query)
+            _arguments -C \
+                '1: :_guard "^-*" "query"' \
+                '--format=[Output format]:format:_format_options' \
+                '--model=[AI model to use]:model:_ai_models' \
+                '--context=[Additional context]:file:_files' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        ai-review)
+            _arguments -C \
+                '1: :_files -g "*.sql"' \
+                '*: :_files -g "*.sql"' \
+                '--format=[Output format]:format:_format_options' \
+                '--model=[AI model to use]:model:_ai_models' \
+                '--severity=[Minimum severity level]:severity:_severity_levels' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        dbt-deps)
+            _arguments -C \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        dbt-docs-serve)
+            _arguments -C \
+                '--port=[Port number]:port:(8000 8080 3000 5000)' \
+                '--no-browser[Do not open browser]' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        dbt-model-search)
+            _arguments -C \
+                '1: :_guard "^-*" "search pattern"' \
+                '--tag=[Filter by tag]:tag:' \
+                '--path=[Filter by path]:path:_files -/' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        dbt-test-gen)
+            _arguments -C \
+                '--model=[Model name]:model:' \
+                '--output=[Output file]:file:_files' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        sqlmesh-diff|sqlmesh-migrate|sqlmesh-validate)
+            _arguments -C \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+
+        sqlmesh-visualize)
+            _arguments -C \
+                '--port=[Port number]:port:(8000 8080 3000 5000)' \
+                '--no-browser[Do not open browser]' \
+                '(- *)'{-h,--help}'[Show help message]'
+            ;;
+    esac
+}
+
+# Register completion
+_bq_utils "$@"
