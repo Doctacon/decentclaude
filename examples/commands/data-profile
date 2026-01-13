@@ -1,0 +1,274 @@
+#!/bin/bash
+#
+# data-profile - Generates data quality profile for a BigQuery table
+#
+# Usage:
+#   data-profile project.dataset.table
+#   data-profile --detailed project.dataset.table
+#
+# Description:
+#   This command generates a comprehensive data quality profile for a BigQuery table,
+#   including statistics, null percentages, data distribution, uniqueness analysis,
+#   and data quality issues. Helps understand data characteristics and identify
+#   potential data quality problems.
+#
+# Requirements:
+#   - BigQuery MCP tools configured in Claude Code
+#   - Read access to the table
+#
+# Output:
+#   - Table metadata (size, row count, last modified)
+#   - Column statistics (min, max, mean, stddev for numeric columns)
+#   - Null percentage analysis
+#   - Data distribution insights
+#   - Uniqueness and cardinality metrics
+#   - Data quality warnings and recommendations
+#
+
+set -euo pipefail
+
+# Color codes for output formatting
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+NC='\033[0m' # No Color
+
+# Help message
+show_help() {
+    cat << EOF
+Usage: data-profile [OPTIONS] TABLE_ID
+
+Generates a comprehensive data quality profile for a BigQuery table.
+
+ARGUMENTS:
+    TABLE_ID           Table ID (format: project.dataset.table)
+
+OPTIONS:
+    -h, --help         Show this help message
+    -d, --detailed     Include detailed statistics for all columns
+    -t, --time-series  Analyze time-based columns for freshness and distribution
+    -c, --columns COL  Analyze specific columns (comma-separated)
+    --sample SIZE      Sample size for analysis (default: uses table metadata)
+
+EXAMPLES:
+    # Basic profile
+    data-profile my-project.dataset.users
+
+    # Detailed profile with all column statistics
+    data-profile --detailed my-project.dataset.transactions
+
+    # Time series analysis
+    data-profile --time-series my-project.dataset.events
+
+    # Profile specific columns
+    data-profile --columns user_id,email,created_at my-project.dataset.users
+
+EOF
+}
+
+# Parse arguments
+TABLE_ID=""
+DETAILED=false
+TIME_SERIES=false
+SPECIFIC_COLUMNS=""
+SAMPLE_SIZE=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -d|--detailed)
+            DETAILED=true
+            shift
+            ;;
+        -t|--time-series)
+            TIME_SERIES=true
+            shift
+            ;;
+        -c|--columns)
+            SPECIFIC_COLUMNS="$2"
+            shift 2
+            ;;
+        --sample)
+            SAMPLE_SIZE="$2"
+            shift 2
+            ;;
+        *)
+            if [[ -z "$TABLE_ID" ]]; then
+                TABLE_ID="$1"
+                shift
+            else
+                echo -e "${RED}Error: Multiple table IDs provided${NC}" >&2
+                show_help
+                exit 1
+            fi
+            ;;
+    esac
+done
+
+# Validate arguments
+if [[ -z "$TABLE_ID" ]]; then
+    echo -e "${RED}Error: Table ID is required${NC}" >&2
+    show_help
+    exit 1
+fi
+
+# Validate table ID format
+if [[ ! "$TABLE_ID" =~ ^[^.]+\.[^.]+\.[^.]+$ ]]; then
+    echo -e "${RED}Error: Invalid table ID format: $TABLE_ID${NC}" >&2
+    echo -e "${RED}Expected format: project.dataset.table${NC}" >&2
+    exit 1
+fi
+
+echo -e "${BLUE}========================================${NC}"
+echo -e "${BLUE}BigQuery Data Quality Profile${NC}"
+echo -e "${BLUE}========================================${NC}"
+echo ""
+echo -e "${CYAN}Table:${NC} $TABLE_ID"
+if [[ -n "$SPECIFIC_COLUMNS" ]]; then
+    echo -e "${CYAN}Analyzing columns:${NC} $SPECIFIC_COLUMNS"
+fi
+echo ""
+
+# Step 1: Verify table exists
+echo -e "${BLUE}Step 1: Verifying table exists...${NC}"
+echo "Please use the BigQuery MCP check_table_exists tool for: $TABLE_ID"
+echo ""
+
+# Step 2: Get table metadata
+echo -e "${BLUE}Step 2: Retrieving table metadata...${NC}"
+echo "Please use the BigQuery MCP get_table_metadata tool to get:"
+echo "  - Table size (bytes)"
+echo "  - Row count"
+echo "  - Creation time"
+echo "  - Last modified time"
+echo "  - Partitioning details"
+echo "  - Clustering configuration"
+echo ""
+
+# Step 3: Get comprehensive profile
+echo -e "${BLUE}Step 3: Generating comprehensive data profile...${NC}"
+echo "Please use the BigQuery MCP profile_table tool for: $TABLE_ID"
+echo ""
+echo "This should include:"
+echo "  - Column-level statistics"
+echo "  - Data type distribution"
+echo "  - Null percentage analysis"
+echo "  - Basic data quality metrics"
+echo ""
+
+# Step 4: Detailed column analysis (if requested)
+if [[ "$DETAILED" == true ]] || [[ -n "$SPECIFIC_COLUMNS" ]]; then
+    echo -e "${BLUE}Step 4: Detailed column analysis...${NC}"
+
+    if [[ -n "$SPECIFIC_COLUMNS" ]]; then
+        echo "Please analyze these specific columns using describe_column:"
+        IFS=',' read -ra COLUMNS <<< "$SPECIFIC_COLUMNS"
+        for col in "${COLUMNS[@]}"; do
+            echo "  - $col"
+        done
+    else
+        echo "Please use describe_table_columns to analyze all columns."
+    fi
+    echo ""
+    echo "For each column, provide:"
+    echo "  - Numeric columns: min, max, mean, stddev, median"
+    echo "  - String columns: distinct count, most frequent values"
+    echo "  - All columns: null count, null percentage"
+    echo ""
+fi
+
+# Step 5: Null percentage analysis
+echo -e "${BLUE}Step 5: Null percentage analysis...${NC}"
+echo "Please use the BigQuery MCP get_table_null_percentages tool."
+echo ""
+echo "Highlight columns with:"
+echo "  - High null percentages (>50%) in ${YELLOW}yellow${NC}"
+echo "  - Complete null columns (100%) in ${RED}red${NC}"
+echo "  - Low null percentages (<5%) in ${GREEN}green${NC}"
+echo ""
+
+# Step 6: Uniqueness analysis (for potential key columns)
+echo -e "${BLUE}Step 6: Uniqueness analysis...${NC}"
+echo "Please identify potential key columns by analyzing uniqueness."
+echo "Look for columns with high uniqueness ratios (>0.95)."
+echo ""
+echo "Use get_uniqueness_details for candidate columns to determine:"
+echo "  - Potential primary keys (uniqueness = 1.0)"
+echo "  - High-cardinality columns"
+echo "  - Low-cardinality categorical columns"
+echo ""
+
+# Step 7: Time series analysis (if requested)
+if [[ "$TIME_SERIES" == true ]]; then
+    echo -e "${BLUE}Step 7: Time series analysis...${NC}"
+    echo "Please identify timestamp/date columns and analyze:"
+    echo ""
+    echo "1. Data freshness (using get_data_freshness):"
+    echo "   - Latest timestamp in the data"
+    echo "   - Time since last update"
+    echo "   - Data latency assessment"
+    echo ""
+    echo "2. Time distribution (using get_time_series_distribution):"
+    echo "   - Daily record counts"
+    echo "   - Weekly patterns"
+    echo "   - Monthly trends"
+    echo "   - Identify gaps or anomalies in data collection"
+    echo ""
+fi
+
+# Step 8: Data quality assessment
+echo -e "${BLUE}Step 8: Data quality assessment...${NC}"
+echo "Please provide a comprehensive data quality report including:"
+echo ""
+echo -e "${MAGENTA}Quality Metrics:${NC}"
+echo "  - Completeness: Percentage of non-null values across all columns"
+echo "  - Consistency: Data type adherence, format consistency"
+echo "  - Validity: Range checks, pattern validation"
+echo "  - Uniqueness: Duplicate detection in key columns"
+echo ""
+echo -e "${MAGENTA}Issues to identify:${NC}"
+echo "  - Columns with excessive nulls"
+echo "  - Potential duplicate records"
+echo "  - Outliers in numeric columns"
+echo "  - Inconsistent data formats"
+echo "  - Stale or missing recent data"
+echo ""
+echo -e "${MAGENTA}Recommendations:${NC}"
+echo "  - Data cleaning suggestions"
+echo "  - Schema optimization opportunities"
+echo "  - Indexing or partitioning recommendations"
+echo "  - Data quality monitoring suggestions"
+echo ""
+
+# Step 9: Sample data (if sample size specified)
+if [[ -n "$SAMPLE_SIZE" ]]; then
+    echo -e "${BLUE}Step 9: Sample data preview...${NC}"
+    echo "Please use get_table_sample with limit=$SAMPLE_SIZE to show example rows."
+    echo ""
+fi
+
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}Data profile complete!${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo ""
+echo -e "${CYAN}Summary Statistics:${NC}"
+echo "  Total rows: [to be filled by MCP tools]"
+echo "  Total columns: [to be filled by MCP tools]"
+echo "  Table size: [to be filled by MCP tools]"
+echo "  Data quality score: [to be calculated]"
+echo ""
+echo -e "${CYAN}Next Steps:${NC}"
+echo "  1. Review data quality warnings"
+echo "  2. Address high-null percentage columns"
+echo "  3. Validate uniqueness constraints"
+echo "  4. Consider partitioning/clustering optimizations"
+echo ""
+
+# Exit successfully
+exit 0

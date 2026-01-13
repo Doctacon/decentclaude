@@ -1,0 +1,178 @@
+#!/bin/bash
+#
+# schema-compare - Compares schemas of two BigQuery tables
+#
+# Usage:
+#   schema-compare project.dataset.table1 project.dataset.table2
+#
+# Description:
+#   This command compares the schemas of two BigQuery tables and highlights
+#   differences including missing columns, type mismatches, and structural changes.
+#   Useful for validating schema consistency across environments (dev/staging/prod).
+#
+# Requirements:
+#   - BigQuery MCP tools configured in Claude Code
+#   - Read access to both tables
+#
+# Output:
+#   - Columns only in first table
+#   - Columns only in second table
+#   - Columns with different types
+#   - Schema compatibility assessment
+#
+
+set -euo pipefail
+
+# Color codes for output formatting
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Help message
+show_help() {
+    cat << EOF
+Usage: schema-compare TABLE_1 TABLE_2
+
+Compares schemas of two BigQuery tables and highlights differences.
+
+ARGUMENTS:
+    TABLE_1            First table ID (format: project.dataset.table)
+    TABLE_2            Second table ID (format: project.dataset.table)
+
+OPTIONS:
+    -h, --help         Show this help message
+    -v, --verbose      Show complete schema details for both tables
+
+EXAMPLES:
+    # Compare dev and prod tables
+    schema-compare my-project.dev_dataset.users my-project.prod_dataset.users
+
+    # Compare tables across projects
+    schema-compare project-a.dataset.table project-b.dataset.table
+
+    # Verbose comparison with full schema output
+    schema-compare -v project.dataset.table_v1 project.dataset.table_v2
+
+EOF
+}
+
+# Parse arguments
+TABLE_1=""
+TABLE_2=""
+VERBOSE=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -v|--verbose)
+            VERBOSE=true
+            shift
+            ;;
+        *)
+            if [[ -z "$TABLE_1" ]]; then
+                TABLE_1="$1"
+                shift
+            elif [[ -z "$TABLE_2" ]]; then
+                TABLE_2="$1"
+                shift
+            else
+                echo -e "${RED}Error: Too many arguments${NC}" >&2
+                show_help
+                exit 1
+            fi
+            ;;
+    esac
+done
+
+# Validate arguments
+if [[ -z "$TABLE_1" ]] || [[ -z "$TABLE_2" ]]; then
+    echo -e "${RED}Error: Both table IDs are required${NC}" >&2
+    show_help
+    exit 1
+fi
+
+# Validate table ID format (should be project.dataset.table)
+validate_table_id() {
+    local table_id="$1"
+    if [[ ! "$table_id" =~ ^[^.]+\.[^.]+\.[^.]+$ ]]; then
+        echo -e "${RED}Error: Invalid table ID format: $table_id${NC}" >&2
+        echo -e "${RED}Expected format: project.dataset.table${NC}" >&2
+        exit 1
+    fi
+}
+
+validate_table_id "$TABLE_1"
+validate_table_id "$TABLE_2"
+
+echo -e "${BLUE}========================================${NC}"
+echo -e "${BLUE}BigQuery Schema Comparison${NC}"
+echo -e "${BLUE}========================================${NC}"
+echo ""
+
+echo -e "${CYAN}Table 1:${NC} $TABLE_1"
+echo -e "${CYAN}Table 2:${NC} $TABLE_2"
+echo ""
+
+# Step 1: Check if tables exist
+echo -e "${BLUE}Step 1: Verifying tables exist...${NC}"
+echo "Please use the BigQuery MCP check_table_exists tool for both tables:"
+echo "  - $TABLE_1"
+echo "  - $TABLE_2"
+echo ""
+
+# Step 2: Get schemas
+echo -e "${BLUE}Step 2: Retrieving table schemas...${NC}"
+echo "Please use the BigQuery MCP get_table_schema tool for both tables."
+echo ""
+
+if [[ "$VERBOSE" == true ]]; then
+    echo -e "${YELLOW}Verbose mode: Full schema details will be shown${NC}"
+    echo ""
+fi
+
+# Step 3: Compare schemas
+echo -e "${BLUE}Step 3: Comparing schemas...${NC}"
+echo "Please use the BigQuery MCP compare_schemas tool with:"
+echo "  table_id_a: $TABLE_1"
+echo "  table_id_b: $TABLE_2"
+echo ""
+
+# Step 4: Analysis and recommendations
+echo -e "${BLUE}Step 4: Analysis and recommendations...${NC}"
+echo "Please provide a detailed comparison including:"
+echo ""
+echo -e "${YELLOW}Differences to highlight:${NC}"
+echo "  1. Columns only in Table 1 (potentially dropped in Table 2)"
+echo "  2. Columns only in Table 2 (new columns added)"
+echo "  3. Columns with different data types (breaking changes)"
+echo "  4. Columns with different modes (NULLABLE vs REQUIRED vs REPEATED)"
+echo ""
+echo -e "${YELLOW}Compatibility assessment:${NC}"
+echo "  - Are the schemas backward compatible?"
+echo "  - Are there any breaking changes?"
+echo "  - Can data be safely migrated between tables?"
+echo ""
+echo -e "${YELLOW}Recommendations:${NC}"
+echo "  - Required schema migration steps"
+echo "  - Potential data loss risks"
+echo "  - Best practices for schema evolution"
+echo ""
+
+if [[ "$VERBOSE" == true ]]; then
+    echo -e "${BLUE}Step 5: Full schema details...${NC}"
+    echo "Please display the complete schema for both tables in a readable format."
+    echo ""
+fi
+
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}Comparison complete!${NC}"
+echo -e "${GREEN}========================================${NC}"
+
+# Exit successfully
+exit 0
