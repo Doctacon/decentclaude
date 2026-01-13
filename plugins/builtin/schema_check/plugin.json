@@ -1,0 +1,25 @@
+{
+  "name": "schema_check",
+  "version": "1.0.0",
+  "type": "quality_check",
+  "entry_point": "__init__.SchemaCheckPlugin",
+  "description": "Checks for existence and validity of schema files",
+  "author": "DecentClaude Team",
+  "license": "MIT",
+  "dependencies": [],
+  "requires_version": "1.0.0",
+  "tags": ["schema", "quality", "validation"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "schema_paths": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Paths to check for schema files",
+        "default": ["schemas"]
+      }
+    }
+  }
+}

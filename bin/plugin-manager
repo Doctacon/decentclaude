@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""
+Plugin Manager CLI
+
+Command-line utility for managing DecentClaude plugins.
+
+Usage:
+    plugin-manager list                    # List all plugins
+    plugin-manager info <plugin-name>      # Show plugin details
+    plugin-manager enable <plugin-name>    # Enable a plugin
+    plugin-manager disable <plugin-name>   # Disable a plugin
+    plugin-manager validate <plugin-dir>   # Validate a plugin
+    plugin-manager deps <plugin-name>      # Show plugin dependencies
+    plugin-manager tree                    # Show dependency tree
+"""
+
+import sys
+import argparse
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from plugins.core import (
+    PluginManager,
+    ManifestValidator,
+    ManifestLoader,
+    DependencyTree,
+    ConfigManager
+)
+
+
+def list_plugins(manager: PluginManager) -> None:
+    """List all discovered plugins"""
+    plugins = manager.discover_plugins()
+
+    if not plugins:
+        print("No plugins found")
+        return
+
+    print(f"\n{'Name':<20} {'Version':<10} {'Type':<15} {'Status':<10}")
+    print("-" * 60)
+
+    for plugin_info in plugins:
+        manifest = plugin_info["manifest"]
+        name = manifest["name"]
+        version = manifest["version"]
+        plugin_type = manifest["type"]
+        status = "loaded" if name in manager.loaded_plugins else "available"
+
+        print(f"{name:<20} {version:<10} {plugin_type:<15} {status:<10}")
+
+    print()
+
+
+def show_plugin_info(manager: PluginManager, plugin_name: str) -> None:
+    """Show detailed information about a plugin"""
+    manager.discover_plugins()
+
+    plugin_info = next(
+        (p for p in manager.discovered_plugins if p["manifest"]["name"] == plugin_name),
+        None
+    )
+
+    if not plugin_info:
+        print(f"Plugin not found: {plugin_name}")
+        return
+
+    manifest = plugin_info["manifest"]
+
+    print(f"\nPlugin: {manifest['name']}")
+    print("=" * 60)
+    print(f"Version:      {manifest['version']}")
+    print(f"Type:         {manifest['type']}")
+    print(f"Description:  {manifest.get('description', 'N/A')}")
+    print(f"Author:       {manifest.get('author', 'N/A')}")
+    print(f"License:      {manifest.get('license', 'N/A')}")
+    print(f"Entry Point:  {manifest['entry_point']}")
+    print(f"Requires:     {manifest.get('requires_version', 'N/A')}")
+
+    if manifest.get("dependencies"):
+        print(f"Dependencies: {', '.join(manifest['dependencies'])}")
+    else:
+        print("Dependencies: None")
+
+    if manifest.get("tags"):
+        print(f"Tags:         {', '.join(manifest['tags'])}")
+
+    print(f"\nLocation:     {plugin_info['directory']}")
+    print()
+
+
+def enable_plugin(config_manager: ConfigManager, plugin_name: str) -> None:
+    """Enable a plugin"""
+    config = config_manager.get_config(plugin_name)
+    config.set("enabled", True)
+    config_manager.save_configs()
+    print(f"Plugin '{plugin_name}' enabled")
+
+
+def disable_plugin(config_manager: ConfigManager, plugin_name: str) -> None:
+    """Disable a plugin"""
+    config = config_manager.get_config(plugin_name)
+    config.set("enabled", False)
+    config_manager.save_configs()
+    print(f"Plugin '{plugin_name}' disabled")
+
+
+def validate_plugin(plugin_dir: Path) -> None:
+    """Validate a plugin manifest"""
+    manifest_files = ["plugin.json", "plugin.yaml", "plugin.yml"]
+    manifest_path = None
+
+    for manifest_file in manifest_files:
+        path = plugin_dir / manifest_file
+        if path.exists():
+            manifest_path = path
+            break
+
+    if not manifest_path:
+        print(f"Error: No manifest file found in {plugin_dir}")
+        print("Expected one of: plugin.json, plugin.yaml, plugin.yml")
+        return
+
+    manifest = ManifestLoader.load_from_file(manifest_path)
+    if not manifest:
+        print(f"Error: Failed to load manifest from {manifest_path}")
+        return
+
+    validator = ManifestValidator()
+    if validator.validate(manifest):
+        print(f"✓ Plugin manifest is valid")
+        print(f"\nPlugin: {manifest['name']} v{manifest['version']}")
+        print(f"Type: {manifest['type']}")
+    else:
+        print(f"✗ Plugin manifest is invalid")
+        print("\nErrors:")
+        for error in validator.get_errors():
+            print(f"  - {error}")
+        sys.exit(1)
+
+
+def show_dependencies(manager: PluginManager, plugin_name: str) -> None:
+    """Show plugin dependencies"""
+    manager.discover_plugins()
+
+    plugin_info = next(
+        (p for p in manager.discovered_plugins if p["manifest"]["name"] == plugin_name),
+        None
+    )
+
+    if not plugin_info:
+        print(f"Plugin not found: {plugin_name}")
+        return
+
+    manifest = plugin_info["manifest"]
+    dependencies = manifest.get("dependencies", [])
+
+    print(f"\nDependencies for {plugin_name}:")
+    print("=" * 60)
+
+    if not dependencies:
+        print("No dependencies")
+    else:
+        for dep in dependencies:
+            print(f"  - {dep}")
+
+    print()
+
+
+def show_dependency_tree(manager: PluginManager) -> None:
+    """Show full dependency tree"""
+    manager.discover_plugins()
+
+    for plugin_info in manager.discovered_plugins:
+        manifest = plugin_info["manifest"]
+        manager.dependency_resolver.add_plugin(
+            manifest["name"],
+            manifest.get("dependencies", [])
+        )
+
+    tree = DependencyTree(manager.dependency_resolver)
+    print("\nPlugin Dependency Tree:")
+    print("=" * 60)
+    print(tree.get_full_tree())
+    print()
+
+
+def main():
+    """Main entry point"""
+    parser = argparse.ArgumentParser(
+        description="DecentClaude Plugin Manager",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
+
+    subparsers.add_parser("list", help="List all plugins")
+
+    info_parser = subparsers.add_parser("info", help="Show plugin details")
+    info_parser.add_argument("plugin_name", help="Name of the plugin")
+
+    enable_parser = subparsers.add_parser("enable", help="Enable a plugin")
+    enable_parser.add_argument("plugin_name", help="Name of the plugin")
+
+    disable_parser = subparsers.add_parser("disable", help="Disable a plugin")
+    disable_parser.add_argument("plugin_name", help="Name of the plugin")
+
+    validate_parser = subparsers.add_parser("validate", help="Validate a plugin")
+    validate_parser.add_argument("plugin_dir", type=Path, help="Path to plugin directory")
+
+    deps_parser = subparsers.add_parser("deps", help="Show plugin dependencies")
+    deps_parser.add_argument("plugin_name", help="Name of the plugin")
+
+    subparsers.add_parser("tree", help="Show dependency tree")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return
+
+    plugin_dirs = [
+        Path(__file__).parent.parent / "plugins" / "builtin",
+        Path(__file__).parent.parent / "plugins" / "external"
+    ]
+
+    manager = PluginManager(plugin_dirs, system_version="1.0.0")
+    config_manager = ConfigManager(Path(__file__).parent.parent / "plugins" / "config.json")
+
+    if args.command == "list":
+        list_plugins(manager)
+    elif args.command == "info":
+        show_plugin_info(manager, args.plugin_name)
+    elif args.command == "enable":
+        enable_plugin(config_manager, args.plugin_name)
+    elif args.command == "disable":
+        disable_plugin(config_manager, args.plugin_name)
+    elif args.command == "validate":
+        validate_plugin(args.plugin_dir)
+    elif args.command == "deps":
+        show_dependencies(manager, args.plugin_name)
+    elif args.command == "tree":
+        show_dependency_tree(manager)
+
+
+if __name__ == "__main__":
+    main()

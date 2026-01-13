@@ -8,6 +8,18 @@ This repository provides a comprehensive set of Claude Code hooks designed speci
 
 ## Features
 
+### Plugin System
+
+Extensible plugin architecture for community extensions:
+
+- **Plugin Discovery**: Automatic discovery and loading of plugins
+- **Standard API**: Well-defined interfaces for different plugin types
+- **Configuration Management**: JSON-based configuration with schema validation
+- **Dependency Resolution**: Automatic dependency ordering and resolution
+- **Version Compatibility**: Semantic versioning with compatibility checks
+
+See [Plugin Development](docs/PLUGIN_DEVELOPMENT.md) for creating custom plugins.
+
 ### CLI Data Utilities
 
 Powerful command-line utilities for common BigQuery operations:
@@ -333,6 +345,42 @@ EOF
 chmod +x .git/hooks/pre-commit
 ```
 
+## Plugin Management
+
+### List Available Plugins
+
+```bash
+bin/plugin-manager list
+```
+
+### Show Plugin Details
+
+```bash
+bin/plugin-manager info sql_validator
+```
+
+### Enable/Disable Plugins
+
+```bash
+bin/plugin-manager enable my_plugin
+bin/plugin-manager disable my_plugin
+```
+
+### Validate Plugin
+
+```bash
+bin/plugin-manager validate plugins/external/my_plugin
+```
+
+### View Dependencies
+
+```bash
+bin/plugin-manager deps advanced_validator
+bin/plugin-manager tree  # Show full dependency tree
+```
+
+See [Plugin Development Guide](docs/PLUGIN_DEVELOPMENT.md) for creating custom plugins.
+
 ## Project Structure
 
 ```
@@ -346,10 +394,24 @@ chmod +x .git/hooks/pre-commit
 │   │   ├── bq-query-cost      # Estimate query costs
 │   │   ├── bq-partition-info  # Analyze partitions
 │   │   └── bq-lineage         # Explore table lineage
+│   ├── plugin-manager         # Plugin management CLI
 │   └── worktree-utils/        # Git worktree utilities
+├── plugins/
+│   ├── core/                  # Plugin system core
+│   │   ├── base.py           # Base plugin classes
+│   │   ├── loader.py         # Plugin discovery and loading
+│   │   ├── manifest.py       # Manifest handling
+│   │   ├── config.py         # Configuration management
+│   │   ├── dependencies.py   # Dependency resolution
+│   │   └── version.py        # Version compatibility
+│   ├── builtin/              # Built-in plugins
+│   │   ├── sql_validator/    # SQL syntax validator
+│   │   └── schema_check/     # Schema validation
+│   └── external/             # Third-party plugins
 ├── scripts/
 │   └── data_quality.py        # Data quality check framework
-├── docs/                      # Documentation
+├── docs/
+│   └── PLUGIN_DEVELOPMENT.md  # Plugin development guide
 ├── examples/                  # Example SQL and configs
 ├── data-engineering-patterns.md  # Best practices guide
 └── README.md                  # This file
@@ -369,7 +431,9 @@ chmod +x .git/hooks/pre-commit
 1. Add new hooks to `.claude/settings.json`
 2. Document hooks in `.claude/HOOKS.md`
 3. Add quality checks to `scripts/data_quality.py`
-4. Test hooks before committing
+4. Create plugins in `plugins/builtin/` or `plugins/external/`
+5. Follow the [Plugin Development Guide](docs/PLUGIN_DEVELOPMENT.md)
+6. Test plugins and hooks before committing
 
 ## License
 

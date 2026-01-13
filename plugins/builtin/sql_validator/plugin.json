@@ -1,0 +1,22 @@
+{
+  "name": "sql_validator",
+  "version": "1.0.0",
+  "type": "validator",
+  "entry_point": "__init__.SQLValidatorPlugin",
+  "description": "Validates SQL syntax using sqlparse library",
+  "author": "DecentClaude Team",
+  "license": "MIT",
+  "dependencies": [],
+  "requires_version": "1.0.0",
+  "tags": ["sql", "validation", "syntax"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "strict_mode": {
+        "type": "boolean",
+        "description": "Enable strict validation mode",
+        "default": false
+      }
+    }
+  }
+}
