@@ -1,0 +1,611 @@
+#!/usr/bin/env python3
+"""
+incident-postmortem - Generate post-mortem reports from incidents
+
+Usage:
+  incident-postmortem generate <incident_id> [options]
+  incident-postmortem template [options]
+
+Commands:
+  generate   Generate a post-mortem report from an incident
+  template   Output a blank post-mortem template
+
+Options:
+  --format=<format>      Output format: markdown, html (default: markdown)
+  --output=<file>        Output file (default: stdout)
+  --include-timeline     Include full timeline in post-mortem
+  --dir=<path>           Directory for incident reports (default: ./incidents)
+  --help, -h             Show this help message
+
+Examples:
+  # Generate post-mortem
+  incident-postmortem generate INC-001
+
+  # Generate with full timeline
+  incident-postmortem generate INC-001 --include-timeline
+
+  # Save to file
+  incident-postmortem generate INC-001 --output=postmortem-001.md
+
+  # Get blank template
+  incident-postmortem template
+"""
+
+import sys
+import os
+import json
+from datetime import datetime
+from pathlib import Path
+import argparse
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+class PostmortemGenerator:
+    """Generates post-mortem reports"""
+
+    def __init__(self, reports_dir: str = './incidents'):
+        self.reports_dir = Path(reports_dir)
+
+    def _load_incident(self, incident_id: str) -> dict:
+        """Load incident data"""
+        path = self.reports_dir / f"{incident_id}.json"
+
+        if not path.exists():
+            raise FileNotFoundError(f"Incident {incident_id} not found")
+
+        with open(path, 'r') as f:
+            return json.load(f)
+
+    def generate_markdown(self, incident_id: str, include_timeline: bool = False) -> str:
+        """Generate post-mortem in Markdown format"""
+        incident = self._load_incident(incident_id)
+
+        # Calculate duration
+        created = datetime.fromisoformat(incident['created_at'])
+        updated = datetime.fromisoformat(incident['updated_at'])
+        duration = updated - created
+
+        hours = int(duration.total_seconds() / 3600)
+        minutes = int((duration.total_seconds() % 3600) / 60)
+
+        md = f"""# Post-Mortem: {incident['title']}
+
+**Incident ID**: {incident['incident_id']}
+**Severity**: {incident['severity']}
+**Date**: {created.strftime('%Y-%m-%d')}
+**Duration**: {hours}h {minutes}m
+**Authors**: {incident.get('reporter', 'Unknown')}, {incident.get('assignee', 'Unknown')}
+
+---
+
+## Executive Summary
+
+{incident.get('impact', '_[Brief 2-3 sentence summary of what happened, the impact, and how it was resolved]_')}
+
+## Impact
+
+### Affected Systems
+{incident.get('impact', '_[List affected systems, tables, dashboards, or services]_')}
+
+### Business Impact
+- **Users Affected**: _[Number or percentage of affected users/systems]_
+- **Data Affected**: _[Scope of affected data]_
+- **Duration**: {hours}h {minutes}m
+- **Revenue Impact**: _[If applicable]_
+- **SLA Breach**: _[Yes/No and details if applicable]_
+
+## Root Cause
+
+{incident.get('root_cause', '_[Detailed explanation of what caused the incident]_')}
+
+### Contributing Factors
+_[List any contributing factors that made this incident worse or harder to detect/resolve]_
+
+1. _[Contributing factor 1]_
+2. _[Contributing factor 2]_
+
+## Detection
+
+### How We Detected It
+{incident.get('symptoms', '_[How was the incident first detected? Alert, user report, etc.]_')}
+
+### Time to Detection
+_[How long between the incident occurring and us knowing about it?]_
+
+## Response
+
+### Timeline
+"""
+
+        if include_timeline and incident.get('timeline'):
+            for event in incident['timeline']:
+                timestamp = event['timestamp'].split('T')[1].split('.')[0] if 'T' in event['timestamp'] else event['timestamp']
+                md += f"- **{timestamp}**: {event['event']}\n"
+        else:
+            md += "_[High-level timeline of key response actions]_\n"
+
+        md += f"""
+### Resolution
+
+{incident.get('resolution', '_[Describe how the incident was resolved]_')}
+
+## Prevention
+
+### What Went Well
+1. _[What worked well in our response?]_
+2. _[What helped us resolve this quickly?]_
+
+### What Could Be Improved
+1. _[What slowed us down?]_
+2. _[What made this harder than it needed to be?]_
+
+### Action Items
+
+"""
+
+        if incident.get('action_items'):
+            for i, item in enumerate(incident['action_items'], 1):
+                status = 'DONE' if item.get('status') == 'completed' else 'TODO'
+                md += f"{i}. [{status}] {item['action']} (Owner: {item['owner']})\n"
+        else:
+            md += """1. [ ] _[Specific action to prevent recurrence]_
+2. [ ] _[Process improvement]_
+3. [ ] _[Monitoring/alerting improvement]_
+4. [ ] _[Documentation update]_
+"""
+
+        md += f"""
+## Lessons Learned
+
+### Technical Lessons
+_[What did we learn about our systems?]_
+
+### Process Lessons
+_[What did we learn about our processes?]_
+
+### Knowledge Gaps
+_[What knowledge would have helped resolve this faster?]_
+
+## Supporting Information
+
+### Related Incidents
+_[Links to similar past incidents]_
+
+### Relevant Documentation
+_[Links to runbooks, architecture docs, etc.]_
+
+### Metrics and Queries
+```sql
+-- Example: Query used to diagnose the issue
+-- [Include helpful queries for future reference]
+```
+
+---
+
+*Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC*
+*Incident: {incident_id}*
+"""
+
+        return md
+
+    def generate_html(self, incident_id: str, include_timeline: bool = False) -> str:
+        """Generate post-mortem in HTML format"""
+        incident = self._load_incident(incident_id)
+
+        # Calculate duration
+        created = datetime.fromisoformat(incident['created_at'])
+        updated = datetime.fromisoformat(incident['updated_at'])
+        duration = updated - created
+
+        hours = int(duration.total_seconds() / 3600)
+        minutes = int((duration.total_seconds() % 3600) / 60)
+
+        severity_colors = {
+            'P0': '#ff0000',
+            'P1': '#ff9900',
+            'P2': '#ffcc00',
+            'P3': '#00cc00'
+        }
+
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Post-Mortem: {incident['title']}</title>
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }}
+        .container {{
+            background-color: white;
+            border-radius: 8px;
+            padding: 40px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        h1 {{
+            color: #333;
+            border-bottom: 3px solid {severity_colors.get(incident['severity'], '#666')};
+            padding-bottom: 10px;
+        }}
+        h2 {{
+            color: #555;
+            margin-top: 30px;
+            border-bottom: 2px solid #e0e0e0;
+            padding-bottom: 8px;
+        }}
+        h3 {{
+            color: #666;
+        }}
+        .metadata {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }}
+        .metadata-item {{
+            padding: 10px;
+        }}
+        .metadata-label {{
+            font-weight: 600;
+            color: #666;
+            font-size: 0.9em;
+        }}
+        .metadata-value {{
+            color: #333;
+            font-size: 1.1em;
+        }}
+        .severity-badge {{
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            background-color: {severity_colors.get(incident['severity'], '#666')};
+            color: white;
+            font-weight: 600;
+        }}
+        .timeline {{
+            list-style: none;
+            padding-left: 20px;
+            border-left: 3px solid #1a73e8;
+            margin: 20px 0;
+        }}
+        .timeline li {{
+            padding: 10px;
+            margin: 10px 0;
+            position: relative;
+        }}
+        .timeline li:before {{
+            content: '';
+            width: 12px;
+            height: 12px;
+            background-color: #1a73e8;
+            border-radius: 50%;
+            position: absolute;
+            left: -27px;
+            top: 15px;
+        }}
+        .action-items {{
+            list-style: none;
+            padding: 0;
+        }}
+        .action-items li {{
+            padding: 10px;
+            margin: 8px 0;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            border-left: 4px solid #1a73e8;
+        }}
+        .action-done {{
+            opacity: 0.6;
+            text-decoration: line-through;
+            border-left-color: #4caf50;
+        }}
+        pre {{
+            background-color: #f5f5f5;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }}
+        code {{
+            background-color: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }}
+        .footer {{
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 2px solid #e0e0e0;
+            color: #666;
+            font-size: 0.9em;
+            text-align: center;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>{incident['title']}</h1>
+
+        <div class="metadata">
+            <div class="metadata-item">
+                <div class="metadata-label">Incident ID</div>
+                <div class="metadata-value"><code>{incident['incident_id']}</code></div>
+            </div>
+            <div class="metadata-item">
+                <div class="metadata-label">Severity</div>
+                <div class="metadata-value"><span class="severity-badge">{incident['severity']}</span></div>
+            </div>
+            <div class="metadata-item">
+                <div class="metadata-label">Date</div>
+                <div class="metadata-value">{created.strftime('%Y-%m-%d')}</div>
+            </div>
+            <div class="metadata-item">
+                <div class="metadata-label">Duration</div>
+                <div class="metadata-value">{hours}h {minutes}m</div>
+            </div>
+        </div>
+
+        <h2>Executive Summary</h2>
+        <p>{incident.get('impact', '<em>[Brief summary of the incident]</em>')}</p>
+
+        <h2>Impact</h2>
+        <h3>Affected Systems</h3>
+        <p>{incident.get('impact', '<em>[Details about affected systems]</em>')}</p>
+
+        <h3>Business Impact</h3>
+        <ul>
+            <li><strong>Duration:</strong> {hours}h {minutes}m</li>
+            <li><strong>Status:</strong> {incident.get('status', 'Unknown')}</li>
+        </ul>
+
+        <h2>Root Cause</h2>
+        <p>{incident.get('root_cause', '<em>[Root cause explanation]</em>')}</p>
+
+        <h2>Detection</h2>
+        <p>{incident.get('symptoms', '<em>[How the incident was detected]</em>')}</p>
+"""
+
+        if include_timeline and incident.get('timeline'):
+            html += """
+        <h2>Timeline</h2>
+        <ul class="timeline">
+"""
+            for event in incident['timeline']:
+                timestamp = event['timestamp'].split('T')[1].split('.')[0] if 'T' in event['timestamp'] else event['timestamp']
+                html += f"            <li><strong>{timestamp}:</strong> {event['event']}</li>\n"
+
+            html += "        </ul>\n"
+
+        html += f"""
+        <h2>Resolution</h2>
+        <p>{incident.get('resolution', '<em>[How the incident was resolved]</em>')}</p>
+
+        <h2>Action Items</h2>
+"""
+
+        if incident.get('action_items'):
+            html += '        <ul class="action-items">\n'
+            for item in incident['action_items']:
+                done_class = 'action-done' if item.get('status') == 'completed' else ''
+                status_icon = '✓' if item.get('status') == 'completed' else '○'
+                html += f'            <li class="{done_class}">{status_icon} {item["action"]} (Owner: {item["owner"]})</li>\n'
+            html += '        </ul>\n'
+        else:
+            html += """        <ul class="action-items">
+            <li>○ <em>[Action item 1]</em></li>
+            <li>○ <em>[Action item 2]</em></li>
+        </ul>
+"""
+
+        html += f"""
+        <h2>Lessons Learned</h2>
+        <h3>What Went Well</h3>
+        <p><em>[Positive aspects of the response]</em></p>
+
+        <h3>What Could Be Improved</h3>
+        <p><em>[Areas for improvement]</em></p>
+
+        <div class="footer">
+            <p>Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</p>
+            <p>Incident: {incident_id}</p>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+        return html
+
+    def get_template_markdown(self) -> str:
+        """Get blank post-mortem template"""
+        return """# Post-Mortem: [Incident Title]
+
+**Incident ID**: [INC-XXXXX]
+**Severity**: [P0/P1/P2/P3]
+**Date**: [YYYY-MM-DD]
+**Duration**: [Xh Xm]
+**Authors**: [Names]
+
+---
+
+## Executive Summary
+
+[Brief 2-3 sentence summary of what happened, the impact, and how it was resolved]
+
+## Impact
+
+### Affected Systems
+[List affected systems, tables, dashboards, or services]
+
+### Business Impact
+- **Users Affected**: [Number or percentage]
+- **Data Affected**: [Scope of affected data]
+- **Duration**: [Duration]
+- **Revenue Impact**: [If applicable]
+- **SLA Breach**: [Yes/No and details]
+
+## Root Cause
+
+[Detailed explanation of what caused the incident]
+
+### Contributing Factors
+[List any contributing factors]
+
+1. [Factor 1]
+2. [Factor 2]
+
+## Detection
+
+### How We Detected It
+[How was the incident first detected?]
+
+### Time to Detection
+[Time between incident occurring and detection]
+
+## Response
+
+### Timeline
+- **[Time]**: [Event]
+- **[Time]**: [Event]
+- **[Time]**: [Event]
+
+### Resolution
+[Describe how the incident was resolved]
+
+## Prevention
+
+### What Went Well
+1. [What worked well in response]
+2. [What helped resolve quickly]
+
+### What Could Be Improved
+1. [What slowed us down]
+2. [What made this harder]
+
+### Action Items
+1. [ ] [Specific action to prevent recurrence] (Owner: [Name])
+2. [ ] [Process improvement] (Owner: [Name])
+3. [ ] [Monitoring/alerting improvement] (Owner: [Name])
+4. [ ] [Documentation update] (Owner: [Name])
+
+## Lessons Learned
+
+### Technical Lessons
+[What did we learn about our systems?]
+
+### Process Lessons
+[What did we learn about our processes?]
+
+### Knowledge Gaps
+[What knowledge would have helped?]
+
+## Supporting Information
+
+### Related Incidents
+[Links to similar past incidents]
+
+### Relevant Documentation
+[Links to runbooks, architecture docs]
+
+### Metrics and Queries
+```sql
+-- Helpful queries for future reference
+```
+
+---
+
+*Generated: [DATE]*
+"""
+
+
+def cmd_generate(args):
+    """Generate post-mortem"""
+    generator = PostmortemGenerator(args.dir)
+
+    try:
+        if args.format == 'html':
+            content = generator.generate_html(args.incident_id, args.include_timeline)
+        else:
+            content = generator.generate_markdown(args.incident_id, args.include_timeline)
+
+        if args.output:
+            with open(args.output, 'w') as f:
+                f.write(content)
+            print(f"{Colors.GREEN}Post-mortem saved to: {args.output}{Colors.RESET}")
+        else:
+            print(content)
+
+    except FileNotFoundError as e:
+        print(f"{Colors.RED}Error: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_template(args):
+    """Output blank template"""
+    generator = PostmortemGenerator()
+
+    content = generator.get_template_markdown()
+
+    if args.output:
+        with open(args.output, 'w') as f:
+            f.write(content)
+        print(f"{Colors.GREEN}Template saved to: {args.output}{Colors.RESET}")
+    else:
+        print(content)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate post-mortem reports from incidents",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+
+    subparsers = parser.add_subparsers(dest='command', help='Commands')
+
+    # Generate command
+    generate_parser = subparsers.add_parser('generate', help='Generate post-mortem')
+    generate_parser.add_argument('incident_id')
+    generate_parser.add_argument('--format', choices=['markdown', 'html'], default='markdown')
+    generate_parser.add_argument('--output')
+    generate_parser.add_argument('--include-timeline', action='store_true')
+    generate_parser.add_argument('--dir', default='./incidents')
+
+    # Template command
+    template_parser = subparsers.add_parser('template', help='Output blank template')
+    template_parser.add_argument('--output')
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    # Execute command
+    if args.command == 'generate':
+        cmd_generate(args)
+    elif args.command == 'template':
+        cmd_template(args)
+
+
+if __name__ == "__main__":
+    main()
