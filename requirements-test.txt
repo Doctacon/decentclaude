@@ -1,0 +1,25 @@
+# Testing dependencies for CLI utilities
+# Install with: pip install -r requirements-test.txt
+
+# Core testing frameworks
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.0
+pytest-timeout>=2.1.0
+
+# For BigQuery utilities testing
+google-cloud-bigquery>=3.11.0
+google-cloud-bigquery-storage>=2.22.0
+
+# For data quality checks
+sqlparse>=0.4.4
+
+# For code coverage reporting
+coverage[toml]>=7.3.0
+
+# For mocking and testing
+mock>=5.1.0
+freezegun>=1.2.2  # For time-based testing
+
+# Optional: for testing shell scripts
+# Install bats-core separately: brew install bats-core (macOS) or via package manager
