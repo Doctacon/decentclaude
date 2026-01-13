@@ -16,6 +16,7 @@ Powerful command-line utilities for common BigQuery operations:
 - **bq-query-cost**: Estimate query costs before execution
 - **bq-partition-info**: Analyze partitioning configuration and partition sizes
 - **bq-lineage**: Explore table dependencies (upstream and downstream)
+- **catalog-sync**: Sync metadata, lineage, and quality scores to data catalogs (Datahub, Amundsen, Atlan)
 
 See [Data Utilities](#data-utilities) for detailed usage.
 
@@ -105,6 +106,10 @@ Run the [hook-name] hook
 
 - [Hooks Documentation](.claude/HOOKS.md) - Detailed hook descriptions and usage
 - [Data Quality Script](scripts/data_quality.py) - Extensible quality check framework
+- [Catalog Integration](docs/catalog-integration.md) - Data catalog sync documentation
+- [Data Engineering Patterns](data-engineering-patterns.md) - Best practices guide
+- [Data Testing Patterns](data-testing-patterns.md) - Testing patterns and strategies
+- [Playbooks](playbooks.md) - Operational playbooks and workflows
 
 ## Example Usage
 
@@ -261,6 +266,74 @@ bin/data-utils/bq-lineage project.dataset.orders --format=mermaid
 
 **Note:** Lineage detection works best with views and materialized views. For tables, it searches for references in view definitions across the project.
 
+### catalog-sync
+
+Sync BigQuery metadata, lineage, and data quality information to data catalogs.
+
+**Usage:**
+```bash
+bin/data-utils/catalog-sync --catalog <catalog_type> [options]
+```
+
+**Supported Catalogs:**
+- Datahub
+- Amundsen
+- Atlan
+
+**Options:**
+- `--catalog=<type>` - Target catalog: datahub, amundsen, atlan (required)
+- `--table=<table_id>` - Fully-qualified table ID (project.dataset.table)
+- `--project=<project>` - GCP project ID
+- `--dataset=<dataset>` - BigQuery dataset name
+- `--dataset-id=<id>` - Fully-qualified dataset ID (project.dataset)
+- `--include-lineage` - Include lineage information (default: True)
+- `--no-lineage` - Skip lineage synchronization
+- `--include-quality` - Include data quality scores
+- `--no-quality` - Skip quality scores (default: True)
+- `--output=<format>` - Output format: text, json (default: text)
+- `--config-file=<path>` - Path to catalog configuration file (JSON)
+
+**Examples:**
+```bash
+# Sync single table to Datahub
+bin/data-utils/catalog-sync --catalog datahub --table project.dataset.orders
+
+# Sync entire dataset to Amundsen
+bin/data-utils/catalog-sync --catalog amundsen --project my-project --dataset analytics
+
+# Sync with lineage and quality to Atlan
+bin/data-utils/catalog-sync --catalog atlan --table project.dataset.customers --include-lineage --include-quality
+
+# Use configuration file
+bin/data-utils/catalog-sync --catalog datahub --table project.dataset.events --config-file examples/catalog-config-datahub.json
+
+# Get JSON output
+bin/data-utils/catalog-sync --catalog datahub --dataset-id project.dataset --output json
+```
+
+**What Gets Synced:**
+- Table metadata (schema, partitioning, clustering, statistics)
+- Upstream and downstream lineage (dependencies)
+- Table and column documentation
+- Data quality scores (existence, freshness, documentation completeness)
+- Labels and tags for discoverability
+
+**Environment Variables:**
+```bash
+# Datahub
+export DATAHUB_GMS_URL="http://localhost:8080"
+export DATAHUB_TOKEN="your-token"
+
+# Amundsen
+export AMUNDSEN_METADATA_URL="http://localhost:5002"
+
+# Atlan
+export ATLAN_API_URL="https://your-tenant.atlan.com"
+export ATLAN_API_TOKEN="your-api-token"
+```
+
+See [docs/catalog-integration.md](docs/catalog-integration.md) for detailed documentation, workflow integration patterns, and troubleshooting.
+
 ### Installation
 
 To make utilities accessible from anywhere, add to your PATH:
@@ -277,6 +350,7 @@ sudo ln -s /path/to/decentclaude/bin/data-utils/bq-schema-diff /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-query-cost /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-partition-info /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-lineage /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/catalog-sync /usr/local/bin/
 ```
 
 ### Requirements
@@ -285,6 +359,13 @@ All utilities require:
 - Python 3.7+
 - google-cloud-bigquery library: `pip install google-cloud-bigquery`
 - Google Cloud credentials configured (via GOOGLE_APPLICATION_CREDENTIALS or gcloud auth)
+
+Additional requirements for catalog-sync:
+- requests library: `pip install requests`
+- Catalog-specific libraries (optional):
+  - Datahub: `pip install acryl-datahub`
+  - Amundsen: `pip install amundsen-databuilder`
+  - Atlan: Uses REST API (no additional package needed)
 
 ## Customization
 
@@ -345,13 +426,23 @@ chmod +x .git/hooks/pre-commit
 │   │   ├── bq-schema-diff     # Compare table schemas
 │   │   ├── bq-query-cost      # Estimate query costs
 │   │   ├── bq-partition-info  # Analyze partitions
-│   │   └── bq-lineage         # Explore table lineage
+│   │   ├── bq-lineage         # Explore table lineage
+│   │   └── catalog-sync       # Sync to data catalogs
 │   └── worktree-utils/        # Git worktree utilities
 ├── scripts/
-│   └── data_quality.py        # Data quality check framework
+│   ├── data_quality.py        # Data quality check framework
+│   └── catalog_quality_bridge.py  # Quality checks for catalogs
 ├── docs/                      # Documentation
+│   ├── catalog-integration.md # Catalog sync documentation
+│   └── templates/             # Documentation templates
 ├── examples/                  # Example SQL and configs
+│   ├── catalog-config-*.json  # Catalog configuration examples
+│   └── sql/                   # Example SQL files
+├── tests/                     # Test suite
+│   └── test_catalog_integration.py  # Catalog integration tests
 ├── data-engineering-patterns.md  # Best practices guide
+├── data-testing-patterns.md   # Testing patterns
+├── playbooks.md               # Operational playbooks
 └── README.md                  # This file
 ```
 

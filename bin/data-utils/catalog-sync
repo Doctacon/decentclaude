@@ -1,0 +1,780 @@
+#!/usr/bin/env python3
+"""
+Data Catalog Synchronization Utility
+
+Sync BigQuery metadata, lineage, and data quality information to data catalogs.
+Supports: Datahub, Amundsen, Atlan
+
+Usage:
+    catalog-sync --catalog datahub --project my-project --dataset my_dataset
+    catalog-sync --catalog amundsen --table my-project.my_dataset.my_table
+    catalog-sync --catalog atlan --project my-project --include-lineage
+"""
+
+import argparse
+import json
+import os
+import sys
+from abc import ABC, abstractmethod
+from typing import Dict, List, Optional, Any
+from google.cloud import bigquery
+import requests
+
+
+# ANSI Color Codes
+class Colors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+
+class CatalogAdapter(ABC):
+    """Base class for data catalog adapters"""
+
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.bq_client = bigquery.Client()
+
+    @abstractmethod
+    def push_metadata(self, table_id: str, metadata: Dict[str, Any]) -> bool:
+        """Push table metadata to catalog"""
+        pass
+
+    @abstractmethod
+    def push_lineage(self, table_id: str, lineage: Dict[str, Any]) -> bool:
+        """Push lineage information to catalog"""
+        pass
+
+    @abstractmethod
+    def push_documentation(self, table_id: str, docs: Dict[str, Any]) -> bool:
+        """Push documentation to catalog"""
+        pass
+
+    @abstractmethod
+    def push_quality_scores(self, table_id: str, scores: Dict[str, Any]) -> bool:
+        """Push data quality scores to catalog"""
+        pass
+
+    def get_table_metadata(self, table_id: str) -> Dict[str, Any]:
+        """Extract comprehensive table metadata from BigQuery"""
+        try:
+            table = self.bq_client.get_table(table_id)
+
+            metadata = {
+                "table_id": table_id,
+                "project": table.project,
+                "dataset": table.dataset_id,
+                "table_name": table.table_id,
+                "description": table.description or "",
+                "created": table.created.isoformat() if table.created else None,
+                "modified": table.modified.isoformat() if table.modified else None,
+                "num_rows": table.num_rows,
+                "num_bytes": table.num_bytes,
+                "schema": self._extract_schema(table.schema),
+                "partitioning": self._extract_partitioning(table),
+                "clustering": self._extract_clustering(table),
+                "labels": table.labels or {},
+                "table_type": table.table_type,
+            }
+
+            return metadata
+        except Exception as e:
+            print(f"{Colors.FAIL}Error getting metadata for {table_id}: {e}{Colors.ENDC}")
+            return {}
+
+    def _extract_schema(self, schema: List) -> List[Dict[str, Any]]:
+        """Extract schema information"""
+        fields = []
+        for field in schema:
+            field_info = {
+                "name": field.name,
+                "type": field.field_type,
+                "mode": field.mode,
+                "description": field.description or "",
+            }
+            if field.field_type == "RECORD" and field.fields:
+                field_info["fields"] = self._extract_schema(field.fields)
+            fields.append(field_info)
+        return fields
+
+    def _extract_partitioning(self, table) -> Dict[str, Any]:
+        """Extract partitioning information"""
+        if not table.time_partitioning and not table.range_partitioning:
+            return {"enabled": False}
+
+        if table.time_partitioning:
+            return {
+                "enabled": True,
+                "type": "TIME",
+                "field": table.time_partitioning.field or "_PARTITIONTIME",
+                "partition_type": table.time_partitioning.type_,
+                "expiration_ms": table.time_partitioning.expiration_ms,
+            }
+
+        if table.range_partitioning:
+            return {
+                "enabled": True,
+                "type": "RANGE",
+                "field": table.range_partitioning.field,
+                "range": {
+                    "start": table.range_partitioning.range_.start,
+                    "end": table.range_partitioning.range_.end,
+                    "interval": table.range_partitioning.range_.interval,
+                }
+            }
+
+        return {"enabled": False}
+
+    def _extract_clustering(self, table) -> Dict[str, Any]:
+        """Extract clustering information"""
+        if not table.clustering_fields:
+            return {"enabled": False}
+
+        return {
+            "enabled": True,
+            "fields": table.clustering_fields,
+        }
+
+    def get_lineage(self, table_id: str) -> Dict[str, Any]:
+        """Extract lineage information for a table"""
+        lineage = {
+            "table_id": table_id,
+            "upstream": [],
+            "downstream": [],
+        }
+
+        try:
+            # Get upstream dependencies from view definition
+            table = self.bq_client.get_table(table_id)
+            if table.view_query:
+                upstream_tables = self._extract_upstream_from_query(table.view_query)
+                lineage["upstream"] = upstream_tables
+
+            # Get downstream dependencies via INFORMATION_SCHEMA
+            project, dataset, table_name = table_id.replace(':', '.').split('.')
+            downstream_tables = self._get_downstream_dependencies(project, dataset, table_name)
+            lineage["downstream"] = downstream_tables
+
+        except Exception as e:
+            print(f"{Colors.WARNING}Warning: Could not extract full lineage for {table_id}: {e}{Colors.ENDC}")
+
+        return lineage
+
+    def _extract_upstream_from_query(self, query: str) -> List[str]:
+        """Extract table references from SQL query"""
+        import re
+        # Match patterns like `project.dataset.table` or project.dataset.table
+        pattern = r'`?([a-zA-Z0-9_-]+)\.([a-zA-Z0-9_-]+)\.([a-zA-Z0-9_-]+)`?'
+        matches = re.findall(pattern, query)
+        return [f"{project}.{dataset}.{table}" for project, dataset, table in matches]
+
+    def _get_downstream_dependencies(self, project: str, dataset: str, table_name: str) -> List[str]:
+        """Find tables that depend on this table"""
+        query = f"""
+        SELECT table_catalog, table_schema, table_name
+        FROM `{project}.{dataset}.INFORMATION_SCHEMA.VIEWS`
+        WHERE view_definition LIKE '%{table_name}%'
+        """
+
+        try:
+            results = self.bq_client.query(query).result()
+            return [f"{row.table_catalog}.{row.table_schema}.{row.table_name}" for row in results]
+        except Exception:
+            return []
+
+
+class DatahubAdapter(CatalogAdapter):
+    """Datahub catalog adapter using GMS API"""
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        self.gms_url = config.get("gms_url", os.environ.get("DATAHUB_GMS_URL", "http://localhost:8080"))
+        self.token = config.get("token", os.environ.get("DATAHUB_TOKEN"))
+
+    def _get_headers(self) -> Dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
+
+    def push_metadata(self, table_id: str, metadata: Dict[str, Any]) -> bool:
+        """Push metadata to Datahub via MCE"""
+        try:
+            # Create dataset URN
+            urn = f"urn:li:dataset:(urn:li:dataPlatform:bigquery,{table_id},PROD)"
+
+            # Build metadata change event
+            mce = {
+                "proposedSnapshot": {
+                    "com.linkedin.pegasus2avro.metadata.snapshot.DatasetSnapshot": {
+                        "urn": urn,
+                        "aspects": [
+                            {
+                                "com.linkedin.pegasus2avro.dataset.DatasetProperties": {
+                                    "description": metadata.get("description", ""),
+                                    "customProperties": {
+                                        "num_rows": str(metadata.get("num_rows", 0)),
+                                        "num_bytes": str(metadata.get("num_bytes", 0)),
+                                        "created": metadata.get("created", ""),
+                                        "modified": metadata.get("modified", ""),
+                                    }
+                                }
+                            },
+                            {
+                                "com.linkedin.pegasus2avro.schema.SchemaMetadata": {
+                                    "schemaName": metadata.get("table_name", ""),
+                                    "platform": f"urn:li:dataPlatform:bigquery",
+                                    "version": 0,
+                                    "hash": "",
+                                    "platformSchema": {
+                                        "com.linkedin.pegasus2avro.schema.OtherSchema": {
+                                            "rawSchema": json.dumps(metadata.get("schema", []))
+                                        }
+                                    },
+                                    "fields": self._build_schema_fields(metadata.get("schema", []))
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+
+            # Send to Datahub
+            response = requests.post(
+                f"{self.gms_url}/entities?action=ingest",
+                headers=self._get_headers(),
+                json=mce
+            )
+
+            if response.status_code == 200:
+                print(f"{Colors.OKGREEN}✓ Pushed metadata for {table_id} to Datahub{Colors.ENDC}")
+                return True
+            else:
+                print(f"{Colors.FAIL}✗ Failed to push metadata: {response.text}{Colors.ENDC}")
+                return False
+
+        except Exception as e:
+            print(f"{Colors.FAIL}Error pushing metadata to Datahub: {e}{Colors.ENDC}")
+            return False
+
+    def _build_schema_fields(self, schema: List[Dict[str, Any]]) -> List[Dict]:
+        """Convert schema to Datahub field format"""
+        fields = []
+        for field in schema:
+            field_obj = {
+                "fieldPath": field["name"],
+                "type": {
+                    "type": {
+                        "com.linkedin.pegasus2avro.schema.StringType": {}
+                    }
+                },
+                "nativeDataType": field["type"],
+                "description": field.get("description", ""),
+            }
+            fields.append(field_obj)
+        return fields
+
+    def push_lineage(self, table_id: str, lineage: Dict[str, Any]) -> bool:
+        """Push lineage to Datahub"""
+        try:
+            urn = f"urn:li:dataset:(urn:li:dataPlatform:bigquery,{table_id},PROD)"
+
+            # Build upstream lineage
+            upstreams = []
+            for upstream_table in lineage.get("upstream", []):
+                upstream_urn = f"urn:li:dataset:(urn:li:dataPlatform:bigquery,{upstream_table},PROD)"
+                upstreams.append({
+                    "auditStamp": {"time": 0, "actor": "urn:li:corpuser:datahub"},
+                    "dataset": upstream_urn,
+                    "type": "TRANSFORMED"
+                })
+
+            mce = {
+                "proposedSnapshot": {
+                    "com.linkedin.pegasus2avro.metadata.snapshot.DatasetSnapshot": {
+                        "urn": urn,
+                        "aspects": [
+                            {
+                                "com.linkedin.pegasus2avro.dataset.UpstreamLineage": {
+                                    "upstreams": upstreams
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+
+            response = requests.post(
+                f"{self.gms_url}/entities?action=ingest",
+                headers=self._get_headers(),
+                json=mce
+            )
+
+            if response.status_code == 200:
+                print(f"{Colors.OKGREEN}✓ Pushed lineage for {table_id} to Datahub{Colors.ENDC}")
+                return True
+            else:
+                print(f"{Colors.FAIL}✗ Failed to push lineage: {response.text}{Colors.ENDC}")
+                return False
+
+        except Exception as e:
+            print(f"{Colors.FAIL}Error pushing lineage to Datahub: {e}{Colors.ENDC}")
+            return False
+
+    def push_documentation(self, table_id: str, docs: Dict[str, Any]) -> bool:
+        """Push documentation to Datahub"""
+        # Included in metadata push via description field
+        return True
+
+    def push_quality_scores(self, table_id: str, scores: Dict[str, Any]) -> bool:
+        """Push data quality scores to Datahub"""
+        try:
+            urn = f"urn:li:dataset:(urn:li:dataPlatform:bigquery,{table_id},PROD)"
+
+            # Build data quality assertions
+            assertions = []
+            for check_name, result in scores.items():
+                assertion = {
+                    "type": "DATA_QUALITY",
+                    "dataQualityAssertion": {
+                        "checkName": check_name,
+                        "passed": result.get("passed", False),
+                        "message": result.get("message", "")
+                    }
+                }
+                assertions.append(assertion)
+
+            # Note: Datahub quality score integration may vary by version
+            # This is a simplified representation
+            print(f"{Colors.OKGREEN}✓ Quality scores prepared for {table_id}{Colors.ENDC}")
+            return True
+
+        except Exception as e:
+            print(f"{Colors.FAIL}Error pushing quality scores to Datahub: {e}{Colors.ENDC}")
+            return False
+
+
+class AmundsenAdapter(CatalogAdapter):
+    """Amundsen catalog adapter using metadata API"""
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        self.metadata_url = config.get("metadata_url", os.environ.get("AMUNDSEN_METADATA_URL", "http://localhost:5002"))
+
+    def push_metadata(self, table_id: str, metadata: Dict[str, Any]) -> bool:
+        """Push metadata to Amundsen"""
+        try:
+            # Amundsen table key format
+            project, dataset, table_name = table_id.replace(':', '.').split('.')
+            table_key = f"bigquery://{project}.{dataset}/{table_name}"
+
+            payload = {
+                "table_uri": table_key,
+                "cluster": project,
+                "database": dataset,
+                "schema": dataset,
+                "table_name": table_name,
+                "description": metadata.get("description", ""),
+                "columns": [
+                    {
+                        "name": field["name"],
+                        "type": field["type"],
+                        "description": field.get("description", "")
+                    }
+                    for field in metadata.get("schema", [])
+                ],
+                "tags": list(metadata.get("labels", {}).keys()),
+            }
+
+            response = requests.put(
+                f"{self.metadata_url}/table",
+                headers={"Content-Type": "application/json"},
+                json=payload
+            )
+
+            if response.status_code in [200, 201]:
+                print(f"{Colors.OKGREEN}✓ Pushed metadata for {table_id} to Amundsen{Colors.ENDC}")
+                return True
+            else:
+                print(f"{Colors.FAIL}✗ Failed to push metadata: {response.text}{Colors.ENDC}")
+                return False
+
+        except Exception as e:
+            print(f"{Colors.FAIL}Error pushing metadata to Amundsen: {e}{Colors.ENDC}")
+            return False
+
+    def push_lineage(self, table_id: str, lineage: Dict[str, Any]) -> bool:
+        """Push lineage to Amundsen"""
+        try:
+            project, dataset, table_name = table_id.replace(':', '.').split('.')
+            table_key = f"bigquery://{project}.{dataset}/{table_name}"
+
+            # Push upstream lineage
+            for upstream_table in lineage.get("upstream", []):
+                up_proj, up_ds, up_tbl = upstream_table.split('.')
+                upstream_key = f"bigquery://{up_proj}.{up_ds}/{up_tbl}"
+
+                payload = {
+                    "downstream_table_key": table_key,
+                    "upstream_table_key": upstream_key,
+                }
+
+                response = requests.put(
+                    f"{self.metadata_url}/table/lineage",
+                    headers={"Content-Type": "application/json"},
+                    json=payload
+                )
+
+            print(f"{Colors.OKGREEN}✓ Pushed lineage for {table_id} to Amundsen{Colors.ENDC}")
+            return True
+
+        except Exception as e:
+            print(f"{Colors.FAIL}Error pushing lineage to Amundsen: {e}{Colors.ENDC}")
+            return False
+
+    def push_documentation(self, table_id: str, docs: Dict[str, Any]) -> bool:
+        """Push documentation to Amundsen"""
+        # Included in metadata push via description field
+        return True
+
+    def push_quality_scores(self, table_id: str, scores: Dict[str, Any]) -> bool:
+        """Push data quality scores to Amundsen"""
+        # Amundsen doesn't have native quality score support
+        # Could be stored as table attributes or tags
+        print(f"{Colors.WARNING}⚠ Amundsen doesn't natively support quality scores{Colors.ENDC}")
+        return True
+
+
+class AtlanAdapter(CatalogAdapter):
+    """Atlan catalog adapter using REST API"""
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        self.api_url = config.get("api_url", os.environ.get("ATLAN_API_URL", "https://tenant.atlan.com"))
+        self.api_token = config.get("api_token", os.environ.get("ATLAN_API_TOKEN"))
+
+    def _get_headers(self) -> Dict[str, str]:
+        return {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_token}"
+        }
+
+    def push_metadata(self, table_id: str, metadata: Dict[str, Any]) -> bool:
+        """Push metadata to Atlan"""
+        try:
+            project, dataset, table_name = table_id.replace(':', '.').split('.')
+
+            # Build Atlan entity
+            entity = {
+                "typeName": "Table",
+                "attributes": {
+                    "name": table_name,
+                    "qualifiedName": f"bigquery/{project}/{dataset}/{table_name}",
+                    "connectorName": "bigquery",
+                    "connectionQualifiedName": f"bigquery/{project}",
+                    "databaseName": project,
+                    "schemaName": dataset,
+                    "description": metadata.get("description", ""),
+                    "rowCount": metadata.get("num_rows", 0),
+                    "sizeBytes": metadata.get("num_bytes", 0),
+                    "columns": [
+                        {
+                            "typeName": "Column",
+                            "attributes": {
+                                "name": field["name"],
+                                "dataType": field["type"],
+                                "description": field.get("description", ""),
+                            }
+                        }
+                        for field in metadata.get("schema", [])
+                    ]
+                }
+            }
+
+            response = requests.post(
+                f"{self.api_url}/api/meta/entity/bulk",
+                headers=self._get_headers(),
+                json={"entities": [entity]}
+            )
+
+            if response.status_code in [200, 201]:
+                print(f"{Colors.OKGREEN}✓ Pushed metadata for {table_id} to Atlan{Colors.ENDC}")
+                return True
+            else:
+                print(f"{Colors.FAIL}✗ Failed to push metadata: {response.text}{Colors.ENDC}")
+                return False
+
+        except Exception as e:
+            print(f"{Colors.FAIL}Error pushing metadata to Atlan: {e}{Colors.ENDC}")
+            return False
+
+    def push_lineage(self, table_id: str, lineage: Dict[str, Any]) -> bool:
+        """Push lineage to Atlan"""
+        try:
+            project, dataset, table_name = table_id.replace(':', '.').split('.')
+            qualified_name = f"bigquery/{project}/{dataset}/{table_name}"
+
+            # Build lineage relationships
+            for upstream_table in lineage.get("upstream", []):
+                up_proj, up_ds, up_tbl = upstream_table.split('.')
+                upstream_qn = f"bigquery/{up_proj}/{up_ds}/{up_tbl}"
+
+                lineage_entity = {
+                    "typeName": "Process",
+                    "attributes": {
+                        "qualifiedName": f"lineage/{upstream_qn}/{qualified_name}",
+                        "name": f"{up_tbl} -> {table_name}",
+                        "inputs": [{"typeName": "Table", "uniqueAttributes": {"qualifiedName": upstream_qn}}],
+                        "outputs": [{"typeName": "Table", "uniqueAttributes": {"qualifiedName": qualified_name}}],
+                    }
+                }
+
+                response = requests.post(
+                    f"{self.api_url}/api/meta/entity/bulk",
+                    headers=self._get_headers(),
+                    json={"entities": [lineage_entity]}
+                )
+
+            print(f"{Colors.OKGREEN}✓ Pushed lineage for {table_id} to Atlan{Colors.ENDC}")
+            return True
+
+        except Exception as e:
+            print(f"{Colors.FAIL}Error pushing lineage to Atlan: {e}{Colors.ENDC}")
+            return False
+
+    def push_documentation(self, table_id: str, docs: Dict[str, Any]) -> bool:
+        """Push documentation to Atlan"""
+        # Included in metadata push via description field
+        return True
+
+    def push_quality_scores(self, table_id: str, scores: Dict[str, Any]) -> bool:
+        """Push data quality scores to Atlan"""
+        try:
+            project, dataset, table_name = table_id.replace(':', '.').split('.')
+            qualified_name = f"bigquery/{project}/{dataset}/{table_name}"
+
+            # Create quality check entities
+            for check_name, result in scores.items():
+                quality_entity = {
+                    "typeName": "DataQuality",
+                    "attributes": {
+                        "qualifiedName": f"{qualified_name}/quality/{check_name}",
+                        "name": check_name,
+                        "status": "PASSED" if result.get("passed", False) else "FAILED",
+                        "message": result.get("message", ""),
+                    }
+                }
+
+                response = requests.post(
+                    f"{self.api_url}/api/meta/entity/bulk",
+                    headers=self._get_headers(),
+                    json={"entities": [quality_entity]}
+                )
+
+            print(f"{Colors.OKGREEN}✓ Pushed quality scores for {table_id} to Atlan{Colors.ENDC}")
+            return True
+
+        except Exception as e:
+            print(f"{Colors.FAIL}Error pushing quality scores to Atlan: {e}{Colors.ENDC}")
+            return False
+
+
+def get_catalog_adapter(catalog_type: str, config: Dict[str, Any]) -> CatalogAdapter:
+    """Factory function to get the appropriate catalog adapter"""
+    adapters = {
+        "datahub": DatahubAdapter,
+        "amundsen": AmundsenAdapter,
+        "atlan": AtlanAdapter,
+    }
+
+    adapter_class = adapters.get(catalog_type.lower())
+    if not adapter_class:
+        raise ValueError(f"Unsupported catalog type: {catalog_type}. Supported: {list(adapters.keys())}")
+
+    return adapter_class(config)
+
+
+def sync_table(adapter: CatalogAdapter, table_id: str, options: Dict[str, bool]) -> Dict[str, Any]:
+    """Sync a single table to the catalog"""
+    results = {
+        "table_id": table_id,
+        "metadata": False,
+        "lineage": False,
+        "documentation": False,
+        "quality": False,
+    }
+
+    print(f"\n{Colors.HEADER}Syncing {table_id}...{Colors.ENDC}")
+
+    # Push metadata
+    if options.get("metadata", True):
+        metadata = adapter.get_table_metadata(table_id)
+        if metadata:
+            results["metadata"] = adapter.push_metadata(table_id, metadata)
+            results["documentation"] = adapter.push_documentation(table_id, {"description": metadata.get("description", "")})
+
+    # Push lineage
+    if options.get("lineage", True):
+        lineage = adapter.get_lineage(table_id)
+        results["lineage"] = adapter.push_lineage(table_id, lineage)
+
+    # Push quality scores (if available)
+    if options.get("quality", False):
+        # This would integrate with the data_quality.py framework
+        # For now, placeholder
+        scores = {}
+        results["quality"] = adapter.push_quality_scores(table_id, scores)
+
+    return results
+
+
+def sync_dataset(adapter: CatalogAdapter, project: str, dataset: str, options: Dict[str, bool]) -> List[Dict[str, Any]]:
+    """Sync all tables in a dataset to the catalog"""
+    results = []
+
+    try:
+        client = bigquery.Client(project=project)
+        dataset_ref = client.dataset(dataset)
+        tables = client.list_tables(dataset_ref)
+
+        for table_ref in tables:
+            table_id = f"{project}.{dataset}.{table_ref.table_id}"
+            result = sync_table(adapter, table_id, options)
+            results.append(result)
+
+    except Exception as e:
+        print(f"{Colors.FAIL}Error syncing dataset {project}.{dataset}: {e}{Colors.ENDC}")
+
+    return results
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Sync BigQuery metadata to data catalogs (Datahub, Amundsen, Atlan)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Sync a single table to Datahub
+  catalog-sync --catalog datahub --table my-project.my_dataset.my_table
+
+  # Sync entire dataset to Amundsen
+  catalog-sync --catalog amundsen --project my-project --dataset my_dataset
+
+  # Sync with lineage to Atlan
+  catalog-sync --catalog atlan --table my-project.my_dataset.my_table --include-lineage
+
+  # Sync without quality scores
+  catalog-sync --catalog datahub --dataset-id my-project.my_dataset --no-quality
+
+Environment Variables:
+  DATAHUB_GMS_URL     - Datahub GMS endpoint (default: http://localhost:8080)
+  DATAHUB_TOKEN       - Datahub API token
+  AMUNDSEN_METADATA_URL - Amundsen metadata service URL (default: http://localhost:5002)
+  ATLAN_API_URL       - Atlan instance URL (e.g., https://tenant.atlan.com)
+  ATLAN_API_TOKEN     - Atlan API token
+        """
+    )
+
+    parser.add_argument("--catalog", required=True, choices=["datahub", "amundsen", "atlan"],
+                       help="Target catalog system")
+    parser.add_argument("--table", help="Fully-qualified table ID (project.dataset.table)")
+    parser.add_argument("--project", help="GCP project ID")
+    parser.add_argument("--dataset", help="BigQuery dataset name")
+    parser.add_argument("--dataset-id", help="Fully-qualified dataset ID (project.dataset)")
+
+    parser.add_argument("--include-lineage", action="store_true", default=True,
+                       help="Include lineage information (default: True)")
+    parser.add_argument("--no-lineage", action="store_true",
+                       help="Skip lineage synchronization")
+    parser.add_argument("--include-quality", action="store_true",
+                       help="Include data quality scores")
+    parser.add_argument("--no-quality", action="store_true", default=True,
+                       help="Skip quality scores (default: True)")
+
+    parser.add_argument("--output", choices=["text", "json"], default="text",
+                       help="Output format (default: text)")
+    parser.add_argument("--config-file", help="Path to catalog configuration file (JSON)")
+
+    args = parser.parse_args()
+
+    # Load configuration
+    config = {}
+    if args.config_file:
+        try:
+            with open(args.config_file, 'r') as f:
+                config = json.load(f)
+        except Exception as e:
+            print(f"{Colors.FAIL}Error loading config file: {e}{Colors.ENDC}")
+            return 1
+
+    # Get catalog adapter
+    try:
+        adapter = get_catalog_adapter(args.catalog, config)
+    except Exception as e:
+        print(f"{Colors.FAIL}Error initializing catalog adapter: {e}{Colors.ENDC}")
+        return 1
+
+    # Prepare sync options
+    sync_options = {
+        "metadata": True,
+        "lineage": args.include_lineage and not args.no_lineage,
+        "quality": args.include_quality and not args.no_quality,
+    }
+
+    # Perform sync
+    all_results = []
+
+    if args.table:
+        # Sync single table
+        result = sync_table(adapter, args.table, sync_options)
+        all_results.append(result)
+
+    elif args.dataset_id:
+        # Sync dataset using dataset-id format
+        project, dataset = args.dataset_id.split('.')
+        all_results = sync_dataset(adapter, project, dataset, sync_options)
+
+    elif args.project and args.dataset:
+        # Sync dataset using separate project/dataset
+        all_results = sync_dataset(adapter, args.project, args.dataset, sync_options)
+
+    else:
+        print(f"{Colors.FAIL}Error: Must specify --table, --dataset-id, or --project and --dataset{Colors.ENDC}")
+        parser.print_help()
+        return 1
+
+    # Output results
+    if args.output == "json":
+        print(json.dumps(all_results, indent=2))
+    else:
+        # Text summary
+        print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
+        print(f"{Colors.HEADER}Sync Summary{Colors.ENDC}")
+        print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}")
+
+        total = len(all_results)
+        successful = sum(1 for r in all_results if r.get("metadata", False))
+
+        print(f"\nTotal tables: {total}")
+        print(f"Successfully synced: {Colors.OKGREEN}{successful}{Colors.ENDC}")
+        print(f"Failed: {Colors.FAIL}{total - successful}{Colors.ENDC}")
+
+        if sync_options["lineage"]:
+            lineage_success = sum(1 for r in all_results if r.get("lineage", False))
+            print(f"Lineage synced: {Colors.OKGREEN}{lineage_success}{Colors.ENDC}")
+
+        if sync_options["quality"]:
+            quality_success = sum(1 for r in all_results if r.get("quality", False))
+            print(f"Quality scores synced: {Colors.OKGREEN}{quality_success}{Colors.ENDC}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

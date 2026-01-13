@@ -1,0 +1,14 @@
+{
+  "catalog_type": "datahub",
+  "gms_url": "http://localhost:8080",
+  "token": "${DATAHUB_TOKEN}",
+  "sync_options": {
+    "metadata": true,
+    "lineage": true,
+    "documentation": true,
+    "quality": true
+  },
+  "batch_size": 10,
+  "retry_attempts": 3,
+  "timeout_seconds": 30
+}

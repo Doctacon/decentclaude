@@ -1,0 +1,18 @@
+{
+  "catalog_type": "atlan",
+  "api_url": "https://your-tenant.atlan.com",
+  "api_token": "${ATLAN_API_TOKEN}",
+  "sync_options": {
+    "metadata": true,
+    "lineage": true,
+    "documentation": true,
+    "quality": true
+  },
+  "batch_size": 10,
+  "retry_attempts": 3,
+  "timeout_seconds": 30,
+  "connection_config": {
+    "connector_name": "bigquery",
+    "connection_qualified_name": "bigquery/your-project-id"
+  }
+}

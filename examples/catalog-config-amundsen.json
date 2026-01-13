@@ -1,0 +1,14 @@
+{
+  "catalog_type": "amundsen",
+  "metadata_url": "http://localhost:5002",
+  "sync_options": {
+    "metadata": true,
+    "lineage": true,
+    "documentation": true,
+    "quality": false
+  },
+  "batch_size": 10,
+  "retry_attempts": 3,
+  "timeout_seconds": 30,
+  "notes": "Amundsen doesn't natively support quality scores"
+}
