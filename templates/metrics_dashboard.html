@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Team Metrics Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f5f7fa;
+            color: #333;
+            padding: 20px;
+        }
+
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+
+        h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+            color: #2c3e50;
+        }
+
+        .subtitle {
+            color: #7f8c8d;
+            font-size: 14px;
+        }
+
+        .summary-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .card-title {
+            font-size: 12px;
+            color: #7f8c8d;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+
+        .card-value {
+            font-size: 32px;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+
+        .card-unit {
+            font-size: 14px;
+            color: #95a5a6;
+            margin-left: 5px;
+        }
+
+        .chart-container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+
+        .chart-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #2c3e50;
+        }
+
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .controls label {
+            font-size: 14px;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+
+        .controls select,
+        .controls input {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .controls button {
+            padding: 8px 20px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .controls button:hover {
+            background: #2980b9;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #7f8c8d;
+        }
+
+        .error {
+            background: #e74c3c;
+            color: white;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+
+        canvas {
+            max-height: 400px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Team Metrics Dashboard</h1>
+        <div class="subtitle">Real-time analytics for data engineering teams</div>
+    </div>
+
+    <div class="controls">
+        <label for="days-select">Time Range:</label>
+        <select id="days-select">
+            <option value="7">Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="60">Last 60 days</option>
+            <option value="90">Last 90 days</option>
+        </select>
+
+        <button onclick="refreshData()">Refresh</button>
+
+        <div style="margin-left: auto; color: #7f8c8d; font-size: 12px;" id="last-updated"></div>
+    </div>
+
+    <div id="error-container"></div>
+
+    <div class="summary-cards">
+        <div class="card">
+            <div class="card-title">Total Queries</div>
+            <div class="card-value" id="total-queries">--</div>
+        </div>
+        <div class="card">
+            <div class="card-title">Total Cost</div>
+            <div class="card-value">$<span id="total-cost">--</span></div>
+        </div>
+        <div class="card">
+            <div class="card-title">Success Rate</div>
+            <div class="card-value"><span id="success-rate">--</span><span class="card-unit">%</span></div>
+        </div>
+        <div class="card">
+            <div class="card-title">Test Coverage</div>
+            <div class="card-value"><span id="test-coverage">--</span><span class="card-unit">%</span></div>
+        </div>
+        <div class="card">
+            <div class="card-title">Documentation</div>
+            <div class="card-value"><span id="doc-coverage">--</span><span class="card-unit">%</span></div>
+        </div>
+        <div class="card">
+            <div class="card-title">Active Users</div>
+            <div class="card-value" id="active-users">--</div>
+        </div>
+    </div>
+
+    <div class="chart-container">
+        <div class="chart-title">Query Performance Trends</div>
+        <canvas id="performance-chart"></canvas>
+    </div>
+
+    <div class="chart-container">
+        <div class="chart-title">Daily Costs</div>
+        <canvas id="costs-chart"></canvas>
+    </div>
+
+    <div class="chart-container">
+        <div class="chart-title">Pipeline Success Rates</div>
+        <canvas id="pipeline-chart"></canvas>
+    </div>
+
+    <div class="chart-container">
+        <div class="chart-title">Test Coverage by Dataset</div>
+        <canvas id="test-coverage-chart"></canvas>
+    </div>
+
+    <div class="chart-container">
+        <div class="chart-title">Documentation Coverage</div>
+        <canvas id="doc-coverage-chart"></canvas>
+    </div>
+
+    <div class="chart-container">
+        <div class="chart-title">Top Contributors</div>
+        <canvas id="contributors-chart"></canvas>
+    </div>
+
+    <script>
+        let charts = {};
+
+        async function fetchSummary(days) {
+            const response = await fetch(`/api/summary?days=${days}`);
+            return await response.json();
+        }
+
+        async function fetchMetrics(days) {
+            const response = await fetch(`/api/metrics?days=${days}`);
+            return await response.json();
+        }
+
+        function updateSummary(summary) {
+            document.getElementById('total-queries').textContent = summary.total_queries.toLocaleString();
+            document.getElementById('total-cost').textContent = summary.total_cost.toFixed(2);
+            document.getElementById('success-rate').textContent = summary.avg_success_rate.toFixed(1);
+            document.getElementById('test-coverage').textContent = summary.avg_test_coverage.toFixed(1);
+            document.getElementById('doc-coverage').textContent = summary.avg_doc_coverage.toFixed(1);
+            document.getElementById('active-users').textContent = summary.active_users;
+
+            const updated = new Date(summary.last_updated);
+            document.getElementById('last-updated').textContent = `Last updated: ${updated.toLocaleString()}`;
+        }
+
+        function createPerformanceChart(data) {
+            const ctx = document.getElementById('performance-chart').getContext('2d');
+
+            if (charts.performance) {
+                charts.performance.destroy();
+            }
+
+            const chartData = data.map(item => item.value);
+            const labels = chartData.map(v => v.date).reverse();
+
+            charts.performance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Query Count',
+                        data: chartData.map(v => v.query_count).reverse(),
+                        borderColor: '#3498db',
+                        backgroundColor: 'rgba(52, 152, 219, 0.1)',
+                        yAxisID: 'y'
+                    }, {
+                        label: 'P95 Slot Seconds',
+                        data: chartData.map(v => v.p95_slot_seconds).reverse(),
+                        borderColor: '#e74c3c',
+                        backgroundColor: 'rgba(231, 76, 60, 0.1)',
+                        yAxisID: 'y1'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    scales: {
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            title: { display: true, text: 'Query Count' }
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            title: { display: true, text: 'P95 Slot Seconds' },
+                            grid: { drawOnChartArea: false }
+                        }
+                    }
+                }
+            });
+        }
+
+        function createCostsChart(data) {
+            const ctx = document.getElementById('costs-chart').getContext('2d');
+
+            if (charts.costs) {
+                charts.costs.destroy();
+            }
+
+            // Aggregate costs by date
+            const costsByDate = {};
+            data.forEach(item => {
+                const date = item.value.date;
+                if (!costsByDate[date]) {
+                    costsByDate[date] = 0;
+                }
+                costsByDate[date] += item.value.cost_usd;
+            });
+
+            const labels = Object.keys(costsByDate).sort().reverse();
+            const costs = labels.map(date => costsByDate[date]);
+
+            charts.costs = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Daily Cost (USD)',
+                        data: costs,
+                        backgroundColor: '#2ecc71',
+                        borderColor: '#27ae60',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: { display: true, text: 'Cost (USD)' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function createPipelineChart(data) {
+            const ctx = document.getElementById('pipeline-chart').getContext('2d');
+
+            if (charts.pipeline) {
+                charts.pipeline.destroy();
+            }
+
+            // Get latest success rates by job type
+            const latestByType = {};
+            data.forEach(item => {
+                const type = item.value.job_type;
+                if (!latestByType[type] || item.timestamp > latestByType[type].timestamp) {
+                    latestByType[type] = item;
+                }
+            });
+
+            const labels = Object.keys(latestByType);
+            const successRates = labels.map(type => latestByType[type].value.success_rate);
+
+            charts.pipeline = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Success Rate (%)',
+                        data: successRates,
+                        backgroundColor: '#9b59b6',
+                        borderColor: '#8e44ad',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            title: { display: true, text: 'Success Rate (%)' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function createTestCoverageChart(data) {
+            const ctx = document.getElementById('test-coverage-chart').getContext('2d');
+
+            if (charts.testCoverage) {
+                charts.testCoverage.destroy();
+            }
+
+            const labels = data.map(item => item.value.dataset.split('.').pop());
+            const coverage = data.map(item => item.value.coverage_percentage);
+
+            charts.testCoverage = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Test Coverage (%)',
+                        data: coverage,
+                        backgroundColor: '#e67e22',
+                        borderColor: '#d35400',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    indexAxis: 'y',
+                    scales: {
+                        x: {
+                            beginAtZero: true,
+                            max: 100,
+                            title: { display: true, text: 'Coverage (%)' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function createDocCoverageChart(data) {
+            const ctx = document.getElementById('doc-coverage-chart').getContext('2d');
+
+            if (charts.docCoverage) {
+                charts.docCoverage.destroy();
+            }
+
+            const labels = data.map(item => item.value.dataset.split('.').pop());
+            const tableDocs = data.map(item => item.value.table_doc_percentage);
+            const columnDocs = data.map(item => item.value.column_doc_percentage);
+
+            charts.docCoverage = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Table Documentation (%)',
+                        data: tableDocs,
+                        backgroundColor: '#1abc9c',
+                        borderColor: '#16a085',
+                        borderWidth: 1
+                    }, {
+                        label: 'Column Documentation (%)',
+                        data: columnDocs,
+                        backgroundColor: '#3498db',
+                        borderColor: '#2980b9',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    indexAxis: 'y',
+                    scales: {
+                        x: {
+                            beginAtZero: true,
+                            max: 100,
+                            title: { display: true, text: 'Coverage (%)' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function createContributorsChart(data) {
+            const ctx = document.getElementById('contributors-chart').getContext('2d');
+
+            if (charts.contributors) {
+                charts.contributors.destroy();
+            }
+
+            // Top 10 contributors by query count
+            const topContributors = data.slice(0, 10);
+            const labels = topContributors.map(item => item.value.user.split('@')[0]);
+            const queries = topContributors.map(item => item.value.total_queries);
+
+            charts.contributors = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Total Queries',
+                        data: queries,
+                        backgroundColor: '#e74c3c',
+                        borderColor: '#c0392b',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    indexAxis: 'y',
+                    scales: {
+                        x: {
+                            beginAtZero: true,
+                            title: { display: true, text: 'Query Count' }
+                        }
+                    }
+                }
+            });
+        }
+
+        async function refreshData() {
+            const days = document.getElementById('days-select').value;
+            const errorContainer = document.getElementById('error-container');
+            errorContainer.innerHTML = '';
+
+            try {
+                const [summary, metrics] = await Promise.all([
+                    fetchSummary(days),
+                    fetchMetrics(days)
+                ]);
+
+                if (summary.error) {
+                    throw new Error(summary.error);
+                }
+
+                updateSummary(summary);
+
+                if (metrics.query_performance && metrics.query_performance.length > 0) {
+                    createPerformanceChart(metrics.query_performance);
+                }
+
+                if (metrics.costs && metrics.costs.length > 0) {
+                    createCostsChart(metrics.costs);
+                }
+
+                if (metrics.pipeline_success && metrics.pipeline_success.length > 0) {
+                    createPipelineChart(metrics.pipeline_success);
+                }
+
+                if (metrics.test_coverage && metrics.test_coverage.length > 0) {
+                    createTestCoverageChart(metrics.test_coverage);
+                }
+
+                if (metrics.documentation && metrics.documentation.length > 0) {
+                    createDocCoverageChart(metrics.documentation);
+                }
+
+                if (metrics.contributions && metrics.contributions.length > 0) {
+                    createContributorsChart(metrics.contributions);
+                }
+
+            } catch (error) {
+                errorContainer.innerHTML = `<div class="error">Error loading data: ${error.message}</div>`;
+                console.error('Error fetching data:', error);
+            }
+        }
+
+        // Auto-refresh every 5 minutes
+        setInterval(refreshData, 5 * 60 * 1000);
+
+        // Initial load
+        refreshData();
+    </script>
+</body>
+</html>

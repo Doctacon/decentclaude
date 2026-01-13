@@ -16,8 +16,23 @@ Powerful command-line utilities for common BigQuery operations:
 - **bq-query-cost**: Estimate query costs before execution
 - **bq-partition-info**: Analyze partitioning configuration and partition sizes
 - **bq-lineage**: Explore table dependencies (upstream and downstream)
+- **bq-metrics**: Team metrics and analytics dashboard
 
 See [Data Utilities](#data-utilities) for detailed usage.
+
+### Team Metrics and Analytics
+
+Comprehensive analytics system for tracking team performance:
+
+- **Query Performance**: Monitor slot usage, bytes processed, and cache hit rates
+- **Cost Tracking**: Track BigQuery costs per user, team, and project
+- **Pipeline Success**: Analyze job success rates and error patterns
+- **Test Coverage**: Measure test coverage across datasets
+- **Documentation**: Track table and column documentation completeness
+- **Contributions**: Analyze user activity and contributions
+- **Web Dashboard**: Interactive visualizations with Chart.js
+
+See [Team Metrics Guide](docs/team-metrics-guide.md) for detailed documentation.
 
 ### Automated Validation Hooks
 
@@ -45,7 +60,10 @@ See [Data Utilities](#data-utilities) for detailed usage.
 
 ```bash
 # Core dependencies
-pip install sqlparse
+pip install sqlparse google-cloud-bigquery
+
+# Metrics dashboard
+pip install flask
 
 # Optional tools
 pip install sqlfluff dbt-core dbt-bigquery sqlmesh
@@ -261,6 +279,57 @@ bin/data-utils/bq-lineage project.dataset.orders --format=mermaid
 
 **Note:** Lineage detection works best with views and materialized views. For tables, it searches for references in view definitions across the project.
 
+### bq-metrics
+
+Collect and export team analytics and performance metrics.
+
+**Usage:**
+```bash
+bin/data-utils/bq-metrics [options]
+```
+
+**Options:**
+- `--days=<n>` - Number of days to look back (default: 30)
+- `--format=<format>` - Output format: text, json (default: text)
+- `--metrics=<categories>` - Comma-separated list: performance, costs, pipeline, tests, documentation, contributions (default: all)
+- `--team=<name>` - Filter by team name
+- `--project=<name>` - Filter by project name
+- `--project-id=<id>` - GCP project ID
+
+**Examples:**
+```bash
+# Export all metrics for last 7 days
+bin/data-utils/bq-metrics --days 7
+
+# Export as JSON
+bin/data-utils/bq-metrics --days 30 --format json > metrics.json
+
+# Export specific metrics
+bin/data-utils/bq-metrics --metrics costs,performance --days 7
+
+# Filter by team
+bin/data-utils/bq-metrics --team data-platform --days 30
+```
+
+**Web Dashboard:**
+```bash
+# Start interactive dashboard
+python scripts/metrics_dashboard.py
+
+# Custom port and time range
+python scripts/metrics_dashboard.py --port 8080 --days 60
+```
+
+**Output includes:**
+- Query performance trends (slot time, bytes processed, cache hits)
+- Cost tracking per user with daily totals
+- Pipeline success rates by job type
+- Test coverage percentages by dataset
+- Documentation completeness (tables and columns)
+- User contribution analytics
+
+See [Team Metrics Guide](docs/team-metrics-guide.md) for complete documentation.
+
 ### Installation
 
 To make utilities accessible from anywhere, add to your PATH:
@@ -277,6 +346,7 @@ sudo ln -s /path/to/decentclaude/bin/data-utils/bq-schema-diff /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-query-cost /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-partition-info /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-lineage /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/bq-metrics /usr/local/bin/
 ```
 
 ### Requirements
@@ -285,6 +355,10 @@ All utilities require:
 - Python 3.7+
 - google-cloud-bigquery library: `pip install google-cloud-bigquery`
 - Google Cloud credentials configured (via GOOGLE_APPLICATION_CREDENTIALS or gcloud auth)
+
+For the metrics dashboard:
+- Flask: `pip install flask`
+- See `requirements-metrics.txt` for complete list
 
 ## Customization
 
@@ -345,12 +419,21 @@ chmod +x .git/hooks/pre-commit
 │   │   ├── bq-schema-diff     # Compare table schemas
 │   │   ├── bq-query-cost      # Estimate query costs
 │   │   ├── bq-partition-info  # Analyze partitions
-│   │   └── bq-lineage         # Explore table lineage
+│   │   ├── bq-lineage         # Explore table lineage
+│   │   └── bq-metrics         # Team metrics and analytics
 │   └── worktree-utils/        # Git worktree utilities
 ├── scripts/
-│   └── data_quality.py        # Data quality check framework
-├── docs/                      # Documentation
+│   ├── data_quality.py        # Data quality check framework
+│   ├── team_metrics.py        # Team metrics collection module
+│   └── metrics_dashboard.py   # Web dashboard application
+├── templates/
+│   └── metrics_dashboard.html # Dashboard UI template
+├── tests/
+│   └── test_team_metrics.py   # Metrics system tests
+├── docs/
+│   └── team-metrics-guide.md  # Metrics documentation
 ├── examples/                  # Example SQL and configs
+├── requirements-metrics.txt   # Metrics dashboard dependencies
 ├── data-engineering-patterns.md  # Best practices guide
 └── README.md                  # This file
 ```

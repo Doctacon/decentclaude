@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""
+Export team metrics and analytics from BigQuery.
+
+Usage:
+    bq-metrics [OPTIONS]
+
+    Collect and export team analytics including:
+    - Query performance trends
+    - Cost tracking per user/team
+    - Pipeline success rates
+    - Test coverage metrics
+    - Documentation completeness
+    - Contribution analytics
+
+Examples:
+    # Export all metrics for last 7 days in text format
+    bq-metrics --days 7
+
+    # Export as JSON for dashboard integration
+    bq-metrics --days 30 --format json
+
+    # Export specific metric categories
+    bq-metrics --metrics costs,performance --days 7
+
+    # Filter by team or project
+    bq-metrics --team data-platform --days 30
+
+    # Export to file
+    bq-metrics --days 30 --format json > metrics.json
+
+Options:
+    --days N              Number of days to look back (default: 30)
+    --format text|json    Output format (default: text)
+    --metrics CATEGORIES  Comma-separated list of metrics to collect
+                         (default: all)
+                         Options: performance, costs, pipeline, tests,
+                                  documentation, contributions
+    --team NAME          Filter by team name
+    --project NAME       Filter by project name
+    --project-id ID      GCP project ID (uses default if not specified)
+    -h, --help           Show this help message
+
+Metric Categories:
+    performance      Query performance trends (slot time, bytes processed)
+    costs           BigQuery cost tracking per user
+    pipeline        Job success rates and durations
+    tests           Test coverage analysis
+    documentation   Table/column documentation completeness
+    contributions   User activity and contribution patterns
+"""
+
+import sys
+import argparse
+import json
+from datetime import datetime
+from typing import Dict, List, Any
+
+# Add scripts directory to path for imports
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../scripts'))
+
+from team_metrics import TeamMetricsCollector, MetricResult
+
+
+# ANSI color codes for terminal output
+RED = '\033[91m'
+GREEN = '\033[92m'
+YELLOW = '\033[93m'
+BLUE = '\033[94m'
+MAGENTA = '\033[95m'
+CYAN = '\033[96m'
+RESET = '\033[0m'
+BOLD = '\033[1m'
+
+
+def format_text_output(metrics: Dict[str, List[MetricResult]]) -> str:
+    """Format metrics as human-readable text
+
+    Args:
+        metrics: Dictionary of metric results
+
+    Returns:
+        Formatted text output
+    """
+    lines = []
+    lines.append(f"{BOLD}{CYAN}Team Metrics Report{RESET}")
+    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("=" * 80)
+
+    for category, results in metrics.items():
+        if not results:
+            continue
+
+        lines.append(f"\n{BOLD}{BLUE}{category.upper().replace('_', ' ')}{RESET}")
+        lines.append("-" * 80)
+
+        if category == 'query_performance':
+            lines.append(f"{'Date':<12} {'Queries':<10} {'Avg GB':<12} {'P95 Slots':<12} {'Errors':<10} {'Cache %':<10}")
+            for r in results:
+                v = r.value
+                lines.append(
+                    f"{v['date']:<12} "
+                    f"{v['query_count']:<10} "
+                    f"{v['avg_gb_processed']:<12.2f} "
+                    f"{v['p95_slot_seconds']:<12.2f} "
+                    f"{v['error_count']:<10} "
+                    f"{v['cache_hit_rate']:<10.1f}"
+                )
+
+        elif category == 'costs':
+            lines.append(f"{'Date':<12} {'User':<30} {'TB Billed':<12} {'Cost (USD)':<12}")
+            daily_totals = {}
+            for r in results:
+                v = r.value
+                date = v['date']
+                if date not in daily_totals:
+                    daily_totals[date] = 0
+                daily_totals[date] += v['cost_usd']
+
+                lines.append(
+                    f"{v['date']:<12} "
+                    f"{v['user']:<30} "
+                    f"{v['tb_billed']:<12.4f} "
+                    f"${v['cost_usd']:<11.2f}"
+                )
+
+            lines.append("\n" + f"{BOLD}Daily Totals:{RESET}")
+            for date in sorted(daily_totals.keys(), reverse=True):
+                cost_color = RED if daily_totals[date] > 100 else YELLOW if daily_totals[date] > 50 else GREEN
+                lines.append(f"{date}: {cost_color}${daily_totals[date]:.2f}{RESET}")
+
+        elif category == 'pipeline_success':
+            lines.append(f"{'Date':<12} {'Type':<10} {'State':<10} {'Count':<8} {'Success %':<12} {'Avg Duration':<15}")
+            for r in results:
+                v = r.value
+                success_color = GREEN if v['success_rate'] >= 95 else YELLOW if v['success_rate'] >= 85 else RED
+                lines.append(
+                    f"{v['date']:<12} "
+                    f"{v['job_type']:<10} "
+                    f"{v['state']:<10} "
+                    f"{v['job_count']:<8} "
+                    f"{success_color}{v['success_rate']:<11.1f}%{RESET} "
+                    f"{v['avg_duration_seconds']:<14.1f}s"
+                )
+
+        elif category == 'test_coverage':
+            lines.append(f"{'Dataset':<40} {'Prod Tables':<15} {'Test Tables':<15} {'Coverage %':<12}")
+            for r in results:
+                v = r.value
+                coverage_color = GREEN if v['coverage_percentage'] >= 80 else YELLOW if v['coverage_percentage'] >= 50 else RED
+                lines.append(
+                    f"{v['dataset']:<40} "
+                    f"{v['prod_table_count']:<15} "
+                    f"{v['test_table_count']:<15} "
+                    f"{coverage_color}{v['coverage_percentage']:<11.1f}%{RESET}"
+                )
+
+        elif category == 'documentation':
+            lines.append(f"{'Dataset':<40} {'Tables':<10} {'Table Docs %':<15} {'Columns':<10} {'Col Docs %':<15}")
+            for r in results:
+                v = r.value
+                table_color = GREEN if v['table_doc_percentage'] >= 80 else YELLOW if v['table_doc_percentage'] >= 50 else RED
+                column_color = GREEN if v['column_doc_percentage'] >= 80 else YELLOW if v['column_doc_percentage'] >= 50 else RED
+                lines.append(
+                    f"{v['dataset']:<40} "
+                    f"{v['total_tables']:<10} "
+                    f"{table_color}{v['table_doc_percentage']:<14.1f}%{RESET} "
+                    f"{v['total_columns']:<10} "
+                    f"{column_color}{v['column_doc_percentage']:<14.1f}%{RESET}"
+                )
+
+        elif category == 'contributions':
+            lines.append(f"{'User':<40} {'Active Days':<15} {'Total Queries':<15} {'TB Processed':<15}")
+            for r in results[:20]:  # Top 20 contributors
+                v = r.value
+                lines.append(
+                    f"{v['user']:<40} "
+                    f"{v['active_days']:<15} "
+                    f"{v['total_queries']:<15} "
+                    f"{v['tb_processed']:<15.2f}"
+                )
+
+    lines.append("\n" + "=" * 80)
+    return "\n".join(lines)
+
+
+def parse_metric_categories(categories_str: str) -> List[str]:
+    """Parse comma-separated metric categories
+
+    Args:
+        categories_str: Comma-separated category names
+
+    Returns:
+        List of valid category names
+    """
+    valid_categories = {
+        'performance': 'query_performance',
+        'costs': 'costs',
+        'pipeline': 'pipeline_success',
+        'tests': 'test_coverage',
+        'documentation': 'documentation',
+        'contributions': 'contributions'
+    }
+
+    if categories_str.lower() == 'all':
+        return list(valid_categories.values())
+
+    categories = []
+    for cat in categories_str.split(','):
+        cat = cat.strip().lower()
+        if cat in valid_categories:
+            categories.append(valid_categories[cat])
+        else:
+            print(f"{YELLOW}Warning: Unknown category '{cat}', skipping{RESET}", file=sys.stderr)
+
+    return categories or list(valid_categories.values())
+
+
+def main():
+    """Main CLI entry point"""
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    parser.add_argument(
+        '--days',
+        type=int,
+        default=30,
+        help='Number of days to look back (default: 30)'
+    )
+
+    parser.add_argument(
+        '--format',
+        choices=['text', 'json'],
+        default='text',
+        help='Output format (default: text)'
+    )
+
+    parser.add_argument(
+        '--metrics',
+        type=str,
+        default='all',
+        help='Comma-separated list of metrics to collect (default: all)'
+    )
+
+    parser.add_argument(
+        '--team',
+        type=str,
+        help='Filter by team name'
+    )
+
+    parser.add_argument(
+        '--project',
+        type=str,
+        help='Filter by project name'
+    )
+
+    parser.add_argument(
+        '--project-id',
+        type=str,
+        help='GCP project ID (uses default if not specified)'
+    )
+
+    args = parser.parse_args()
+
+    try:
+        # Initialize collector
+        collector = TeamMetricsCollector(project_id=args.project_id)
+
+        # Parse requested metrics
+        requested_categories = parse_metric_categories(args.metrics)
+
+        # Collect metrics
+        print(f"{CYAN}Collecting team metrics...{RESET}", file=sys.stderr)
+        all_metrics = collector.collect_all_metrics(
+            days=args.days,
+            team_filter=args.team,
+            project_filter=args.project
+        )
+
+        # Filter to requested categories
+        metrics = {k: v for k, v in all_metrics.items() if k in requested_categories}
+
+        # Output results
+        if args.format == 'json':
+            print(collector.export_to_json(metrics))
+        else:
+            print(format_text_output(metrics))
+
+    except Exception as e:
+        print(f"{RED}Error collecting metrics: {e}{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

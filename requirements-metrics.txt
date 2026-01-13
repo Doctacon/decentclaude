@@ -1,0 +1,10 @@
+# Team Metrics Dashboard Requirements
+
+# Core dependencies
+google-cloud-bigquery>=3.10.0
+flask>=2.3.0
+
+# Optional dependencies for enhanced functionality
+# matplotlib>=3.7.0  # For static chart generation
+# pandas>=2.0.0      # For data manipulation
+# numpy>=1.24.0      # For statistical calculations
