@@ -1,0 +1,459 @@
+#!/usr/bin/env python3
+"""
+sqlmesh-migrate - SQLMesh migration helper
+
+Usage:
+  sqlmesh-migrate [command] [options]
+
+Commands:
+  analyze            Analyze breaking changes and migration requirements
+  plan               Create migration plan for breaking changes
+  backfill           Generate backfill commands for date ranges
+  impact             Show impact of migration on downstream models
+
+Options:
+  --environment=<env>    Environment to migrate (default: dev)
+  --start=<date>         Start date for backfill (YYYY-MM-DD)
+  --end=<date>           End date for backfill (YYYY-MM-DD)
+  --model=<name>         Specific model to analyze
+  --format=<format>      Output format: text, json (default: text)
+  --help, -h             Show this help message
+
+Examples:
+  sqlmesh-migrate analyze
+  sqlmesh-migrate plan --environment=prod
+  sqlmesh-migrate backfill --start=2024-01-01 --end=2024-12-31
+  sqlmesh-migrate impact --model=analytics.user_metrics
+
+Description:
+  Helps manage SQLMesh migrations by:
+  - Analyzing breaking changes vs non-breaking changes
+  - Creating migration plans for production environments
+  - Generating backfill commands for date ranges
+  - Showing impact on downstream dependencies
+  - Providing guidance on forward-only migrations
+"""
+
+import sys
+import json
+import argparse
+import os
+from typing import Dict, List, Set, Any, Optional
+from datetime import datetime, timedelta
+from collections import defaultdict
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def get_sqlmesh_context(path: str = "."):
+    """
+    Get SQLMesh context for the project.
+
+    Args:
+        path: Path to SQLMesh project (default: current directory)
+
+    Returns:
+        SQLMesh Context object
+    """
+    try:
+        from sqlmesh import Context
+        return Context(paths=path)
+    except ImportError:
+        print(f"{Colors.RED}Error: SQLMesh is not installed. Install with: pip install sqlmesh{Colors.RESET}",
+              file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"{Colors.RED}Error initializing SQLMesh context: {str(e)}{Colors.RESET}", file=sys.stderr)
+        print(f"{Colors.YELLOW}Hint: Make sure you're in a SQLMesh project directory{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def analyze_migration(context, environment: str, model: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Analyze migration requirements.
+
+    Args:
+        context: SQLMesh Context object
+        environment: Target environment
+        model: Specific model to analyze
+
+    Returns:
+        Dictionary containing migration analysis
+    """
+    try:
+        # Create plan to analyze changes
+        plan = context.plan(
+            environment=environment,
+            no_prompts=True,
+            auto_apply=False,
+            include_unmodified=False
+        )
+
+        analysis = {
+            "breaking_changes": [],
+            "non_breaking_changes": [],
+            "new_models": [],
+            "removed_models": [],
+            "backfill_required": [],
+            "metadata": {
+                "environment": environment,
+                "forward_only": plan.forward_only if hasattr(plan, 'forward_only') else False,
+                "is_dev": plan.is_dev if hasattr(plan, 'is_dev') else False
+            }
+        }
+
+        # Analyze categorized changes
+        if hasattr(plan, 'categorized'):
+            categorized = plan.categorized
+
+            # New models
+            if hasattr(categorized, 'added'):
+                analysis["new_models"] = [str(m) for m in categorized.added]
+
+            # Removed models
+            if hasattr(categorized, 'removed'):
+                analysis["removed_models"] = [str(m) for m in categorized.removed]
+
+            # Breaking changes (directly modified)
+            if hasattr(categorized, 'modified_direct'):
+                for model_snapshot in categorized.modified_direct:
+                    model_name = str(model_snapshot)
+                    analysis["breaking_changes"].append(model_name)
+                    # If model requires backfill
+                    analysis["backfill_required"].append(model_name)
+
+            # Non-breaking changes (indirectly modified)
+            if hasattr(categorized, 'modified_indirect'):
+                analysis["non_breaking_changes"] = [str(m) for m in categorized.modified_indirect]
+
+        # Filter to specific model if requested
+        if model:
+            analysis = filter_analysis_by_model(analysis, model)
+
+        return analysis
+
+    except Exception as e:
+        print(f"{Colors.RED}Error analyzing migration: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def filter_analysis_by_model(analysis: Dict[str, Any], model: str) -> Dict[str, Any]:
+    """Filter analysis results to a specific model"""
+    return {
+        "breaking_changes": [m for m in analysis["breaking_changes"] if m == model],
+        "non_breaking_changes": [m for m in analysis["non_breaking_changes"] if m == model],
+        "new_models": [m for m in analysis["new_models"] if m == model],
+        "removed_models": [m for m in analysis["removed_models"] if m == model],
+        "backfill_required": [m for m in analysis["backfill_required"] if m == model],
+        "metadata": {**analysis["metadata"], "model": model}
+    }
+
+
+def generate_backfill_commands(context, start_date: str, end_date: str,
+                              model: Optional[str] = None) -> List[Dict[str, str]]:
+    """
+    Generate backfill commands for date range.
+
+    Args:
+        context: SQLMesh Context object
+        start_date: Start date (YYYY-MM-DD)
+        end_date: End date (YYYY-MM-DD)
+        model: Specific model to backfill
+
+    Returns:
+        List of backfill commands
+    """
+    commands = []
+
+    try:
+        # Parse dates
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+
+        # Generate command for full range
+        if model:
+            cmd = f"sqlmesh run --start-date {start_date} --end-date {end_date} --select {model}"
+            commands.append({
+                "description": f"Backfill {model} from {start_date} to {end_date}",
+                "command": cmd
+            })
+        else:
+            cmd = f"sqlmesh run --start-date {start_date} --end-date {end_date}"
+            commands.append({
+                "description": f"Backfill all models from {start_date} to {end_date}",
+                "command": cmd
+            })
+
+        # Generate chunked commands if range is large (> 90 days)
+        days_diff = (end - start).days
+        if days_diff > 90:
+            chunk_size = 30  # 30-day chunks
+            current = start
+            chunk_num = 1
+
+            while current <= end:
+                chunk_end = min(current + timedelta(days=chunk_size - 1), end)
+                chunk_start_str = current.strftime("%Y-%m-%d")
+                chunk_end_str = chunk_end.strftime("%Y-%m-%d")
+
+                if model:
+                    cmd = f"sqlmesh run --start-date {chunk_start_str} --end-date {chunk_end_str} --select {model}"
+                    desc = f"Chunk {chunk_num}: Backfill {model} from {chunk_start_str} to {chunk_end_str}"
+                else:
+                    cmd = f"sqlmesh run --start-date {chunk_start_str} --end-date {chunk_end_str}"
+                    desc = f"Chunk {chunk_num}: Backfill all models from {chunk_start_str} to {chunk_end_str}"
+
+                commands.append({
+                    "description": desc,
+                    "command": cmd
+                })
+
+                current = chunk_end + timedelta(days=1)
+                chunk_num += 1
+
+    except ValueError as e:
+        print(f"{Colors.RED}Error: Invalid date format. Use YYYY-MM-DD{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    return commands
+
+
+def analyze_impact(context, model: str) -> Dict[str, Any]:
+    """
+    Analyze impact of changes to a model.
+
+    Args:
+        context: SQLMesh Context object
+        model: Model name to analyze
+
+    Returns:
+        Dictionary containing impact analysis
+    """
+    try:
+        models = context.models
+
+        # Build dependency graph
+        dependents = defaultdict(set)
+        for model_fqn, model_obj in models.items():
+            if hasattr(model_obj, 'depends_on'):
+                for dep in model_obj.depends_on:
+                    dependents[str(dep)].add(str(model_fqn))
+
+        # Find all downstream dependents
+        impact = {
+            "model": model,
+            "direct_dependents": [],
+            "all_dependents": [],
+            "impact_count": 0
+        }
+
+        # Direct dependents
+        if model in dependents:
+            impact["direct_dependents"] = list(dependents[model])
+
+        # All downstream dependents (BFS)
+        visited = set()
+        queue = [model]
+
+        while queue:
+            current = queue.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+
+            if current in dependents:
+                for dep in dependents[current]:
+                    if dep not in visited:
+                        impact["all_dependents"].append(dep)
+                        queue.append(dep)
+
+        impact["impact_count"] = len(impact["all_dependents"])
+
+        return impact
+
+    except Exception as e:
+        print(f"{Colors.RED}Error analyzing impact: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def print_analyze_report(analysis: Dict[str, Any], format_type: str):
+    """Print migration analysis report"""
+
+    if format_type == "json":
+        print(json.dumps(analysis, indent=2))
+        return
+
+    # Text format
+    metadata = analysis["metadata"]
+
+    print(f"\n{Colors.CYAN}{Colors.BOLD}Migration Analysis{Colors.RESET}")
+    print(f"{Colors.BLUE}Environment:{Colors.RESET} {metadata['environment']}")
+    print(f"{Colors.BLUE}Forward Only:{Colors.RESET} {'Yes' if metadata.get('forward_only') else 'No'}")
+    print(f"{Colors.BLUE}Development:{Colors.RESET} {'Yes' if metadata.get('is_dev') else 'No'}")
+    print("=" * 80)
+
+    # Breaking changes
+    if analysis["breaking_changes"]:
+        print(f"\n{Colors.RED}{Colors.BOLD}Breaking Changes ({len(analysis['breaking_changes'])}){Colors.RESET}")
+        print(f"{Colors.RED}These require backfills and may impact downstream models{Colors.RESET}")
+        for model in sorted(analysis["breaking_changes"]):
+            print(f"  {Colors.RED}!{Colors.RESET} {model}")
+
+    # Non-breaking changes
+    if analysis["non_breaking_changes"]:
+        print(f"\n{Colors.YELLOW}{Colors.BOLD}Non-Breaking Changes ({len(analysis['non_breaking_changes'])}){Colors.RESET}")
+        print(f"{Colors.YELLOW}Affected by upstream changes{Colors.RESET}")
+        for model in sorted(analysis["non_breaking_changes"]):
+            print(f"  {Colors.YELLOW}~{Colors.RESET} {model}")
+
+    # New models
+    if analysis["new_models"]:
+        print(f"\n{Colors.GREEN}{Colors.BOLD}New Models ({len(analysis['new_models'])}){Colors.RESET}")
+        for model in sorted(analysis["new_models"]):
+            print(f"  {Colors.GREEN}+{Colors.RESET} {model}")
+
+    # Removed models
+    if analysis["removed_models"]:
+        print(f"\n{Colors.MAGENTA}{Colors.BOLD}Removed Models ({len(analysis['removed_models'])}){Colors.RESET}")
+        for model in sorted(analysis["removed_models"]):
+            print(f"  {Colors.MAGENTA}−{Colors.RESET} {model}")
+
+    # Migration guidance
+    print(f"\n{Colors.CYAN}{Colors.BOLD}Migration Guidance{Colors.RESET}")
+    if analysis["breaking_changes"]:
+        print(f"{Colors.YELLOW}⚠ Breaking changes detected{Colors.RESET}")
+        print(f"\n  Recommended steps:")
+        print(f"  1. Review breaking changes above")
+        print(f"  2. Test in dev environment first")
+        print(f"  3. Plan backfill strategy (see: sqlmesh-migrate backfill)")
+        print(f"  4. Apply to production with: sqlmesh plan {metadata['environment']} --auto-apply")
+    else:
+        print(f"{Colors.GREEN}✓ No breaking changes{Colors.RESET}")
+        print(f"\n  Safe to apply with: sqlmesh plan {metadata['environment']} --auto-apply")
+
+    print("=" * 80)
+
+
+def print_backfill_report(commands: List[Dict[str, str]], format_type: str):
+    """Print backfill commands report"""
+
+    if format_type == "json":
+        print(json.dumps({"commands": commands}, indent=2))
+        return
+
+    # Text format
+    print(f"\n{Colors.CYAN}{Colors.BOLD}Backfill Commands{Colors.RESET}")
+    print("=" * 80)
+
+    # Full range command
+    print(f"\n{Colors.GREEN}{Colors.BOLD}Full Range Backfill{Colors.RESET}")
+    print(f"  {commands[0]['description']}")
+    print(f"  {Colors.CYAN}${Colors.RESET} {commands[0]['command']}")
+
+    # Chunked commands if available
+    if len(commands) > 1:
+        print(f"\n{Colors.YELLOW}{Colors.BOLD}Chunked Backfill (Recommended for large ranges){Colors.RESET}")
+        for i, cmd_info in enumerate(commands[1:], 1):
+            print(f"\n  {cmd_info['description']}")
+            print(f"  {Colors.CYAN}${Colors.RESET} {cmd_info['command']}")
+
+    print("\n" + "=" * 80)
+
+
+def print_impact_report(impact: Dict[str, Any], format_type: str):
+    """Print impact analysis report"""
+
+    if format_type == "json":
+        print(json.dumps(impact, indent=2))
+        return
+
+    # Text format
+    print(f"\n{Colors.CYAN}{Colors.BOLD}Migration Impact Analysis{Colors.RESET}")
+    print(f"{Colors.BLUE}Model:{Colors.RESET} {impact['model']}")
+    print("=" * 80)
+
+    # Direct dependents
+    if impact["direct_dependents"]:
+        print(f"\n{Colors.YELLOW}{Colors.BOLD}Direct Dependents ({len(impact['direct_dependents'])}){Colors.RESET}")
+        for dep in sorted(impact["direct_dependents"]):
+            print(f"  {Colors.YELLOW}→{Colors.RESET} {dep}")
+
+    # All downstream
+    if impact["all_dependents"]:
+        print(f"\n{Colors.CYAN}{Colors.BOLD}All Downstream Models ({len(impact['all_dependents'])}){Colors.RESET}")
+        for dep in sorted(impact["all_dependents"]):
+            print(f"  {Colors.CYAN}→{Colors.RESET} {dep}")
+
+    # Summary
+    print(f"\n{Colors.CYAN}{Colors.BOLD}Impact Summary{Colors.RESET}")
+    print(f"  Total affected models: {impact['impact_count']}")
+    if impact['impact_count'] > 0:
+        print(f"  {Colors.YELLOW}⚠ Changes to this model will affect {impact['impact_count']} downstream models{Colors.RESET}")
+    else:
+        print(f"  {Colors.GREEN}✓ No downstream dependencies{Colors.RESET}")
+
+    print("=" * 80)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="SQLMesh migration helper",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("command", nargs="?", default="analyze",
+                       choices=["analyze", "plan", "backfill", "impact"],
+                       help="Command to run (default: analyze)")
+    parser.add_argument("--environment", default="dev",
+                       help="Environment to migrate (default: dev)")
+    parser.add_argument("--start", help="Start date for backfill (YYYY-MM-DD)")
+    parser.add_argument("--end", help="End date for backfill (YYYY-MM-DD)")
+    parser.add_argument("--model", help="Specific model to analyze")
+    parser.add_argument("--format", choices=["text", "json"], default="text",
+                       help="Output format (default: text)")
+
+    args = parser.parse_args()
+
+    # Set PYTHONPATH to current directory for SQLMesh
+    if 'PYTHONPATH' not in os.environ:
+        os.environ['PYTHONPATH'] = '.'
+
+    # Get SQLMesh context
+    context = get_sqlmesh_context()
+
+    # Execute command
+    if args.command in ["analyze", "plan"]:
+        analysis = analyze_migration(context, args.environment, args.model)
+        print_analyze_report(analysis, args.format)
+
+    elif args.command == "backfill":
+        if not args.start or not args.end:
+            print(f"{Colors.RED}Error: --start and --end dates required for backfill{Colors.RESET}",
+                  file=sys.stderr)
+            sys.exit(1)
+        commands = generate_backfill_commands(context, args.start, args.end, args.model)
+        print_backfill_report(commands, args.format)
+
+    elif args.command == "impact":
+        if not args.model:
+            print(f"{Colors.RED}Error: --model required for impact analysis{Colors.RESET}",
+                  file=sys.stderr)
+            sys.exit(1)
+        impact = analyze_impact(context, args.model)
+        print_impact_report(impact, args.format)
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

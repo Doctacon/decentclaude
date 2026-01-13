@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""
+sqlmesh-diff - Show SQLMesh plan differences with highlights
+
+Usage:
+  sqlmesh-diff [options]
+
+Options:
+  --environment=<env>    Environment to plan (default: dev)
+  --format=<format>      Output format: text, json (default: text)
+  --no-prompts          Run without interactive prompts
+  --help, -h            Show this help message
+
+Examples:
+  sqlmesh-diff
+  sqlmesh-diff --environment=prod
+  sqlmesh-diff --format=json --no-prompts
+
+Description:
+  Shows differences between current state and planned changes:
+  - Added models (new models to be created)
+  - Modified models (existing models with changes)
+  - Removed models (models to be deleted)
+  - Directly modified models (breaking changes)
+  - Indirectly modified models (downstream dependencies)
+"""
+
+import sys
+import json
+import argparse
+import os
+from typing import Dict, List, Set, Any
+from pathlib import Path
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def get_sqlmesh_context(path: str = "."):
+    """
+    Get SQLMesh context for the project.
+
+    Args:
+        path: Path to SQLMesh project (default: current directory)
+
+    Returns:
+        SQLMesh Context object
+    """
+    try:
+        from sqlmesh import Context
+        return Context(paths=path)
+    except ImportError:
+        print(f"{Colors.RED}Error: SQLMesh is not installed. Install with: pip install sqlmesh{Colors.RESET}",
+              file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"{Colors.RED}Error initializing SQLMesh context: {str(e)}{Colors.RESET}", file=sys.stderr)
+        print(f"{Colors.YELLOW}Hint: Make sure you're in a SQLMesh project directory{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def get_plan_diff(context, environment: str, no_prompts: bool) -> Dict[str, Any]:
+    """
+    Get plan differences for the specified environment.
+
+    Args:
+        context: SQLMesh Context object
+        environment: Target environment name
+        no_prompts: Run without interactive prompts
+
+    Returns:
+        Dictionary containing plan differences
+    """
+    try:
+        # Create plan with auto-apply disabled to just see differences
+        plan = context.plan(
+            environment=environment,
+            no_prompts=no_prompts,
+            auto_apply=False,
+            include_unmodified=False
+        )
+
+        diff = {
+            "added": [],
+            "modified_direct": [],
+            "modified_indirect": [],
+            "removed": [],
+            "metadata": {
+                "environment": environment,
+                "start": str(plan.start) if plan.start else None,
+                "end": str(plan.end) if plan.end else None,
+                "is_dev": plan.is_dev,
+                "forward_only": plan.forward_only,
+            }
+        }
+
+        # Categorize changes
+        if hasattr(plan, 'categorized'):
+            categorized = plan.categorized
+
+            # Added models
+            if hasattr(categorized, 'added'):
+                diff["added"] = [str(model) for model in categorized.added]
+
+            # Modified models (direct changes)
+            if hasattr(categorized, 'modified_direct'):
+                diff["modified_direct"] = [str(model) for model in categorized.modified_direct]
+
+            # Modified models (indirect - affected by upstream changes)
+            if hasattr(categorized, 'modified_indirect'):
+                diff["modified_indirect"] = [str(model) for model in categorized.modified_indirect]
+
+            # Removed models
+            if hasattr(categorized, 'removed'):
+                diff["removed"] = [str(model) for model in categorized.removed]
+
+        # Alternative approach if categorized not available
+        elif hasattr(plan, 'context_diff'):
+            context_diff = plan.context_diff
+
+            if hasattr(context_diff, 'added'):
+                diff["added"] = list(context_diff.added)
+
+            if hasattr(context_diff, 'removed'):
+                diff["removed"] = list(context_diff.removed)
+
+            if hasattr(context_diff, 'modified'):
+                # Split modified into direct and indirect if possible
+                diff["modified_direct"] = list(context_diff.modified)
+
+        return diff
+
+    except Exception as e:
+        print(f"{Colors.RED}Error creating plan: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def print_text_report(diff: Dict[str, Any]):
+    """Print a formatted text report of plan differences"""
+
+    metadata = diff["metadata"]
+
+    print(f"\n{Colors.CYAN}{Colors.BOLD}SQLMesh Plan Differences{Colors.RESET}")
+    print(f"{Colors.BLUE}Environment:{Colors.RESET} {metadata['environment']}")
+    if metadata.get('start'):
+        print(f"{Colors.BLUE}Date Range:{Colors.RESET} {metadata['start']} to {metadata['end']}")
+    print(f"{Colors.BLUE}Development:{Colors.RESET} {'Yes' if metadata.get('is_dev') else 'No'}")
+    print(f"{Colors.BLUE}Forward Only:{Colors.RESET} {'Yes' if metadata.get('forward_only') else 'No'}")
+    print("=" * 80)
+
+    has_changes = False
+
+    # Added models
+    if diff["added"]:
+        has_changes = True
+        print(f"\n{Colors.GREEN}{Colors.BOLD}Added Models ({len(diff['added'])}){Colors.RESET}")
+        for model in sorted(diff["added"]):
+            print(f"  {Colors.GREEN}+{Colors.RESET} {model}")
+
+    # Directly modified models (breaking changes)
+    if diff["modified_direct"]:
+        has_changes = True
+        print(f"\n{Colors.YELLOW}{Colors.BOLD}Directly Modified Models ({len(diff['modified_direct'])}){Colors.RESET}")
+        print(f"{Colors.YELLOW}These models have direct changes that may require backfills{Colors.RESET}")
+        for model in sorted(diff["modified_direct"]):
+            print(f"  {Colors.YELLOW}~{Colors.RESET} {model}")
+
+    # Indirectly modified models (downstream dependencies)
+    if diff["modified_indirect"]:
+        has_changes = True
+        print(f"\n{Colors.CYAN}{Colors.BOLD}Indirectly Modified Models ({len(diff['modified_indirect'])}){Colors.RESET}")
+        print(f"{Colors.CYAN}These models are affected by upstream changes{Colors.RESET}")
+        for model in sorted(diff["modified_indirect"]):
+            print(f"  {Colors.CYAN}→{Colors.RESET} {model}")
+
+    # Removed models
+    if diff["removed"]:
+        has_changes = True
+        print(f"\n{Colors.RED}{Colors.BOLD}Removed Models ({len(diff['removed'])}){Colors.RESET}")
+        for model in sorted(diff["removed"]):
+            print(f"  {Colors.RED}−{Colors.RESET} {model}")
+
+    # Summary
+    print(f"\n{Colors.CYAN}{Colors.BOLD}Summary{Colors.RESET}")
+    if not has_changes:
+        print(f"{Colors.GREEN}✓ No changes detected{Colors.RESET}")
+    else:
+        print(f"  Added: {len(diff['added'])}")
+        print(f"  Modified (direct): {len(diff['modified_direct'])}")
+        print(f"  Modified (indirect): {len(diff['modified_indirect'])}")
+        print(f"  Removed: {len(diff['removed'])}")
+        total = len(diff['added']) + len(diff['modified_direct']) + len(diff['modified_indirect']) + len(diff['removed'])
+        print(f"  {Colors.CYAN}Total changes: {total}{Colors.RESET}")
+    print("=" * 80)
+
+
+def print_json_report(diff: Dict[str, Any]):
+    """Print a JSON report of plan differences"""
+
+    report = {
+        "metadata": diff["metadata"],
+        "changes": {
+            "added": sorted(diff["added"]),
+            "modified_direct": sorted(diff["modified_direct"]),
+            "modified_indirect": sorted(diff["modified_indirect"]),
+            "removed": sorted(diff["removed"])
+        },
+        "summary": {
+            "added_count": len(diff["added"]),
+            "modified_direct_count": len(diff["modified_direct"]),
+            "modified_indirect_count": len(diff["modified_indirect"]),
+            "removed_count": len(diff["removed"]),
+            "total_changes": len(diff["added"]) + len(diff["modified_direct"]) +
+                           len(diff["modified_indirect"]) + len(diff["removed"]),
+            "has_changes": bool(diff["added"] or diff["modified_direct"] or
+                              diff["modified_indirect"] or diff["removed"])
+        }
+    }
+
+    print(json.dumps(report, indent=2))
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Show SQLMesh plan differences with highlights",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("--environment", default="dev",
+                       help="Environment to plan (default: dev)")
+    parser.add_argument("--format", choices=["text", "json"], default="text",
+                       help="Output format (default: text)")
+    parser.add_argument("--no-prompts", action="store_true",
+                       help="Run without interactive prompts")
+
+    args = parser.parse_args()
+
+    # Set PYTHONPATH to current directory for SQLMesh
+    if 'PYTHONPATH' not in os.environ:
+        os.environ['PYTHONPATH'] = '.'
+
+    # Get SQLMesh context
+    context = get_sqlmesh_context()
+
+    # Get plan differences
+    diff = get_plan_diff(context, args.environment, args.no_prompts)
+
+    # Print report
+    if args.format == "json":
+        print_json_report(diff)
+    else:
+        print_text_report(diff)
+
+    # Exit with status code (0 if no changes, 1 if changes detected)
+    has_changes = bool(diff["added"] or diff["modified_direct"] or
+                      diff["modified_indirect"] or diff["removed"])
+    sys.exit(1 if has_changes else 0)
+
+
+if __name__ == "__main__":
+    main()

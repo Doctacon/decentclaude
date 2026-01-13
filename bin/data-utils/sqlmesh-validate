@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+"""
+sqlmesh-validate - Validate SQLMesh model definitions
+
+Usage:
+  sqlmesh-validate [model] [options]
+
+Arguments:
+  model              Model name to validate (optional, validates all if omitted)
+
+Options:
+  --format=<format>  Output format: text, json (default: text)
+  --strict           Enable strict validation mode
+  --help, -h         Show this help message
+
+Examples:
+  sqlmesh-validate
+  sqlmesh-validate analytics.user_metrics
+  sqlmesh-validate --format=json
+  sqlmesh-validate analytics.user_metrics --strict
+
+Description:
+  Validates SQLMesh model definitions checking for:
+  - SQL syntax errors
+  - Missing dependencies
+  - Invalid model configurations
+  - Circular dependencies
+  - Schema validation
+  - Best practice violations (in strict mode)
+"""
+
+import sys
+import json
+import argparse
+import os
+from typing import Dict, List, Set, Any, Optional
+from collections import defaultdict
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def get_sqlmesh_context(path: str = "."):
+    """
+    Get SQLMesh context for the project.
+
+    Args:
+        path: Path to SQLMesh project (default: current directory)
+
+    Returns:
+        SQLMesh Context object
+    """
+    try:
+        from sqlmesh import Context
+        return Context(paths=path)
+    except ImportError:
+        print(f"{Colors.RED}Error: SQLMesh is not installed. Install with: pip install sqlmesh{Colors.RESET}",
+              file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"{Colors.RED}Error initializing SQLMesh context: {str(e)}{Colors.RESET}", file=sys.stderr)
+        print(f"{Colors.YELLOW}Hint: Make sure you're in a SQLMesh project directory{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def validate_models(context, model_name: Optional[str] = None, strict: bool = False) -> Dict[str, Any]:
+    """
+    Validate SQLMesh models.
+
+    Args:
+        context: SQLMesh Context object
+        model_name: Specific model to validate (None for all models)
+        strict: Enable strict validation mode
+
+    Returns:
+        Dictionary containing validation results
+    """
+    results = {
+        "valid": [],
+        "errors": [],
+        "warnings": [],
+        "metadata": {
+            "model": model_name,
+            "strict": strict,
+            "total_models": 0
+        }
+    }
+
+    try:
+        models = context.models
+
+        # Filter to specific model if requested
+        if model_name:
+            models_to_validate = {k: v for k, v in models.items() if str(k) == model_name}
+            if not models_to_validate:
+                results["errors"].append({
+                    "model": model_name,
+                    "error": f"Model '{model_name}' not found"
+                })
+                return results
+        else:
+            models_to_validate = models
+
+        results["metadata"]["total_models"] = len(models_to_validate)
+
+        # Validate each model
+        for model_fqn, model in models_to_validate.items():
+            model_name_str = str(model_fqn)
+            model_errors = []
+            model_warnings = []
+
+            # 1. Check for missing dependencies
+            if hasattr(model, 'depends_on'):
+                for dep in model.depends_on:
+                    dep_str = str(dep)
+                    if dep_str not in [str(k) for k in models.keys()]:
+                        # Check if it's an external dependency (table reference)
+                        if not dep_str.startswith('external.'):
+                            model_errors.append(f"Missing dependency: {dep_str}")
+
+            # 2. Validate model configuration
+            if hasattr(model, 'kind'):
+                kind = model.kind
+                # Check for incremental models without time column
+                if hasattr(kind, 'name') and 'INCREMENTAL' in kind.name:
+                    if not hasattr(kind, 'time_column') or not kind.time_column:
+                        model_errors.append("Incremental model missing time_column")
+
+            # 3. Validate grain configuration
+            if hasattr(model, 'grain'):
+                grain = model.grain
+                if not grain or len(grain) == 0:
+                    if strict:
+                        model_warnings.append("Model has no grain defined (consider adding for data quality)")
+
+            # 4. Check for common best practices (strict mode)
+            if strict:
+                # Check for start date on incremental models
+                if hasattr(model, 'kind') and hasattr(model.kind, 'name'):
+                    if 'INCREMENTAL' in model.kind.name:
+                        if not hasattr(model, 'start') or not model.start:
+                            model_warnings.append("Incremental model missing start date")
+
+                # Check for cron schedule
+                if not hasattr(model, 'cron') or not model.cron:
+                    model_warnings.append("Model has no cron schedule defined")
+
+                # Check for model description/documentation
+                if not hasattr(model, 'description') or not model.description:
+                    model_warnings.append("Model has no description")
+
+            # 5. Validate SQL can be rendered
+            try:
+                # Try to render the model's SQL
+                rendered = context.render(model_name_str)
+                if not rendered:
+                    model_errors.append("Model SQL failed to render")
+            except Exception as e:
+                model_errors.append(f"SQL rendering error: {str(e)}")
+
+            # Store results
+            if model_errors:
+                results["errors"].append({
+                    "model": model_name_str,
+                    "errors": model_errors,
+                    "warnings": model_warnings
+                })
+            elif model_warnings:
+                results["warnings"].append({
+                    "model": model_name_str,
+                    "warnings": model_warnings
+                })
+            else:
+                results["valid"].append(model_name_str)
+
+        # Check for circular dependencies
+        circular_deps = detect_circular_dependencies(models)
+        if circular_deps:
+            results["errors"].append({
+                "model": "global",
+                "errors": [f"Circular dependency detected: {' -> '.join(circular_deps)}"]
+            })
+
+    except Exception as e:
+        results["errors"].append({
+            "model": "global",
+            "errors": [f"Validation error: {str(e)}"]
+        })
+
+    return results
+
+
+def detect_circular_dependencies(models: Dict) -> Optional[List[str]]:
+    """
+    Detect circular dependencies in model graph.
+
+    Args:
+        models: Dictionary of models
+
+    Returns:
+        List of models in circular dependency, or None if no cycles
+    """
+    # Build adjacency list
+    graph = defaultdict(set)
+    for model_fqn, model in models.items():
+        model_name = str(model_fqn)
+        if hasattr(model, 'depends_on'):
+            for dep in model.depends_on:
+                dep_str = str(dep)
+                if dep_str in [str(k) for k in models.keys()]:
+                    graph[model_name].add(dep_str)
+
+    # DFS to detect cycles
+    visited = set()
+    rec_stack = set()
+    path = []
+
+    def has_cycle(node):
+        visited.add(node)
+        rec_stack.add(node)
+        path.append(node)
+
+        for neighbor in graph.get(node, []):
+            if neighbor not in visited:
+                if has_cycle(neighbor):
+                    return True
+            elif neighbor in rec_stack:
+                # Found cycle
+                cycle_start = path.index(neighbor)
+                return path[cycle_start:] + [neighbor]
+
+        path.pop()
+        rec_stack.remove(node)
+        return False
+
+    for node in graph.keys():
+        if node not in visited:
+            cycle = has_cycle(node)
+            if cycle and isinstance(cycle, list):
+                return cycle
+
+    return None
+
+
+def print_text_report(results: Dict[str, Any]):
+    """Print a formatted text report of validation results"""
+
+    metadata = results["metadata"]
+
+    print(f"\n{Colors.CYAN}{Colors.BOLD}SQLMesh Model Validation{Colors.RESET}")
+    if metadata.get("model"):
+        print(f"{Colors.BLUE}Model:{Colors.RESET} {metadata['model']}")
+    print(f"{Colors.BLUE}Mode:{Colors.RESET} {'Strict' if metadata.get('strict') else 'Standard'}")
+    print(f"{Colors.BLUE}Total Models:{Colors.RESET} {metadata['total_models']}")
+    print("=" * 80)
+
+    # Show errors
+    if results["errors"]:
+        print(f"\n{Colors.RED}{Colors.BOLD}Errors ({len(results['errors'])}){Colors.RESET}")
+        for error_item in results["errors"]:
+            model = error_item["model"]
+            print(f"\n{Colors.RED}✗{Colors.RESET} {Colors.BOLD}{model}{Colors.RESET}")
+            for error in error_item.get("errors", []):
+                print(f"  {Colors.RED}•{Colors.RESET} {error}")
+            for warning in error_item.get("warnings", []):
+                print(f"  {Colors.YELLOW}⚠{Colors.RESET} {warning}")
+
+    # Show warnings
+    if results["warnings"]:
+        print(f"\n{Colors.YELLOW}{Colors.BOLD}Warnings ({len(results['warnings'])}){Colors.RESET}")
+        for warning_item in results["warnings"]:
+            model = warning_item["model"]
+            print(f"\n{Colors.YELLOW}⚠{Colors.RESET} {Colors.BOLD}{model}{Colors.RESET}")
+            for warning in warning_item["warnings"]:
+                print(f"  {Colors.YELLOW}•{Colors.RESET} {warning}")
+
+    # Show valid models
+    if results["valid"]:
+        print(f"\n{Colors.GREEN}{Colors.BOLD}Valid Models ({len(results['valid'])}){Colors.RESET}")
+        for model in sorted(results["valid"]):
+            print(f"  {Colors.GREEN}✓{Colors.RESET} {model}")
+
+    # Summary
+    print(f"\n{Colors.CYAN}{Colors.BOLD}Summary{Colors.RESET}")
+    print(f"  Valid: {len(results['valid'])}")
+    print(f"  Errors: {len(results['errors'])}")
+    print(f"  Warnings: {len(results['warnings'])}")
+
+    if results["errors"]:
+        print(f"  {Colors.RED}✗ Validation failed{Colors.RESET}")
+    else:
+        print(f"  {Colors.GREEN}✓ Validation passed{Colors.RESET}")
+
+    print("=" * 80)
+
+
+def print_json_report(results: Dict[str, Any]):
+    """Print a JSON report of validation results"""
+
+    report = {
+        "metadata": results["metadata"],
+        "results": {
+            "valid": sorted(results["valid"]),
+            "errors": results["errors"],
+            "warnings": results["warnings"]
+        },
+        "summary": {
+            "valid_count": len(results["valid"]),
+            "error_count": len(results["errors"]),
+            "warning_count": len(results["warnings"]),
+            "passed": len(results["errors"]) == 0
+        }
+    }
+
+    print(json.dumps(report, indent=2))
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Validate SQLMesh model definitions",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("model", nargs="?", default=None,
+                       help="Model name to validate (optional)")
+    parser.add_argument("--format", choices=["text", "json"], default="text",
+                       help="Output format (default: text)")
+    parser.add_argument("--strict", action="store_true",
+                       help="Enable strict validation mode")
+
+    args = parser.parse_args()
+
+    # Set PYTHONPATH to current directory for SQLMesh
+    if 'PYTHONPATH' not in os.environ:
+        os.environ['PYTHONPATH'] = '.'
+
+    # Get SQLMesh context
+    context = get_sqlmesh_context()
+
+    # Validate models
+    results = validate_models(context, args.model, args.strict)
+
+    # Print report
+    if args.format == "json":
+        print_json_report(results)
+    else:
+        print_text_report(results)
+
+    # Exit with status code (0 if valid, 1 if errors)
+    sys.exit(1 if results["errors"] else 0)
+
+
+if __name__ == "__main__":
+    main()
