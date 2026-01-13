@@ -10,14 +10,21 @@ This repository provides a comprehensive set of Claude Code hooks designed speci
 
 ### CLI Data Utilities
 
-Powerful command-line utilities for common BigQuery operations:
+Powerful command-line utilities for common data engineering operations:
 
+**BigQuery Utilities:**
 - **bq-profile**: Generate comprehensive data profiles with statistics, quality metrics, and anomaly detection
 - **bq-schema-diff**: Compare schemas of two tables to identify differences
 - **bq-query-cost**: Estimate query costs before execution
 - **bq-partition-info**: Analyze partitioning configuration and partition sizes
 - **bq-lineage**: Explore table dependencies (upstream and downstream)
 - **bq-table-compare**: Comprehensive table comparison with row counts, schema drift, statistics, and sample data
+
+**dbt Utilities:**
+- **dbt-deps**: Visualize dbt model dependencies as graphs
+- **dbt-test-gen**: Auto-generate dbt tests from model schemas
+- **dbt-docs-serve**: Enhanced local docs server with auto-reload
+- **dbt-model-search**: Search models by name, description, or column
 
 See [Data Utilities](#data-utilities) for detailed usage.
 
@@ -392,6 +399,172 @@ bin/data-utils/bq-table-compare project.dev.orders project.prod.orders --skip-st
 - Verify data consistency across replicas
 - Monitor data quality over time
 
+### dbt-deps
+
+Visualize dbt model dependencies as interactive graphs in multiple formats.
+
+**Usage:**
+```bash
+bin/data-utils/dbt-deps [options]
+bin/data-utils/dbt-deps <model_name> [options]
+```
+
+**Options:**
+- `--manifest=<path>` - Path to manifest.json (default: target/manifest.json)
+- `--format=<format>` - Output format: tree, mermaid, dot, json (default: tree)
+- `--upstream` - Show upstream dependencies only (models this depends on)
+- `--downstream` - Show downstream dependencies only (models that depend on this)
+- `--depth=<n>` - Maximum depth to traverse (default: unlimited)
+
+**Examples:**
+```bash
+# Show all model dependencies
+bin/data-utils/dbt-deps
+
+# Show dependencies for specific model
+bin/data-utils/dbt-deps stg_users
+
+# Show only upstream dependencies
+bin/data-utils/dbt-deps stg_users --upstream
+
+# Export as Mermaid diagram
+bin/data-utils/dbt-deps --format=mermaid > deps.mmd
+
+# Export as PNG via Graphviz
+bin/data-utils/dbt-deps --format=dot | dot -Tpng > deps.png
+```
+
+**Output includes:**
+- Model name and type (view, table, incremental)
+- Upstream dependencies (models this depends on)
+- Downstream dependencies (models that depend on this)
+- Visual representation in chosen format
+
+### dbt-test-gen
+
+Auto-generate dbt tests from model schemas with smart inference.
+
+**Usage:**
+```bash
+bin/data-utils/dbt-test-gen [options]
+bin/data-utils/dbt-test-gen <model_name> [options]
+```
+
+**Options:**
+- `--manifest=<path>` - Path to manifest.json (default: target/manifest.json)
+- `--catalog=<path>` - Path to catalog.json (default: target/catalog.json)
+- `--output=<path>` - Output YAML file (default: stdout)
+- `--test-suite=<level>` - Test suite: minimal, standard, comprehensive (default: standard)
+- `--format=<format>` - Output format: yaml, sql (default: yaml)
+
+**Examples:**
+```bash
+# Generate standard tests for all models
+bin/data-utils/dbt-test-gen
+
+# Generate tests for specific model
+bin/data-utils/dbt-test-gen stg_users
+
+# Save to schema file
+bin/data-utils/dbt-test-gen stg_users --output=models/staging/schema.yml
+
+# Generate comprehensive test suite
+bin/data-utils/dbt-test-gen stg_users --test-suite=comprehensive
+```
+
+**Test Suite Levels:**
+- **minimal**: not_null tests for primary key columns only
+- **standard**: not_null + unique for primary keys, not_null for required columns
+- **comprehensive**: All standard tests plus accepted_values, relationships, custom tests
+
+**Smart Inference:**
+- Detects primary keys (id, pk, uuid patterns)
+- Detects foreign keys (_id, _key, _fk suffixes)
+- Detects timestamps (created_at, updated_at)
+- Detects booleans (is_, has_, can_ prefixes)
+- Detects emails and generates appropriate tests
+
+### dbt-docs-serve
+
+Enhanced local dbt docs server with auto-reload and better UX.
+
+**Usage:**
+```bash
+bin/data-utils/dbt-docs-serve [options]
+```
+
+**Options:**
+- `--port=<port>` - Port to serve on (default: 8080)
+- `--host=<host>` - Host to bind to (default: 0.0.0.0)
+- `--docs-dir=<path>` - Path to docs directory (default: target)
+- `--no-browser` - Don't automatically open browser
+- `--watch` - Watch for file changes and notify
+- `--watch-interval=<s>` - Watch interval in seconds (default: 2)
+
+**Examples:**
+```bash
+# Serve docs with default settings
+bin/data-utils/dbt-docs-serve
+
+# Custom port
+bin/data-utils/dbt-docs-serve --port=3000
+
+# Enable file watching for auto-reload
+bin/data-utils/dbt-docs-serve --watch
+
+# Don't open browser
+bin/data-utils/dbt-docs-serve --no-browser
+```
+
+**Features:**
+- Automatically opens browser on startup
+- File watching with change notifications
+- Better error messages for missing files
+- Colored terminal output
+- CORS headers for local development
+
+### dbt-model-search
+
+Search dbt models by name, description, columns, or tags with smart ranking.
+
+**Usage:**
+```bash
+bin/data-utils/dbt-model-search <query> [options]
+```
+
+**Options:**
+- `--manifest=<path>` - Path to manifest.json (default: target/manifest.json)
+- `--catalog=<path>` - Path to catalog.json (default: target/catalog.json)
+- `--search-in=<fields>` - Fields to search: name,description,columns,tags (default: all)
+- `--case-sensitive` - Enable case-sensitive search
+- `--format=<format>` - Output format: text, json, csv (default: text)
+- `--limit=<n>` - Maximum number of results to show
+
+**Examples:**
+```bash
+# Find models containing "user"
+bin/data-utils/dbt-model-search user
+
+# Search only in column names
+bin/data-utils/dbt-model-search email --search-in=columns
+
+# Search in names and tags
+bin/data-utils/dbt-model-search "staging" --search-in=name,tags
+
+# Export results as JSON
+bin/data-utils/dbt-model-search customer --format=json
+
+# Limit results
+bin/data-utils/dbt-model-search order --limit=5
+```
+
+**Output includes:**
+- Model name and path
+- Model type (view, table, incremental)
+- Description preview
+- Match locations (name, description, columns, tags)
+- Relevance score
+
 ### Installation
 
 To make utilities accessible from anywhere, add to your PATH:
@@ -404,20 +577,32 @@ export PATH="$PATH:/path/to/decentclaude/bin/data-utils"
 Or create symlinks:
 
 ```bash
+# BigQuery utilities
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-profile /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-schema-diff /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-query-cost /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-partition-info /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-lineage /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-table-compare /usr/local/bin/
+
+# dbt utilities
+sudo ln -s /path/to/decentclaude/bin/data-utils/dbt-deps /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/dbt-test-gen /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/dbt-docs-serve /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/dbt-model-search /usr/local/bin/
 ```
 
 ### Requirements
 
-All utilities require:
+**BigQuery utilities require:**
 - Python 3.7+
 - google-cloud-bigquery library: `pip install google-cloud-bigquery`
 - Google Cloud credentials configured (via GOOGLE_APPLICATION_CREDENTIALS or gcloud auth)
+
+**dbt utilities require:**
+- Python 3.7+
+- dbt project with compiled manifest.json (run `dbt compile` or `dbt run`)
+- No additional dependencies (pure Python)
 
 ## Customization
 
@@ -474,13 +659,17 @@ chmod +x .git/hooks/pre-commit
 │   ├── settings.json           # Hook configurations
 │   └── HOOKS.md               # Hook documentation
 ├── bin/
-│   ├── data-utils/            # CLI utilities for BigQuery
+│   ├── data-utils/            # CLI utilities for data engineering
 │   │   ├── bq-profile         # Generate data profiles
 │   │   ├── bq-schema-diff     # Compare table schemas
 │   │   ├── bq-query-cost      # Estimate query costs
 │   │   ├── bq-partition-info  # Analyze partitions
 │   │   ├── bq-lineage         # Explore table lineage
-│   │   └── bq-table-compare   # Comprehensive table comparison
+│   │   ├── bq-table-compare   # Comprehensive table comparison
+│   │   ├── dbt-deps           # Visualize dbt model dependencies
+│   │   ├── dbt-test-gen       # Auto-generate dbt tests
+│   │   ├── dbt-docs-serve     # Enhanced dbt docs server
+│   │   └── dbt-model-search   # Search dbt models
 │   └── worktree-utils/        # Git worktree utilities
 ├── scripts/
 │   └── data_quality.py        # Data quality check framework

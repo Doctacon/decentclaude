@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""
+dbt-docs-serve - Enhanced local dbt docs server with auto-reload and search
+
+Usage:
+  dbt-docs-serve [options]
+
+Options:
+  --port=<port>         Port to serve on (default: 8080)
+  --host=<host>         Host to bind to (default: 0.0.0.0)
+  --docs-dir=<path>     Path to docs directory (default: target)
+  --no-browser          Don't automatically open browser
+  --watch               Watch for file changes and auto-reload
+  --watch-interval=<s>  Watch interval in seconds (default: 2)
+  --help, -h            Show this help message
+
+Examples:
+  dbt-docs-serve                          # Serve docs on port 8080
+  dbt-docs-serve --port=3000              # Serve on custom port
+  dbt-docs-serve --watch                  # Enable auto-reload on changes
+  dbt-docs-serve --no-browser             # Don't open browser automatically
+"""
+
+import sys
+import json
+import argparse
+import webbrowser
+import time
+from pathlib import Path
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+from threading import Thread
+from typing import Optional
+import os
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+
+
+class DbtDocsHandler(SimpleHTTPRequestHandler):
+    """Custom HTTP handler for serving dbt docs"""
+
+    def __init__(self, *args, docs_dir=None, **kwargs):
+        self.docs_dir = docs_dir
+        super().__init__(*args, directory=docs_dir, **kwargs)
+
+    def log_message(self, format, *args):
+        """Custom log message with colors"""
+        msg = format % args
+        if '200' in msg:
+            print(f"{Colors.GREEN}✓{Colors.RESET} {msg}")
+        elif '404' in msg:
+            print(f"{Colors.YELLOW}⚠{Colors.RESET} {msg}")
+        else:
+            print(f"{Colors.BLUE}ℹ{Colors.RESET} {msg}")
+
+    def end_headers(self):
+        """Add CORS headers for local development"""
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        super().end_headers()
+
+
+class DbtDocsServer:
+    """Enhanced dbt docs server"""
+
+    REQUIRED_FILES = ['index.html', 'manifest.json', 'catalog.json']
+
+    def __init__(self, docs_dir: Path, host: str = '0.0.0.0', port: int = 8080,
+                 open_browser: bool = True, watch: bool = False, watch_interval: int = 2):
+        self.docs_dir = docs_dir
+        self.host = host
+        self.port = port
+        self.open_browser = open_browser
+        self.watch = watch
+        self.watch_interval = watch_interval
+        self.server = None
+        self.file_mtimes = {}
+
+    def validate_docs_directory(self) -> bool:
+        """Validate that required docs files exist"""
+        missing_files = []
+
+        for filename in self.REQUIRED_FILES:
+            filepath = self.docs_dir / filename
+            if not filepath.exists():
+                missing_files.append(filename)
+
+        if missing_files:
+            print(f"{Colors.RED}Error: Missing required dbt docs files:{Colors.RESET}", file=sys.stderr)
+            for filename in missing_files:
+                print(f"  {Colors.YELLOW}✗{Colors.RESET} {filename}", file=sys.stderr)
+            print(f"\n{Colors.CYAN}Run 'dbt docs generate' to create documentation files{Colors.RESET}", file=sys.stderr)
+            return False
+
+        return True
+
+    def get_file_mtimes(self) -> dict:
+        """Get modification times for all files in docs directory"""
+        mtimes = {}
+        for filepath in self.docs_dir.glob('**/*'):
+            if filepath.is_file():
+                mtimes[str(filepath)] = filepath.stat().st_mtime
+        return mtimes
+
+    def check_for_changes(self) -> bool:
+        """Check if any files have changed"""
+        current_mtimes = self.get_file_mtimes()
+
+        # Check for new or modified files
+        for filepath, mtime in current_mtimes.items():
+            if filepath not in self.file_mtimes or self.file_mtimes[filepath] != mtime:
+                return True
+
+        # Check for deleted files
+        for filepath in self.file_mtimes:
+            if filepath not in current_mtimes:
+                return True
+
+        return False
+
+    def watch_files(self):
+        """Watch for file changes and notify"""
+        self.file_mtimes = self.get_file_mtimes()
+        last_change_time = time.time()
+
+        while self.watch:
+            time.sleep(self.watch_interval)
+
+            if self.check_for_changes():
+                current_time = time.time()
+                # Debounce: only notify if at least 1 second has passed since last change
+                if current_time - last_change_time > 1:
+                    print(f"\n{Colors.YELLOW}⚠ File changes detected - refresh your browser to see updates{Colors.RESET}")
+                    self.file_mtimes = self.get_file_mtimes()
+                    last_change_time = current_time
+
+    def start_watch_thread(self):
+        """Start file watching in a separate thread"""
+        watch_thread = Thread(target=self.watch_files, daemon=True)
+        watch_thread.start()
+
+    def serve(self):
+        """Start the documentation server"""
+        # Validate docs directory
+        if not self.validate_docs_directory():
+            sys.exit(1)
+
+        # Change to docs directory
+        original_dir = os.getcwd()
+        os.chdir(self.docs_dir)
+
+        try:
+            # Create server
+            handler = lambda *args, **kwargs: DbtDocsHandler(*args, docs_dir=str(self.docs_dir), **kwargs)
+            self.server = HTTPServer((self.host, self.port), handler)
+
+            # Print startup message
+            url = f"http://localhost:{self.port}"
+            print(f"\n{Colors.CYAN}{Colors.BOLD}dbt Docs Server{Colors.RESET}")
+            print("=" * 80)
+            print(f"{Colors.GREEN}✓{Colors.RESET} Serving documentation from: {self.docs_dir}")
+            print(f"{Colors.GREEN}✓{Colors.RESET} Server running at: {Colors.BLUE}{url}{Colors.RESET}")
+            print(f"{Colors.GREEN}✓{Colors.RESET} Host: {self.host}")
+            print(f"{Colors.GREEN}✓{Colors.RESET} Port: {self.port}")
+
+            if self.watch:
+                print(f"{Colors.GREEN}✓{Colors.RESET} File watching: {Colors.YELLOW}enabled{Colors.RESET} (checking every {self.watch_interval}s)")
+                self.start_watch_thread()
+            else:
+                print(f"{Colors.DIM}  File watching: disabled (use --watch to enable){Colors.RESET}")
+
+            print("=" * 80)
+            print(f"\n{Colors.YELLOW}Press Ctrl+C to stop the server{Colors.RESET}\n")
+
+            # Open browser
+            if self.open_browser:
+                print(f"{Colors.CYAN}Opening browser...{Colors.RESET}")
+                webbrowser.open(url)
+
+            # Serve forever
+            self.server.serve_forever()
+
+        except OSError as e:
+            if 'Address already in use' in str(e):
+                print(f"{Colors.RED}Error: Port {self.port} is already in use{Colors.RESET}", file=sys.stderr)
+                print(f"{Colors.YELLOW}Try a different port with --port=<number>{Colors.RESET}", file=sys.stderr)
+            else:
+                print(f"{Colors.RED}Error starting server: {str(e)}{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
+
+        except KeyboardInterrupt:
+            print(f"\n\n{Colors.YELLOW}Shutting down server...{Colors.RESET}")
+            self.server.shutdown()
+            print(f"{Colors.GREEN}✓ Server stopped{Colors.RESET}")
+
+        finally:
+            os.chdir(original_dir)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Enhanced local dbt docs server with auto-reload and search",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("--port", type=int, default=8080,
+                       help="Port to serve on (default: 8080)")
+    parser.add_argument("--host", default="0.0.0.0",
+                       help="Host to bind to (default: 0.0.0.0)")
+    parser.add_argument("--docs-dir", default="target",
+                       help="Path to docs directory (default: target)")
+    parser.add_argument("--no-browser", action="store_true",
+                       help="Don't automatically open browser")
+    parser.add_argument("--watch", action="store_true",
+                       help="Watch for file changes and notify")
+    parser.add_argument("--watch-interval", type=int, default=2,
+                       help="Watch interval in seconds (default: 2)")
+
+    args = parser.parse_args()
+
+    # Initialize and start server
+    server = DbtDocsServer(
+        docs_dir=Path(args.docs_dir),
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_browser,
+        watch=args.watch,
+        watch_interval=args.watch_interval
+    )
+
+    server.serve()
+
+
+if __name__ == "__main__":
+    main()

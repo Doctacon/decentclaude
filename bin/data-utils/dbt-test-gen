@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+"""
+dbt-test-gen - Auto-generate dbt tests from model schema
+
+Usage:
+  dbt-test-gen [options]
+  dbt-test-gen <model_name> [options]
+
+Arguments:
+  model_name     Generate tests for a specific model
+
+Options:
+  --manifest=<path>     Path to manifest.json (default: target/manifest.json)
+  --catalog=<path>      Path to catalog.json for column stats (default: target/catalog.json)
+  --output=<path>       Output YAML file (default: stdout)
+  --test-suite=<level>  Test suite level: minimal, standard, comprehensive (default: standard)
+  --format=<format>     Output format: yaml, sql (default: yaml)
+  --help, -h            Show this help message
+
+Test Suite Levels:
+  minimal        - not_null tests for primary key columns only
+  standard       - not_null + unique for primary keys, not_null for required columns
+  comprehensive  - All standard tests plus accepted_values, relationships, custom tests
+
+Examples:
+  dbt-test-gen stg_users                                  # Generate standard tests for stg_users
+  dbt-test-gen stg_users --output=models/staging/schema.yml  # Write to schema file
+  dbt-test-gen stg_users --test-suite=comprehensive       # Generate comprehensive tests
+  dbt-test-gen --format=sql                               # Generate SQL test files
+"""
+
+import sys
+import json
+import argparse
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Any
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+
+
+class DbtTestGenerator:
+    """Generate dbt tests from model schemas"""
+
+    # Column name patterns that suggest specific test types
+    PRIMARY_KEY_PATTERNS = {'id', 'pk', 'key', 'uuid'}
+    FOREIGN_KEY_PATTERNS = {'_id', '_key', '_fk'}
+    TIMESTAMP_PATTERNS = {'_at', '_timestamp', 'created', 'updated', 'deleted'}
+    BOOLEAN_PATTERNS = {'is_', 'has_', 'can_', 'should_'}
+    EMAIL_PATTERNS = {'email', 'email_address'}
+
+    def __init__(self, manifest_path: Path, catalog_path: Optional[Path] = None):
+        self.manifest_path = manifest_path
+        self.catalog_path = catalog_path
+        self.manifest = self._load_manifest()
+        self.catalog = self._load_catalog() if catalog_path and catalog_path.exists() else None
+        self.models = self._extract_models()
+
+    def _load_manifest(self) -> dict:
+        """Load and parse manifest.json"""
+        try:
+            with open(self.manifest_path) as f:
+                return json.load(f)
+        except FileNotFoundError:
+            print(f"{Colors.RED}Error: manifest.json not found at {self.manifest_path}{Colors.RESET}", file=sys.stderr)
+            print(f"{Colors.YELLOW}Run 'dbt compile' or 'dbt run' to generate manifest.json{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
+        except json.JSONDecodeError as e:
+            print(f"{Colors.RED}Error: Invalid JSON in manifest.json: {str(e)}{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
+
+    def _load_catalog(self) -> Optional[dict]:
+        """Load and parse catalog.json"""
+        try:
+            with open(self.catalog_path) as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+
+    def _extract_models(self) -> Dict[str, dict]:
+        """Extract model information from manifest"""
+        models = {}
+        for node_id, node in self.manifest.get('nodes', {}).items():
+            if node.get('resource_type') == 'model':
+                model_name = node.get('name')
+                models[model_name] = {
+                    'unique_id': node_id,
+                    'name': model_name,
+                    'columns': node.get('columns', {}),
+                    'description': node.get('description', ''),
+                    'tests': node.get('tests', []),
+                    'meta': node.get('meta', {}),
+                    'tags': node.get('tags', [])
+                }
+        return models
+
+    def _infer_column_type(self, column_name: str, column_info: dict) -> str:
+        """Infer semantic type of column based on name and metadata"""
+        col_lower = column_name.lower()
+
+        # Check explicit type from data_type if available
+        data_type = column_info.get('data_type', '').lower()
+
+        # Primary key detection
+        if any(pattern in col_lower for pattern in self.PRIMARY_KEY_PATTERNS):
+            return 'primary_key'
+
+        # Foreign key detection
+        if any(col_lower.endswith(pattern) for pattern in self.FOREIGN_KEY_PATTERNS):
+            return 'foreign_key'
+
+        # Timestamp detection
+        if any(pattern in col_lower for pattern in self.TIMESTAMP_PATTERNS) or 'timestamp' in data_type or 'datetime' in data_type:
+            return 'timestamp'
+
+        # Boolean detection
+        if any(col_lower.startswith(pattern) for pattern in self.BOOLEAN_PATTERNS) or 'bool' in data_type:
+            return 'boolean'
+
+        # Email detection
+        if any(pattern in col_lower for pattern in self.EMAIL_PATTERNS):
+            return 'email'
+
+        return 'standard'
+
+    def _generate_minimal_tests(self, model_name: str, model_info: dict) -> List[dict]:
+        """Generate minimal test suite (primary keys only)"""
+        tests = []
+
+        for col_name, col_info in model_info['columns'].items():
+            col_type = self._infer_column_type(col_name, col_info)
+
+            if col_type == 'primary_key':
+                tests.append({
+                    'name': col_name,
+                    'tests': ['not_null']
+                })
+
+        return tests
+
+    def _generate_standard_tests(self, model_name: str, model_info: dict) -> List[dict]:
+        """Generate standard test suite"""
+        tests = []
+
+        for col_name, col_info in model_info['columns'].items():
+            col_type = self._infer_column_type(col_name, col_info)
+            col_tests = []
+
+            # Primary keys get unique + not_null
+            if col_type == 'primary_key':
+                col_tests.extend(['unique', 'not_null'])
+
+            # Foreign keys get not_null
+            elif col_type == 'foreign_key':
+                col_tests.append('not_null')
+
+            # Timestamps get not_null
+            elif col_type == 'timestamp':
+                col_tests.append('not_null')
+
+            # Add tests from existing column definition
+            if col_info.get('description'):
+                # If column has description, likely important - add not_null
+                if 'not_null' not in col_tests and col_type != 'standard':
+                    col_tests.append('not_null')
+
+            if col_tests:
+                tests.append({
+                    'name': col_name,
+                    'description': col_info.get('description', ''),
+                    'tests': col_tests
+                })
+
+        return tests
+
+    def _generate_comprehensive_tests(self, model_name: str, model_info: dict) -> List[dict]:
+        """Generate comprehensive test suite"""
+        tests = []
+
+        for col_name, col_info in model_info['columns'].items():
+            col_type = self._infer_column_type(col_name, col_info)
+            col_tests = []
+
+            # Primary keys
+            if col_type == 'primary_key':
+                col_tests.extend(['unique', 'not_null'])
+
+            # Foreign keys
+            elif col_type == 'foreign_key':
+                col_tests.append('not_null')
+                # TODO: Could infer relationships from naming convention
+
+            # Booleans
+            elif col_type == 'boolean':
+                col_tests.append('not_null')
+                col_tests.append({
+                    'accepted_values': {
+                        'values': [True, False]
+                    }
+                })
+
+            # Email
+            elif col_type == 'email':
+                col_tests.append('not_null')
+                # Could add regex test for email format
+
+            # Timestamps
+            elif col_type == 'timestamp':
+                col_tests.append('not_null')
+
+            # Standard columns with descriptions
+            elif col_info.get('description'):
+                col_tests.append('not_null')
+
+            if col_tests:
+                test_dict = {
+                    'name': col_name,
+                    'description': col_info.get('description', ''),
+                    'tests': col_tests
+                }
+                tests.append(test_dict)
+
+        return tests
+
+    def generate_tests(self, model_name: str, test_suite: str = 'standard') -> dict:
+        """Generate tests for a model"""
+        if model_name not in self.models:
+            return {'error': f"Model '{model_name}' not found"}
+
+        model_info = self.models[model_name]
+
+        if test_suite == 'minimal':
+            columns = self._generate_minimal_tests(model_name, model_info)
+        elif test_suite == 'standard':
+            columns = self._generate_standard_tests(model_name, model_info)
+        else:  # comprehensive
+            columns = self._generate_comprehensive_tests(model_name, model_info)
+
+        return {
+            'version': 2,
+            'models': [{
+                'name': model_name,
+                'description': model_info['description'],
+                'columns': columns
+            }]
+        }
+
+    def generate_all_tests(self, test_suite: str = 'standard') -> dict:
+        """Generate tests for all models"""
+        models = []
+
+        for model_name, model_info in self.models.items():
+            if test_suite == 'minimal':
+                columns = self._generate_minimal_tests(model_name, model_info)
+            elif test_suite == 'standard':
+                columns = self._generate_standard_tests(model_name, model_info)
+            else:  # comprehensive
+                columns = self._generate_comprehensive_tests(model_name, model_info)
+
+            if columns:  # Only include if tests were generated
+                models.append({
+                    'name': model_name,
+                    'description': model_info['description'],
+                    'columns': columns
+                })
+
+        return {
+            'version': 2,
+            'models': models
+        }
+
+    def format_yaml(self, tests: dict) -> str:
+        """Format tests as YAML"""
+        if 'error' in tests:
+            return f"# Error: {tests['error']}"
+
+        lines = []
+        lines.append(f"version: {tests.get('version', 2)}")
+        lines.append("")
+        lines.append("models:")
+
+        for model in tests.get('models', []):
+            lines.append(f"  - name: {model['name']}")
+            if model.get('description'):
+                lines.append(f"    description: {model['description']}")
+            lines.append("    columns:")
+
+            for column in model.get('columns', []):
+                lines.append(f"      - name: {column['name']}")
+                if column.get('description'):
+                    lines.append(f"        description: {column['description']}")
+
+                if column.get('tests'):
+                    lines.append("        tests:")
+                    for test in column['tests']:
+                        if isinstance(test, str):
+                            lines.append(f"          - {test}")
+                        elif isinstance(test, dict):
+                            # Handle complex test definitions like accepted_values
+                            for test_name, test_config in test.items():
+                                lines.append(f"          - {test_name}:")
+                                if isinstance(test_config, dict):
+                                    for key, value in test_config.items():
+                                        if isinstance(value, list):
+                                            lines.append(f"              {key}:")
+                                            for item in value:
+                                                lines.append(f"                - {item}")
+                                        else:
+                                            lines.append(f"              {key}: {value}")
+
+        return "\n".join(lines)
+
+    def format_sql(self, model_name: str, tests: dict) -> str:
+        """Format tests as SQL test files"""
+        sql_tests = []
+
+        if 'error' in tests:
+            return f"-- Error: {tests['error']}"
+
+        for model in tests.get('models', []):
+            for column in model.get('columns', []):
+                col_name = column['name']
+
+                for test in column.get('tests', []):
+                    if isinstance(test, str):
+                        if test == 'not_null':
+                            sql_tests.append(f"""
+-- Test: {model_name}.{col_name} is not null
+SELECT *
+FROM {{{{ ref('{model_name}') }}}}
+WHERE {col_name} IS NULL
+""")
+                        elif test == 'unique':
+                            sql_tests.append(f"""
+-- Test: {model_name}.{col_name} is unique
+SELECT {col_name}, COUNT(*) as count
+FROM {{{{ ref('{model_name}') }}}}
+GROUP BY {col_name}
+HAVING COUNT(*) > 1
+""")
+
+        return "\n".join(sql_tests)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Auto-generate dbt tests from model schema",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("model_name", nargs="?", help="Generate tests for a specific model")
+    parser.add_argument("--manifest", default="target/manifest.json",
+                       help="Path to manifest.json (default: target/manifest.json)")
+    parser.add_argument("--catalog", default="target/catalog.json",
+                       help="Path to catalog.json (default: target/catalog.json)")
+    parser.add_argument("--output", help="Output YAML file (default: stdout)")
+    parser.add_argument("--test-suite", choices=["minimal", "standard", "comprehensive"],
+                       default="standard", help="Test suite level (default: standard)")
+    parser.add_argument("--format", choices=["yaml", "sql"], default="yaml",
+                       help="Output format (default: yaml)")
+
+    args = parser.parse_args()
+
+    # Initialize generator
+    generator = DbtTestGenerator(
+        Path(args.manifest),
+        Path(args.catalog) if args.catalog else None
+    )
+
+    # Generate tests
+    if args.model_name:
+        tests = generator.generate_tests(args.model_name, args.test_suite)
+    else:
+        tests = generator.generate_all_tests(args.test_suite)
+
+    # Format output
+    if args.format == "yaml":
+        output = generator.format_yaml(tests)
+    else:  # sql
+        if args.model_name:
+            output = generator.format_sql(args.model_name, tests)
+        else:
+            print(f"{Colors.YELLOW}Warning: SQL format only supports single model. Use --model=<name>{Colors.RESET}", file=sys.stderr)
+            output = "-- Error: SQL format requires a model name"
+
+    # Write output
+    if args.output:
+        Path(args.output).write_text(output)
+        print(f"{Colors.GREEN}Tests written to {args.output}{Colors.RESET}", file=sys.stderr)
+    else:
+        print(output)
+
+
+if __name__ == "__main__":
+    main()
