@@ -41,6 +41,7 @@ Powerful command-line utilities for common data engineering operations:
 
 **AI Generation:**
 - **ai-generate**: AI-powered code generation for dbt models, SQLMesh models, tests, transformations, and migrations
+- **ai-query**: Natural language to SQL query builder powered by Claude
 
 See [Data Utilities](#data-utilities) for detailed usage.
 
@@ -95,6 +96,9 @@ pip install sqlparse google-cloud-bigquery anthropic
 
 # Knowledge base web interface
 pip install fastapi uvicorn
+
+# AI-powered query builder
+pip install anthropic
 
 # Optional tools
 pip install sqlfluff dbt-core dbt-bigquery sqlmesh
@@ -709,6 +713,64 @@ bin/data-utils/ai-generate dbt-model "staging layer for orders" --context=schema
 - Python 3.7+
 - anthropic library: `pip install anthropic`
 - ANTHROPIC_API_KEY environment variable set
+
+### ai-query
+
+Convert natural language descriptions into SQL queries using Claude AI.
+
+**Usage:**
+```bash
+bin/data-utils/ai-query <description> [options]
+bin/data-utils/ai-query --interactive [options]
+bin/data-utils/ai-query --explain <sql> [options]
+```
+
+**Options:**
+- `--interactive, -i` - Interactive mode for query refinement
+- `--explain` - Explain an existing SQL query in natural language
+- `--validate` - Validate generated SQL against BigQuery (default: true)
+- `--no-validate` - Skip SQL validation
+- `--format=<format>` - Output format: text, json, sql (default: text)
+- `--context=<tables>` - Comma-separated list of table IDs for context
+
+**Examples:**
+```bash
+# Generate SQL from natural language
+bin/data-utils/ai-query "show me top 10 customers by revenue this year"
+
+# Use table context for better accuracy
+bin/data-utils/ai-query "count orders by status for each month" --context=project.dataset.orders
+
+# Interactive mode with refinement
+bin/data-utils/ai-query --interactive
+
+# Explain existing SQL
+bin/data-utils/ai-query --explain "SELECT COUNT(*) FROM users WHERE active = true"
+
+# Get only the SQL output (useful for piping)
+bin/data-utils/ai-query "total sales by region" --format=sql
+```
+
+**Features:**
+- Converts natural language to BigQuery Standard SQL
+- Supports complex queries (joins, aggregations, window functions)
+- Automatic SQL validation using BigQuery dry run
+- Interactive refinement mode
+- Query explanation in natural language
+- Table schema context for improved accuracy
+
+**Requirements:**
+- Set `ANTHROPIC_API_KEY` environment variable
+- Install anthropic package: `pip install anthropic`
+- BigQuery authentication configured (for validation)
+
+**Interactive Mode:**
+In interactive mode, you can:
+- Enter query descriptions naturally
+- Use `refine: <changes>` to modify the last query
+- Use `explain` to get a natural language explanation
+- Use `context: <tables>` to set table context
+- Type `quit` to exit
 
 ### Installation
 
