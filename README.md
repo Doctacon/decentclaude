@@ -12,6 +12,7 @@ This repository provides a comprehensive set of Claude Code hooks designed speci
 
 Powerful command-line utilities for common BigQuery operations:
 
+- **bq-explore**: Interactive TUI for discovering and exploring BigQuery datasets and tables
 - **bq-schema-diff**: Compare schemas of two tables to identify differences
 - **bq-query-cost**: Estimate query costs before execution
 - **bq-partition-info**: Analyze partitioning configuration and partition sizes
@@ -133,6 +134,59 @@ Run the data-quality-check hook
 Executes the Python script at `scripts/data_quality.py` with customizable checks.
 
 ## Data Utilities
+
+### bq-explore
+
+Interactive terminal UI for discovering and exploring BigQuery data.
+
+**Usage:**
+```bash
+bin/data-utils/bq-explore [options]
+```
+
+**Options:**
+- `--project=<project>` - BigQuery project ID (uses default if not specified)
+
+**Features:**
+- Browse datasets and tables interactively
+- Search tables by name
+- Find tables by column name
+- View table schemas and metadata
+- Browse sample data from tables
+- Discover table lineage (dependencies)
+- Export discovery results to JSON
+
+**Navigation:**
+- Arrow keys: Navigate through lists
+- Enter: Select item
+- Tab: Switch between panels
+- /: Focus search input
+- Ctrl+S: Export results
+- r: Refresh datasets
+- q: Quit
+- ?: Show help
+
+**Examples:**
+```bash
+# Launch interactive explorer
+bin/data-utils/bq-explore
+
+# Specify a project
+bin/data-utils/bq-explore --project=my-project
+```
+
+**Search capabilities:**
+- Type a table name to filter tables by name
+- Type a column name to find all tables containing that column
+- Results update in real-time as you type
+
+**Export:**
+- Press Ctrl+S to export current discovery results to JSON
+- Files are saved with timestamp: `bq_discovery_YYYYMMDD_HHMMSS.json`
+
+**Requirements:**
+- `textual` library: `pip install textual`
+- `google-cloud-bigquery` library: `pip install google-cloud-bigquery`
 
 ### bq-schema-diff
 
@@ -273,6 +327,7 @@ export PATH="$PATH:/path/to/decentclaude/bin/data-utils"
 Or create symlinks:
 
 ```bash
+sudo ln -s /path/to/decentclaude/bin/data-utils/bq-explore /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-schema-diff /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-query-cost /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-partition-info /usr/local/bin/
@@ -342,6 +397,7 @@ chmod +x .git/hooks/pre-commit
 │   └── HOOKS.md               # Hook documentation
 ├── bin/
 │   ├── data-utils/            # CLI utilities for BigQuery
+│   │   ├── bq-explore         # Interactive data discovery TUI
 │   │   ├── bq-schema-diff     # Compare table schemas
 │   │   ├── bq-query-cost      # Estimate query costs
 │   │   ├── bq-partition-info  # Analyze partitions
@@ -360,6 +416,7 @@ chmod +x .git/hooks/pre-commit
 - Python 3.7+
 - sqlparse (required for hooks)
 - google-cloud-bigquery (required for CLI utilities)
+- textual (required for bq-explore interactive TUI)
 - sqlfluff (optional, for linting)
 - dbt-core (optional, for dbt hooks)
 - sqlmesh (optional, for SQLMesh hooks)
