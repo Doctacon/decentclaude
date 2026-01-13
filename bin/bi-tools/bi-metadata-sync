@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""
+bi-metadata-sync - Sync metadata between BigQuery and BI tools
+
+Usage:
+  bi-metadata-sync <dataset_id> [options]
+
+Arguments:
+  dataset_id    Dataset ID to sync (format: project.dataset)
+
+Options:
+  --format=<format>        Output format: json, yaml, csv (default: json)
+  --output=<file>          Output file path (default: stdout)
+  --include-schema         Include full schema definitions
+  --include-stats          Include table statistics (row count, size)
+  --only-documented        Only include tables/columns with descriptions
+  --help, -h               Show this help message
+
+Examples:
+  bi-metadata-sync project.analytics --format=json --output=metadata.json
+  bi-metadata-sync project.dataset --include-stats --include-schema
+  bi-metadata-sync project.prod --only-documented --format=yaml
+"""
+
+import sys
+import json
+import argparse
+from typing import Dict, List, Optional, Any
+from google.cloud import bigquery
+from datetime import datetime
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def extract_table_metadata(client: bigquery.Client, table_id: str,
+                           include_schema: bool = False,
+                           include_stats: bool = False) -> Dict[str, Any]:
+    """
+    Extract metadata for a single BigQuery table.
+
+    Args:
+        client: BigQuery client
+        table_id: Full table ID (project.dataset.table)
+        include_schema: Include full schema definition
+        include_stats: Include table statistics
+
+    Returns:
+        Dictionary containing table metadata
+    """
+    try:
+        table = client.get_table(table_id)
+        table_ref = table.reference
+
+        metadata = {
+            'table_name': table_ref.table_id,
+            'project': table_ref.project,
+            'dataset': table_ref.dataset_id,
+            'full_table_id': f"{table_ref.project}.{table_ref.dataset_id}.{table_ref.table_id}",
+            'description': table.description or '',
+            'created': table.created.isoformat() if table.created else None,
+            'modified': table.modified.isoformat() if table.modified else None,
+        }
+
+        # Add schema information
+        if include_schema:
+            columns = []
+            for field in table.schema:
+                column_info = {
+                    'name': field.name,
+                    'type': field.field_type,
+                    'mode': field.mode,
+                    'description': field.description or '',
+                }
+
+                # Handle nested fields
+                if field.field_type == 'RECORD' and field.fields:
+                    column_info['fields'] = [
+                        {
+                            'name': f.name,
+                            'type': f.field_type,
+                            'mode': f.mode,
+                            'description': f.description or ''
+                        }
+                        for f in field.fields
+                    ]
+
+                columns.append(column_info)
+
+            metadata['columns'] = columns
+        else:
+            # Just include column names and descriptions
+            metadata['columns'] = [
+                {
+                    'name': field.name,
+                    'type': field.field_type,
+                    'description': field.description or ''
+                }
+                for field in table.schema
+            ]
+
+        # Add statistics
+        if include_stats:
+            metadata['statistics'] = {
+                'num_rows': table.num_rows,
+                'num_bytes': table.num_bytes,
+                'size_mb': round(table.num_bytes / (1024 * 1024), 2) if table.num_bytes else 0,
+            }
+
+            # Add partitioning info if available
+            if table.time_partitioning:
+                metadata['partitioning'] = {
+                    'type': table.time_partitioning.type_,
+                    'field': table.time_partitioning.field,
+                }
+
+            # Add clustering info if available
+            if table.clustering_fields:
+                metadata['clustering'] = {
+                    'fields': table.clustering_fields
+                }
+
+        # Add documentation status
+        documented_columns = sum(1 for field in table.schema if field.description)
+        total_columns = len(table.schema)
+
+        metadata['documentation_status'] = {
+            'table_documented': bool(table.description),
+            'documented_columns': documented_columns,
+            'total_columns': total_columns,
+            'documentation_coverage': round(documented_columns / total_columns * 100, 1) if total_columns > 0 else 0
+        }
+
+        return metadata
+
+    except Exception as e:
+        print(f"{Colors.RED}Error extracting metadata for {table_id}: {str(e)}{Colors.RESET}", file=sys.stderr)
+        return None
+
+
+def extract_dataset_metadata(client: bigquery.Client, dataset_id: str,
+                             include_schema: bool = False,
+                             include_stats: bool = False,
+                             only_documented: bool = False) -> Dict[str, Any]:
+    """
+    Extract metadata for all tables in a BigQuery dataset.
+
+    Args:
+        client: BigQuery client
+        dataset_id: Full dataset ID (project.dataset)
+        include_schema: Include full schema definitions
+        include_stats: Include table statistics
+        only_documented: Only include tables with descriptions
+
+    Returns:
+        Dictionary containing dataset and table metadata
+    """
+    try:
+        # Get dataset info
+        dataset = client.get_dataset(dataset_id)
+
+        # List all tables
+        tables = list(client.list_tables(dataset_id))
+
+        print(f"{Colors.CYAN}Extracting metadata for {len(tables)} tables...{Colors.RESET}", file=sys.stderr)
+
+        table_metadata_list = []
+        for table_ref in tables:
+            table_id = f"{table_ref.project}.{table_ref.dataset_id}.{table_ref.table_id}"
+            metadata = extract_table_metadata(client, table_id, include_schema, include_stats)
+
+            if metadata:
+                # Filter if only_documented is set
+                if only_documented:
+                    if metadata.get('description') or any(
+                        col.get('description') for col in metadata.get('columns', [])
+                    ):
+                        table_metadata_list.append(metadata)
+                else:
+                    table_metadata_list.append(metadata)
+
+        # Calculate dataset-level stats
+        total_tables = len(table_metadata_list)
+        documented_tables = sum(1 for t in table_metadata_list if t.get('description'))
+
+        dataset_metadata = {
+            'dataset_id': dataset_id,
+            'description': dataset.description or '',
+            'location': dataset.location,
+            'created': dataset.created.isoformat() if dataset.created else None,
+            'modified': dataset.modified.isoformat() if dataset.modified else None,
+            'extracted_at': datetime.utcnow().isoformat(),
+            'summary': {
+                'total_tables': total_tables,
+                'documented_tables': documented_tables,
+                'documentation_coverage': round(documented_tables / total_tables * 100, 1) if total_tables > 0 else 0,
+            },
+            'tables': table_metadata_list
+        }
+
+        return dataset_metadata
+
+    except Exception as e:
+        print(f"{Colors.RED}Error extracting dataset metadata: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def format_as_json(metadata: Dict[str, Any]) -> str:
+    """Format metadata as JSON"""
+    return json.dumps(metadata, indent=2)
+
+
+def format_as_yaml(metadata: Dict[str, Any]) -> str:
+    """Format metadata as YAML"""
+    try:
+        import yaml
+        return yaml.dump(metadata, default_flow_style=False, sort_keys=False)
+    except ImportError:
+        print(f"{Colors.RED}PyYAML not installed. Install with: pip install pyyaml{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def format_as_csv(metadata: Dict[str, Any]) -> str:
+    """Format metadata as CSV (simplified view)"""
+    import csv
+    from io import StringIO
+
+    output = StringIO()
+    writer = csv.writer(output)
+
+    # Write header
+    writer.writerow([
+        'Table Name', 'Description', 'Columns', 'Documented Columns',
+        'Documentation %', 'Created', 'Modified'
+    ])
+
+    # Write table rows
+    for table in metadata.get('tables', []):
+        doc_status = table.get('documentation_status', {})
+        writer.writerow([
+            table.get('table_name'),
+            table.get('description', ''),
+            doc_status.get('total_columns', 0),
+            doc_status.get('documented_columns', 0),
+            doc_status.get('documentation_coverage', 0),
+            table.get('created', ''),
+            table.get('modified', '')
+        ])
+
+    return output.getvalue()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Sync metadata between BigQuery and BI tools",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("dataset_id", help="Dataset ID to sync (project.dataset)")
+    parser.add_argument("--format", choices=["json", "yaml", "csv"], default="json",
+                       help="Output format (default: json)")
+    parser.add_argument("--output", help="Output file path (default: stdout)")
+    parser.add_argument("--include-schema", action="store_true",
+                       help="Include full schema definitions")
+    parser.add_argument("--include-stats", action="store_true",
+                       help="Include table statistics")
+    parser.add_argument("--only-documented", action="store_true",
+                       help="Only include tables/columns with descriptions")
+
+    args = parser.parse_args()
+
+    # Initialize BigQuery client
+    client = bigquery.Client()
+
+    # Extract metadata
+    metadata = extract_dataset_metadata(
+        client,
+        args.dataset_id,
+        include_schema=args.include_schema,
+        include_stats=args.include_stats,
+        only_documented=args.only_documented
+    )
+
+    # Format output
+    if args.format == "json":
+        output = format_as_json(metadata)
+    elif args.format == "yaml":
+        output = format_as_yaml(metadata)
+    elif args.format == "csv":
+        output = format_as_csv(metadata)
+
+    # Write output
+    if args.output:
+        with open(args.output, 'w') as f:
+            f.write(output)
+        print(f"\n{Colors.GREEN}✓ Metadata exported to {args.output}{Colors.RESET}", file=sys.stderr)
+        print(f"  Tables: {metadata['summary']['total_tables']}", file=sys.stderr)
+        print(f"  Documentation coverage: {metadata['summary']['documentation_coverage']}%", file=sys.stderr)
+    else:
+        print(output)
+
+
+if __name__ == "__main__":
+    main()

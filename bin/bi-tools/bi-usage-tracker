@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+"""
+bi-usage-tracker - Track BigQuery table usage for BI dashboard dependencies
+
+Usage:
+  bi-usage-tracker <dataset_id> [options]
+
+Arguments:
+  dataset_id    Dataset ID to analyze (format: project.dataset)
+
+Options:
+  --days=<n>               Number of days to look back (default: 7)
+  --min-queries=<n>        Minimum queries to include table (default: 1)
+  --format=<format>        Output format: text, json, csv (default: text)
+  --output=<file>          Output file path (default: stdout)
+  --include-users          Include user query patterns
+  --top=<n>                Show top N most queried tables (default: all)
+  --help, -h               Show this help message
+
+Examples:
+  bi-usage-tracker project.analytics --days=30
+  bi-usage-tracker project.prod --format=json --output=usage.json
+  bi-usage-tracker project.dataset --top=10 --include-users
+  bi-usage-tracker project.marts --days=7 --min-queries=5
+"""
+
+import sys
+import json
+import argparse
+from typing import Dict, List, Optional, Any
+from google.cloud import bigquery
+from datetime import datetime, timedelta
+from collections import defaultdict
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def analyze_table_usage(client: bigquery.Client, dataset_id: str, days: int = 7,
+                       include_users: bool = False) -> Dict[str, Any]:
+    """
+    Analyze table usage patterns from BigQuery INFORMATION_SCHEMA.
+
+    Args:
+        client: BigQuery client
+        dataset_id: Full dataset ID (project.dataset)
+        days: Number of days to look back
+        include_users: Include user-level query patterns
+
+    Returns:
+        Dictionary containing usage statistics
+    """
+    project_id, dataset_name = dataset_id.split('.')
+
+    # Build query to analyze table usage
+    query = f"""
+    WITH table_references AS (
+        SELECT
+            referenced_table.project_id,
+            referenced_table.dataset_id,
+            referenced_table.table_id,
+            user_email,
+            job_id,
+            creation_time,
+            total_bytes_processed,
+            total_slot_ms,
+            TIMESTAMP_DIFF(end_time, start_time, MILLISECOND) as query_duration_ms
+        FROM `{project_id}.region-us.INFORMATION_SCHEMA.JOBS_BY_PROJECT` AS jobs,
+        UNNEST(referenced_tables) AS referenced_table
+        WHERE
+            creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
+            AND referenced_table.dataset_id = '{dataset_name}'
+            AND job_type = 'QUERY'
+            AND state = 'DONE'
+            AND error_result IS NULL
+    )
+    SELECT
+        table_id,
+        COUNT(DISTINCT job_id) as query_count,
+        COUNT(DISTINCT user_email) as unique_users,
+        SUM(total_bytes_processed) as total_bytes_processed,
+        AVG(total_bytes_processed) as avg_bytes_per_query,
+        SUM(total_slot_ms) as total_slot_ms,
+        AVG(query_duration_ms) as avg_query_duration_ms,
+        MIN(creation_time) as first_query,
+        MAX(creation_time) as last_query,
+        ARRAY_AGG(DISTINCT user_email LIMIT 10) as top_users
+    FROM table_references
+    GROUP BY table_id
+    ORDER BY query_count DESC
+    """
+
+    try:
+        print(f"{Colors.CYAN}Analyzing usage for {dataset_id} (last {days} days)...{Colors.RESET}",
+              file=sys.stderr)
+
+        query_job = client.query(query)
+        results = query_job.result()
+
+        usage_data = {
+            'dataset_id': dataset_id,
+            'analysis_period_days': days,
+            'analysis_timestamp': datetime.utcnow().isoformat(),
+            'tables': []
+        }
+
+        for row in results:
+            table_usage = {
+                'table_name': row.table_id,
+                'query_count': row.query_count,
+                'unique_users': row.unique_users,
+                'total_bytes_processed': row.total_bytes_processed,
+                'total_bytes_processed_gb': round(row.total_bytes_processed / (1024**3), 2) if row.total_bytes_processed else 0,
+                'avg_bytes_per_query': row.avg_bytes_per_query,
+                'avg_bytes_per_query_mb': round(row.avg_bytes_per_query / (1024**2), 2) if row.avg_bytes_per_query else 0,
+                'total_slot_ms': row.total_slot_ms,
+                'avg_query_duration_ms': round(row.avg_query_duration_ms, 2) if row.avg_query_duration_ms else 0,
+                'first_query': row.first_query.isoformat() if row.first_query else None,
+                'last_query': row.last_query.isoformat() if row.last_query else None,
+            }
+
+            if include_users and row.top_users:
+                table_usage['top_users'] = row.top_users
+
+            usage_data['tables'].append(table_usage)
+
+        # Calculate summary stats
+        if usage_data['tables']:
+            usage_data['summary'] = {
+                'total_tables_queried': len(usage_data['tables']),
+                'total_queries': sum(t['query_count'] for t in usage_data['tables']),
+                'total_bytes_processed_gb': round(
+                    sum(t['total_bytes_processed'] for t in usage_data['tables']) / (1024**3), 2
+                ),
+                'most_queried_table': usage_data['tables'][0]['table_name'] if usage_data['tables'] else None,
+            }
+        else:
+            usage_data['summary'] = {
+                'total_tables_queried': 0,
+                'total_queries': 0,
+                'total_bytes_processed_gb': 0,
+                'most_queried_table': None,
+            }
+
+        return usage_data
+
+    except Exception as e:
+        print(f"{Colors.RED}Error analyzing usage: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def print_text_report(usage_data: Dict[str, Any], top_n: Optional[int] = None,
+                     include_users: bool = False):
+    """Print a formatted text report of usage statistics"""
+
+    print(f"\n{Colors.CYAN}{Colors.BOLD}BI Table Usage Report{Colors.RESET}")
+    print(f"{Colors.BLUE}Dataset:{Colors.RESET} {usage_data['dataset_id']}")
+    print(f"{Colors.BLUE}Period:{Colors.RESET} Last {usage_data['analysis_period_days']} days")
+    print(f"{Colors.BLUE}Analysis Time:{Colors.RESET} {usage_data['analysis_timestamp']}")
+    print("=" * 100)
+
+    # Summary
+    summary = usage_data.get('summary', {})
+    print(f"\n{Colors.GREEN}{Colors.BOLD}Summary{Colors.RESET}")
+    print(f"  Tables Queried: {summary.get('total_tables_queried', 0)}")
+    print(f"  Total Queries: {summary.get('total_queries', 0)}")
+    print(f"  Total Data Processed: {summary.get('total_bytes_processed_gb', 0)} GB")
+    print(f"  Most Queried: {summary.get('most_queried_table', 'N/A')}")
+
+    # Table details
+    tables = usage_data.get('tables', [])
+    if top_n:
+        tables = tables[:top_n]
+
+    if tables:
+        print(f"\n{Colors.YELLOW}{Colors.BOLD}Table Usage Details{Colors.RESET}")
+        print("=" * 100)
+
+        for i, table in enumerate(tables, 1):
+            print(f"\n{Colors.BOLD}{i}. {table['table_name']}{Colors.RESET}")
+            print(f"   Queries: {table['query_count']} | Users: {table['unique_users']} | "
+                  f"Data Processed: {table['total_bytes_processed_gb']} GB")
+            print(f"   Avg Query Duration: {table['avg_query_duration_ms']} ms | "
+                  f"Avg Bytes/Query: {table['avg_bytes_per_query_mb']} MB")
+            print(f"   First Query: {table['first_query']} | Last Query: {table['last_query']}")
+
+            if include_users and 'top_users' in table:
+                users = ', '.join(table['top_users'][:5])
+                print(f"   Top Users: {users}")
+
+        print("=" * 100)
+    else:
+        print(f"\n{Colors.YELLOW}No usage data found for this dataset in the specified period.{Colors.RESET}")
+
+
+def format_as_json(usage_data: Dict[str, Any], top_n: Optional[int] = None) -> str:
+    """Format usage data as JSON"""
+    if top_n and 'tables' in usage_data:
+        usage_data = usage_data.copy()
+        usage_data['tables'] = usage_data['tables'][:top_n]
+    return json.dumps(usage_data, indent=2)
+
+
+def format_as_csv(usage_data: Dict[str, Any], top_n: Optional[int] = None) -> str:
+    """Format usage data as CSV"""
+    import csv
+    from io import StringIO
+
+    output = StringIO()
+    writer = csv.writer(output)
+
+    # Write header
+    writer.writerow([
+        'Table Name', 'Query Count', 'Unique Users', 'Total GB Processed',
+        'Avg MB/Query', 'Avg Duration (ms)', 'First Query', 'Last Query'
+    ])
+
+    # Write table rows
+    tables = usage_data.get('tables', [])
+    if top_n:
+        tables = tables[:top_n]
+
+    for table in tables:
+        writer.writerow([
+            table['table_name'],
+            table['query_count'],
+            table['unique_users'],
+            table['total_bytes_processed_gb'],
+            table['avg_bytes_per_query_mb'],
+            table['avg_query_duration_ms'],
+            table['first_query'],
+            table['last_query']
+        ])
+
+    return output.getvalue()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Track BigQuery table usage for BI dashboard dependencies",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("dataset_id", help="Dataset ID to analyze (project.dataset)")
+    parser.add_argument("--days", type=int, default=7,
+                       help="Number of days to look back (default: 7)")
+    parser.add_argument("--min-queries", type=int, default=1,
+                       help="Minimum queries to include table (default: 1)")
+    parser.add_argument("--format", choices=["text", "json", "csv"], default="text",
+                       help="Output format (default: text)")
+    parser.add_argument("--output", help="Output file path (default: stdout)")
+    parser.add_argument("--include-users", action="store_true",
+                       help="Include user query patterns")
+    parser.add_argument("--top", type=int, help="Show top N most queried tables")
+
+    args = parser.parse_args()
+
+    # Validate dataset_id format
+    if '.' not in args.dataset_id:
+        parser.error("dataset_id must be in format: project.dataset")
+
+    # Initialize BigQuery client
+    client = bigquery.Client()
+
+    # Analyze usage
+    usage_data = analyze_table_usage(client, args.dataset_id, args.days, args.include_users)
+
+    # Filter by minimum queries
+    if args.min_queries > 1:
+        usage_data['tables'] = [
+            t for t in usage_data['tables']
+            if t['query_count'] >= args.min_queries
+        ]
+
+    # Format output
+    if args.format == "json":
+        output = format_as_json(usage_data, args.top)
+    elif args.format == "csv":
+        output = format_as_csv(usage_data, args.top)
+    else:  # text
+        if args.output:
+            print(f"{Colors.RED}Text format does not support --output. Use json or csv format.{Colors.RESET}",
+                  file=sys.stderr)
+            sys.exit(1)
+        print_text_report(usage_data, args.top, args.include_users)
+        return
+
+    # Write output
+    if args.output:
+        with open(args.output, 'w') as f:
+            f.write(output)
+        print(f"\n{Colors.GREEN}✓ Usage report exported to {args.output}{Colors.RESET}", file=sys.stderr)
+    else:
+        print(output)
+
+
+if __name__ == "__main__":
+    main()

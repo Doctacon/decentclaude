@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+"""
+tableau-export - Generate Tableau Data Source (TDS) files for BigQuery tables
+
+Usage:
+  tableau-export <table_id> [options]
+  tableau-export --dataset=<dataset> [options]
+
+Arguments:
+  table_id    Table ID to export (format: project.dataset.table)
+
+Options:
+  --dataset=<dataset>      Export all tables in a dataset (format: project.dataset)
+  --output-dir=<path>      Output directory for TDS files (default: ./tableau)
+  --project-id=<id>        GCP project ID for connection (default: from table_id)
+  --connection-name=<name> Connection name in Tableau (default: BigQuery)
+  --help, -h               Show this help message
+
+Examples:
+  tableau-export project.dataset.fct_orders --output-dir=./datasources
+  tableau-export --dataset=project.analytics
+  tableau-export project.dataset.dim_customers --connection-name="Production BQ"
+"""
+
+import sys
+import os
+import argparse
+from typing import Dict, List, Optional
+from google.cloud import bigquery
+from pathlib import Path
+import xml.etree.ElementTree as ET
+from xml.dom import minidom
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def bq_type_to_tableau_type(bq_type: str) -> str:
+    """
+    Map BigQuery data types to Tableau data types.
+
+    Args:
+        bq_type: BigQuery field type
+
+    Returns:
+        Tableau data type
+    """
+    type_mapping = {
+        'STRING': 'string',
+        'BYTES': 'string',
+        'INTEGER': 'integer',
+        'INT64': 'integer',
+        'FLOAT': 'real',
+        'FLOAT64': 'real',
+        'NUMERIC': 'real',
+        'BIGNUMERIC': 'real',
+        'BOOLEAN': 'boolean',
+        'BOOL': 'boolean',
+        'TIMESTAMP': 'datetime',
+        'DATE': 'date',
+        'TIME': 'datetime',
+        'DATETIME': 'datetime',
+        'GEOGRAPHY': 'string',
+        'RECORD': 'string',
+        'STRUCT': 'string',
+    }
+
+    return type_mapping.get(bq_type.upper(), 'string')
+
+
+def get_tableau_role(field: bigquery.SchemaField) -> str:
+    """
+    Determine the Tableau field role (dimension or measure).
+
+    Args:
+        field: BigQuery schema field
+
+    Returns:
+        Tableau field role
+    """
+    numeric_types = ['INTEGER', 'INT64', 'FLOAT', 'FLOAT64', 'NUMERIC', 'BIGNUMERIC']
+
+    # Numeric types are typically measures unless they're IDs
+    if field.field_type in numeric_types:
+        field_name_lower = field.name.lower()
+        if field_name_lower.endswith('_id') or field_name_lower == 'id':
+            return 'dimension'
+        return 'measure'
+
+    return 'dimension'
+
+
+def prettify_xml(elem: ET.Element) -> str:
+    """
+    Return a pretty-printed XML string for the Element.
+
+    Args:
+        elem: XML Element
+
+    Returns:
+        Formatted XML string
+    """
+    rough_string = ET.tostring(elem, encoding='unicode')
+    reparsed = minidom.parseString(rough_string)
+    return reparsed.toprettyxml(indent="  ")
+
+
+def generate_tableau_datasource(table: bigquery.Table, project_id: str,
+                                connection_name: str = "BigQuery") -> str:
+    """
+    Generate a Tableau Data Source (TDS) XML for a BigQuery table.
+
+    Args:
+        table: BigQuery table object
+        project_id: GCP project ID
+        connection_name: Tableau connection name
+
+    Returns:
+        TDS XML as string
+    """
+    table_ref = table.reference
+    full_table_name = f"{table_ref.project}.{table_ref.dataset_id}.{table_ref.table_id}"
+
+    # Create root datasource element
+    datasource = ET.Element('datasource')
+    datasource.set('inline', 'true')
+    datasource.set('name', table_ref.table_id)
+    datasource.set('version', '18.1')
+
+    # Add connection
+    connection = ET.SubElement(datasource, 'connection')
+    connection.set('class', 'bigquery')
+    connection.set('dbname', project_id)
+    connection.set('odbc-connect-string-extras', '')
+    connection.set('schema', table_ref.dataset_id)
+    connection.set('tablename', table_ref.table_id)
+    connection.set('username', 'oauth')
+
+    # Add named connection
+    named_connections = ET.SubElement(connection, 'named-connections')
+    named_connection = ET.SubElement(named_connections, 'named-connection')
+    named_connection.set('caption', connection_name)
+    named_connection.set('name', 'bigquery')
+
+    inner_connection = ET.SubElement(named_connection, 'connection')
+    inner_connection.set('class', 'bigquery')
+    inner_connection.set('dbname', project_id)
+    inner_connection.set('odbc-connect-string-extras', '')
+    inner_connection.set('schema', table_ref.dataset_id)
+    inner_connection.set('tablename', table_ref.table_id)
+    inner_connection.set('username', 'oauth')
+
+    # Add relation
+    relation = ET.SubElement(connection, 'relation')
+    relation.set('name', table_ref.table_id)
+    relation.set('table', f'[{table_ref.dataset_id}].[{table_ref.table_id}]')
+    relation.set('type', 'table')
+
+    # Add metadata records for each column
+    metadata_records = ET.SubElement(connection, 'metadata-records')
+
+    for field in table.schema:
+        metadata_record = ET.SubElement(metadata_records, 'metadata-record')
+        metadata_record.set('class', 'column')
+
+        # Column name
+        local_name = ET.SubElement(metadata_record, 'local-name')
+        local_name.text = f'[{field.name}]'
+
+        # Remote name
+        remote_name = ET.SubElement(metadata_record, 'remote-name')
+        remote_name.text = field.name
+
+        # Local type
+        local_type = ET.SubElement(metadata_record, 'local-type')
+        local_type.text = bq_type_to_tableau_type(field.field_type)
+
+        # Description if available
+        if field.description:
+            description = ET.SubElement(metadata_record, 'description')
+            description.text = field.description
+
+    # Add columns section
+    columns_elem = ET.SubElement(datasource, 'column')
+    columns_elem.set('name', '[Number of Records]')
+    columns_elem.set('role', 'measure')
+    columns_elem.set('type', 'quantitative')
+    columns_elem.set('user:auto-column', 'numrec')
+
+    # Add calculation for count
+    calculation = ET.SubElement(columns_elem, 'calculation')
+    calculation.set('class', 'tableau')
+    calculation.set('formula', '1')
+
+    # Add individual columns with metadata
+    for field in table.schema:
+        column = ET.SubElement(datasource, 'column')
+        column.set('name', f'[{field.name}]')
+        column.set('role', get_tableau_role(field))
+        column.set('datatype', bq_type_to_tableau_type(field.field_type))
+
+        if field.description:
+            column.set('caption', field.description)
+
+    # Add layout section
+    layout = ET.SubElement(datasource, 'layout')
+    layout.set('dim-ordering', 'alphabetic')
+    layout.set('measure-ordering', 'alphabetic')
+    layout.set('show-structure', 'true')
+
+    # Generate pretty XML
+    return prettify_xml(datasource)
+
+
+def export_table_to_tableau(client: bigquery.Client, table_id: str, output_dir: Path,
+                            project_id: str, connection_name: str = "BigQuery") -> bool:
+    """
+    Export a single BigQuery table to a Tableau TDS file.
+
+    Args:
+        client: BigQuery client
+        table_id: Full table ID (project.dataset.table)
+        output_dir: Output directory for TDS file
+        project_id: GCP project ID
+        connection_name: Tableau connection name
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        table = client.get_table(table_id)
+
+        # Generate TDS
+        tds_xml = generate_tableau_datasource(table, project_id, connection_name)
+
+        # Create output directory if it doesn't exist
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write to file
+        table_name = table.reference.table_id
+        output_file = output_dir / f"{table_name}.tds"
+
+        with open(output_file, 'w') as f:
+            f.write(tds_xml)
+
+        print(f"{Colors.GREEN}✓{Colors.RESET} Exported {Colors.CYAN}{table_name}{Colors.RESET} to {output_file}")
+        return True
+
+    except Exception as e:
+        print(f"{Colors.RED}✗ Error exporting {table_id}: {str(e)}{Colors.RESET}", file=sys.stderr)
+        return False
+
+
+def export_dataset_to_tableau(client: bigquery.Client, dataset_id: str, output_dir: Path,
+                              project_id: str, connection_name: str = "BigQuery"):
+    """
+    Export all tables in a BigQuery dataset to Tableau TDS files.
+
+    Args:
+        client: BigQuery client
+        dataset_id: Full dataset ID (project.dataset)
+        output_dir: Output directory for TDS files
+        project_id: GCP project ID
+        connection_name: Tableau connection name
+    """
+    try:
+        # List all tables in the dataset
+        tables = list(client.list_tables(dataset_id))
+
+        if not tables:
+            print(f"{Colors.YELLOW}⚠ No tables found in dataset {dataset_id}{Colors.RESET}")
+            return
+
+        print(f"\n{Colors.CYAN}{Colors.BOLD}Exporting {len(tables)} tables from {dataset_id}{Colors.RESET}")
+        print("=" * 80)
+
+        success_count = 0
+        for table_ref in tables:
+            table_id = f"{table_ref.project}.{table_ref.dataset_id}.{table_ref.table_id}"
+            if export_table_to_tableau(client, table_id, output_dir, project_id, connection_name):
+                success_count += 1
+
+        print("=" * 80)
+        print(f"\n{Colors.GREEN}{Colors.BOLD}Summary{Colors.RESET}")
+        print(f"  Exported: {success_count}/{len(tables)} tables")
+        print(f"  Output directory: {output_dir.absolute()}")
+
+        if success_count < len(tables):
+            sys.exit(1)
+
+    except Exception as e:
+        print(f"{Colors.RED}Error listing tables in dataset {dataset_id}: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate Tableau Data Source (TDS) files for BigQuery tables",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("table_id", nargs='?', help="Table ID to export (project.dataset.table)")
+    parser.add_argument("--dataset", help="Export all tables in a dataset (project.dataset)")
+    parser.add_argument("--output-dir", default="./tableau", help="Output directory (default: ./tableau)")
+    parser.add_argument("--project-id", help="GCP project ID (default: from table_id)")
+    parser.add_argument("--connection-name", default="BigQuery", help="Tableau connection name")
+
+    args = parser.parse_args()
+
+    # Validate arguments
+    if not args.table_id and not args.dataset:
+        parser.error("Either table_id or --dataset must be provided")
+
+    if args.table_id and args.dataset:
+        parser.error("Cannot specify both table_id and --dataset")
+
+    # Determine project ID
+    if args.project_id:
+        project_id = args.project_id
+    elif args.table_id:
+        project_id = args.table_id.split('.')[0]
+    elif args.dataset:
+        project_id = args.dataset.split('.')[0]
+    else:
+        parser.error("Cannot determine project ID. Please specify --project-id")
+
+    # Initialize BigQuery client
+    client = bigquery.Client()
+    output_dir = Path(args.output_dir)
+
+    # Export based on mode
+    if args.dataset:
+        export_dataset_to_tableau(client, args.dataset, output_dir, project_id, args.connection_name)
+    else:
+        success = export_table_to_tableau(client, args.table_id, output_dir, project_id, args.connection_name)
+        sys.exit(0 if success else 1)
+
+
+if __name__ == "__main__":
+    main()
