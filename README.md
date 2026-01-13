@@ -41,7 +41,17 @@ See [Data Utilities](#data-utilities) for detailed usage.
 
 ## Quick Start
 
-### 1. Install Dependencies
+**New users: Run the setup wizard for guided installation!**
+
+```bash
+./bin/setup-wizard.sh
+```
+
+The wizard will install dependencies, configure tools, and test your setup in 2-3 minutes.
+
+**See [QUICKSTART.md](QUICKSTART.md) for a complete 5-minute getting started guide.**
+
+### Manual Installation
 
 ```bash
 # Core dependencies
@@ -103,8 +113,21 @@ Run the [hook-name] hook
 
 ## Documentation
 
-- [Hooks Documentation](.claude/HOOKS.md) - Detailed hook descriptions and usage
+### Getting Started
+- **[QUICKSTART.md](QUICKSTART.md)** - 5-minute setup and first workflows
+- **[Setup Wizard](bin/setup-wizard.sh)** - Interactive installation script
+- **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)** - Common issues and solutions
+
+### Tutorials and Guides
+- **[Common Workflows Tutorial](docs/WORKFLOWS_TUTORIAL.md)** - Step-by-step daily workflows
+- **[Video Walkthrough Script](docs/VIDEO_WALKTHROUGH.md)** - Script for creating video tutorials
+- **[Playbooks](playbooks.md)** - Comprehensive workflow patterns
+- **[Best Practices](data-engineering-patterns.md)** - Data engineering patterns and anti-patterns
+
+### Technical Reference
+- [Hooks Documentation](docs/worktrees/HOOKS.md) - Detailed hook descriptions and usage
 - [Data Quality Script](scripts/data_quality.py) - Extensible quality check framework
+- [Data Testing Patterns](data-testing-patterns.md) - Testing framework patterns
 
 ## Example Usage
 
