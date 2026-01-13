@@ -58,6 +58,17 @@ AI-assisted debugging and troubleshooting tools:
 
 See [Debug Utilities](#debug-utilities) for detailed usage.
 
+### Incident Response Utilities
+
+Comprehensive tools for incident management and response automation:
+
+- **incident-report**: Generate and manage structured incident reports
+- **incident-timeline**: Build and track incident timelines automatically
+- **incident-postmortem**: Generate post-mortem reports with lessons learned
+- **runbook-tracker**: Track runbook execution steps during incidents
+
+See [Incident Response Tools](#incident-response-tools) for detailed usage.
+
 ### Automated Validation Hooks
 
 - **SQL Syntax Validation**: Automatically validate SQL before execution or file writes
@@ -1158,6 +1169,225 @@ sudo ln -s /path/to/decentclaude/bin/debug-utils/ai-debug /usr/local/bin/
 - anthropic library: `pip install anthropic`
 - ANTHROPIC_API_KEY environment variable set
 
+## Incident Response Tools
+
+Comprehensive incident management automation tools to reduce response time and improve post-incident learning.
+
+### incident-report
+
+Generate and manage structured incident reports with automatic tracking.
+
+**Usage:**
+```bash
+bin/incident-response/incident-report create [options]
+bin/incident-response/incident-report update <incident_id> [options]
+bin/incident-response/incident-report show <incident_id> [options]
+bin/incident-response/incident-report list [options]
+```
+
+**Options:**
+- `--severity=<level>` - Incident severity: P0, P1, P2, P3 (default: P2)
+- `--title=<title>` - Incident title
+- `--symptoms=<text>` - Description of symptoms
+- `--impact=<text>` - Business impact description
+- `--status=<status>` - Incident status: investigating, mitigating, resolved (default: investigating)
+- `--format=<format>` - Output format: text, markdown, json (default: markdown)
+
+**Examples:**
+```bash
+# Create new incident
+bin/incident-response/incident-report create --severity=P1 --title="Dashboard data missing" \
+  --symptoms="Users report missing data in sales dashboard" \
+  --impact="Sales team cannot access Q4 metrics"
+
+# Update incident status
+bin/incident-response/incident-report update INC-001 --status=resolved
+
+# Show incident report
+bin/incident-response/incident-report show INC-001
+
+# List all incidents
+bin/incident-response/incident-report list
+```
+
+**Features:**
+- Automatic incident ID generation
+- Structured severity levels (P0-P3)
+- Timeline tracking
+- Action item management
+- Multiple output formats
+
+### incident-timeline
+
+Build and reconstruct incident timelines automatically from git commits and manual events.
+
+**Usage:**
+```bash
+bin/incident-response/incident-timeline add <incident_id> <event> [options]
+bin/incident-response/incident-timeline rebuild <incident_id> [options]
+bin/incident-response/incident-timeline show <incident_id> [options]
+bin/incident-response/incident-timeline auto-detect [options]
+```
+
+**Options:**
+- `--timestamp=<time>` - Event timestamp (ISO format, default: now)
+- `--source=<source>` - Source of event: manual, git, log, alert
+- `--since=<time>` - Start time for auto-detection
+- `--format=<format>` - Output format: text, markdown, mermaid (default: text)
+
+**Examples:**
+```bash
+# Add event to timeline
+bin/incident-response/incident-timeline add INC-001 "Started investigation"
+
+# Rebuild timeline from git commits
+bin/incident-response/incident-timeline rebuild INC-001 --since="2024-01-15 10:00"
+
+# Show timeline as Mermaid diagram
+bin/incident-response/incident-timeline show INC-001 --format=mermaid
+
+# Auto-detect events from git
+bin/incident-response/incident-timeline auto-detect --since="1 hour ago"
+```
+
+**Features:**
+- Automatic timeline reconstruction from git
+- Manual event tracking
+- Multiple visualization formats
+- Event source attribution (git, manual, log, alert)
+
+### incident-postmortem
+
+Generate comprehensive post-mortem reports with lessons learned.
+
+**Usage:**
+```bash
+bin/incident-response/incident-postmortem generate <incident_id> [options]
+bin/incident-response/incident-postmortem template [options]
+```
+
+**Options:**
+- `--format=<format>` - Output format: markdown, html (default: markdown)
+- `--output=<file>` - Output file (default: stdout)
+- `--include-timeline` - Include full timeline in post-mortem
+
+**Examples:**
+```bash
+# Generate post-mortem
+bin/incident-response/incident-postmortem generate INC-001
+
+# Generate with full timeline
+bin/incident-response/incident-postmortem generate INC-001 --include-timeline
+
+# Save to file
+bin/incident-response/incident-postmortem generate INC-001 --output=postmortem-001.md
+
+# Get blank template
+bin/incident-response/incident-postmortem template
+```
+
+**Features:**
+- Structured post-mortem template
+- Automatic duration calculation
+- Timeline integration
+- Action item tracking
+- Lessons learned sections
+- HTML and Markdown output
+
+### runbook-tracker
+
+Track runbook execution steps during incident response.
+
+**Usage:**
+```bash
+bin/incident-response/runbook-tracker start <runbook_name> [options]
+bin/incident-response/runbook-tracker step <session_id> <step_number> [options]
+bin/incident-response/runbook-tracker status <session_id> [options]
+bin/incident-response/runbook-tracker complete <session_id> [options]
+```
+
+**Options:**
+- `--incident-id=<id>` - Associated incident ID
+- `--status=<status>` - Step status: pending, in-progress, completed, skipped
+- `--notes=<text>` - Notes for this step
+
+**Examples:**
+```bash
+# Start tracking a runbook
+bin/incident-response/runbook-tracker start "Data Pipeline Failure" --incident-id=INC-001
+
+# Mark step as completed
+bin/incident-response/runbook-tracker step RBOOK-001 1 --status=completed --notes="Checked logs"
+
+# Show progress with visual progress bar
+bin/incident-response/runbook-tracker status RBOOK-001
+
+# Complete runbook
+bin/incident-response/runbook-tracker complete RBOOK-001
+```
+
+**Features:**
+- Visual progress tracking
+- Step-by-step notes
+- Progress percentage calculation
+- Session management
+- Incident association
+
+### Incident Response Workflow
+
+**Complete workflow example:**
+
+```bash
+# 1. Create incident
+incident-report create --severity=P1 --title="Pipeline failure" \
+  --symptoms="Daily sales pipeline failed" \
+  --impact="Sales dashboard not updating"
+
+# 2. Start runbook tracking
+runbook-tracker start "Pipeline Failure Response" --incident-id=INC-20260112123456
+
+# 3. Track runbook steps
+runbook-tracker step RBOOK-20260112123457 1 --status=completed --notes="Checked pipeline logs"
+runbook-tracker step RBOOK-20260112123457 2 --status=completed --notes="Identified schema change"
+
+# 4. Add timeline events
+incident-timeline add INC-20260112123456 "Pipeline failure detected"
+incident-timeline add INC-20260112123456 "Root cause: upstream schema change identified"
+incident-timeline add INC-20260112123456 "Fix deployed, pipeline restarted"
+
+# 5. Update incident
+incident-report update INC-20260112123456 --status=resolved \
+  --resolution="Updated schema mapping, reran pipeline"
+
+# 6. Generate post-mortem
+incident-postmortem generate INC-20260112123456 --include-timeline \
+  --output=postmortems/pipeline-failure-2026-01-12.md
+```
+
+### Installation
+
+Add to your PATH:
+
+```bash
+# Add to ~/.bashrc or ~/.zshrc
+export PATH="$PATH:/path/to/decentclaude/bin/incident-response"
+```
+
+Or create symlinks:
+
+```bash
+sudo ln -s /path/to/decentclaude/bin/incident-response/incident-report /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/incident-response/incident-timeline /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/incident-response/incident-postmortem /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/incident-response/runbook-tracker /usr/local/bin/
+```
+
+### Requirements
+
+All incident response tools require:
+- Python 3.7+
+- No external dependencies (uses standard library only)
+
 ## Customization
 
 ### Adding Custom Checks
@@ -1229,6 +1459,11 @@ chmod +x .git/hooks/pre-commit
 │   │   └── ai-generate        # AI-powered code generation
 │   ├── debug-utils/           # AI-assisted debugging utilities
 │   │   └── ai-debug           # Intelligent troubleshooting tool
+│   ├── incident-response/     # Incident management automation
+│   │   ├── incident-report    # Generate incident reports
+│   │   ├── incident-timeline  # Build incident timelines
+│   │   ├── incident-postmortem # Generate post-mortems
+│   │   └── runbook-tracker    # Track runbook execution
 │   └── worktree-utils/        # Git worktree utilities
 ├── kb/
 │   ├── storage.py             # Knowledge base storage backend

@@ -1,0 +1,440 @@
+#!/usr/bin/env python3
+"""
+incident-report - Generate and manage incident reports
+
+Usage:
+  incident-report create [options]
+  incident-report update <incident_id> [options]
+  incident-report show <incident_id> [options]
+  incident-report list [options]
+
+Commands:
+  create    Create a new incident report
+  update    Update an existing incident report
+  show      Display an incident report
+  list      List all incident reports
+
+Options:
+  --severity=<level>     Incident severity: P0, P1, P2, P3 (default: P2)
+  --title=<title>        Incident title
+  --symptoms=<text>      Description of symptoms
+  --impact=<text>        Business impact description
+  --status=<status>      Incident status: investigating, mitigating, resolved (default: investigating)
+  --assignee=<name>      Person assigned to incident
+  --reporter=<name>      Person who reported incident
+  --format=<format>      Output format: text, markdown, json (default: markdown)
+  --dir=<path>           Directory for incident reports (default: ./incidents)
+  --help, -h             Show this help message
+
+Examples:
+  # Create new incident
+  incident-report create --severity=P1 --title="Dashboard data missing"
+
+  # Update incident status
+  incident-report update INC-001 --status=resolved
+
+  # Show incident report
+  incident-report show INC-001
+
+  # List all incidents
+  incident-report list
+"""
+
+import sys
+import os
+import json
+import argparse
+from datetime import datetime
+from pathlib import Path
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+class IncidentReport:
+    """Represents an incident report"""
+
+    def __init__(self, incident_id: str = None, **kwargs):
+        self.incident_id = incident_id or self._generate_id()
+        self.severity = kwargs.get('severity', 'P2')
+        self.title = kwargs.get('title', 'Untitled Incident')
+        self.status = kwargs.get('status', 'investigating')
+        self.reporter = kwargs.get('reporter', os.environ.get('USER', 'unknown'))
+        self.assignee = kwargs.get('assignee', self.reporter)
+        self.symptoms = kwargs.get('symptoms', '')
+        self.impact = kwargs.get('impact', '')
+        self.created_at = kwargs.get('created_at', datetime.utcnow().isoformat())
+        self.updated_at = datetime.utcnow().isoformat()
+        self.timeline = kwargs.get('timeline', [])
+        self.root_cause = kwargs.get('root_cause', '')
+        self.resolution = kwargs.get('resolution', '')
+        self.action_items = kwargs.get('action_items', [])
+
+    def _generate_id(self) -> str:
+        """Generate unique incident ID"""
+        timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')
+        return f"INC-{timestamp}"
+
+    def add_timeline_event(self, event: str):
+        """Add an event to the incident timeline"""
+        timestamp = datetime.utcnow().isoformat()
+        self.timeline.append({
+            'timestamp': timestamp,
+            'event': event
+        })
+        self.updated_at = timestamp
+
+    def add_action_item(self, action: str, owner: str = None):
+        """Add an action item"""
+        self.action_items.append({
+            'action': action,
+            'owner': owner or self.assignee,
+            'status': 'pending',
+            'created_at': datetime.utcnow().isoformat()
+        })
+        self.updated_at = datetime.utcnow().isoformat()
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary"""
+        return {
+            'incident_id': self.incident_id,
+            'severity': self.severity,
+            'title': self.title,
+            'status': self.status,
+            'reporter': self.reporter,
+            'assignee': self.assignee,
+            'symptoms': self.symptoms,
+            'impact': self.impact,
+            'created_at': self.created_at,
+            'updated_at': self.updated_at,
+            'timeline': self.timeline,
+            'root_cause': self.root_cause,
+            'resolution': self.resolution,
+            'action_items': self.action_items
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        """Create from dictionary"""
+        return cls(**data)
+
+    def to_markdown(self) -> str:
+        """Convert to Markdown format"""
+        severity_colors = {
+            'P0': '🔴',
+            'P1': '🟠',
+            'P2': '🟡',
+            'P3': '🟢'
+        }
+
+        status_icons = {
+            'investigating': '🔍',
+            'mitigating': '🔧',
+            'resolved': '✅',
+            'closed': '📁'
+        }
+
+        md = f"""# {severity_colors.get(self.severity, '')} {self.incident_id}: {self.title}
+
+**Severity**: {self.severity}
+**Status**: {status_icons.get(self.status, '')} {self.status.title()}
+**Created**: {self.created_at}
+**Updated**: {self.updated_at}
+**Reporter**: {self.reporter}
+**Assignee**: {self.assignee}
+
+---
+
+## Symptoms
+
+{self.symptoms or '_No symptoms documented_'}
+
+## Impact
+
+{self.impact or '_No impact assessment_'}
+
+## Timeline
+
+"""
+
+        if self.timeline:
+            for event in self.timeline:
+                timestamp = event['timestamp']
+                md += f"- **{timestamp}**: {event['event']}\n"
+        else:
+            md += "_No timeline events recorded_\n"
+
+        md += "\n## Root Cause\n\n"
+        md += f"{self.root_cause or '_Under investigation_'}\n"
+
+        md += "\n## Resolution\n\n"
+        md += f"{self.resolution or '_Pending resolution_'}\n"
+
+        if self.action_items:
+            md += "\n## Action Items\n\n"
+            for i, item in enumerate(self.action_items, 1):
+                status_icon = '✅' if item['status'] == 'completed' else '⬜'
+                md += f"{i}. {status_icon} {item['action']} (Owner: {item['owner']}, Status: {item['status']})\n"
+
+        return md
+
+    def to_json(self) -> str:
+        """Convert to JSON format"""
+        return json.dumps(self.to_dict(), indent=2)
+
+
+class IncidentManager:
+    """Manages incident reports"""
+
+    def __init__(self, reports_dir: str = './incidents'):
+        self.reports_dir = Path(reports_dir)
+        self.reports_dir.mkdir(parents=True, exist_ok=True)
+
+    def _get_incident_path(self, incident_id: str) -> Path:
+        """Get path to incident file"""
+        return self.reports_dir / f"{incident_id}.json"
+
+    def create_incident(self, **kwargs) -> IncidentReport:
+        """Create a new incident report"""
+        incident = IncidentReport(**kwargs)
+
+        # Add initial timeline event
+        incident.add_timeline_event(f"Incident created by {incident.reporter}")
+
+        # Save to disk
+        self.save_incident(incident)
+
+        return incident
+
+    def load_incident(self, incident_id: str) -> IncidentReport:
+        """Load an incident report from disk"""
+        path = self._get_incident_path(incident_id)
+
+        if not path.exists():
+            raise FileNotFoundError(f"Incident {incident_id} not found")
+
+        with open(path, 'r') as f:
+            data = json.load(f)
+
+        return IncidentReport.from_dict(data)
+
+    def save_incident(self, incident: IncidentReport):
+        """Save an incident report to disk"""
+        path = self._get_incident_path(incident.incident_id)
+
+        with open(path, 'w') as f:
+            json.dump(incident.to_dict(), f, indent=2)
+
+    def list_incidents(self) -> list:
+        """List all incidents"""
+        incidents = []
+
+        for path in self.reports_dir.glob('INC-*.json'):
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                    incidents.append(IncidentReport.from_dict(data))
+            except Exception:
+                continue
+
+        # Sort by created_at descending
+        incidents.sort(key=lambda x: x.created_at, reverse=True)
+
+        return incidents
+
+    def update_incident(self, incident_id: str, **kwargs) -> IncidentReport:
+        """Update an existing incident"""
+        incident = self.load_incident(incident_id)
+
+        # Update fields
+        for key, value in kwargs.items():
+            if hasattr(incident, key) and value is not None:
+                setattr(incident, key, value)
+
+        incident.updated_at = datetime.utcnow().isoformat()
+
+        # Save changes
+        self.save_incident(incident)
+
+        return incident
+
+
+def cmd_create(args):
+    """Create a new incident"""
+    manager = IncidentManager(args.dir)
+
+    incident = manager.create_incident(
+        severity=args.severity,
+        title=args.title,
+        symptoms=args.symptoms or '',
+        impact=args.impact or '',
+        reporter=args.reporter,
+        assignee=args.assignee
+    )
+
+    print(f"{Colors.GREEN}Created incident: {incident.incident_id}{Colors.RESET}")
+    print(f"Severity: {incident.severity}")
+    print(f"Title: {incident.title}")
+    print(f"Saved to: {manager._get_incident_path(incident.incident_id)}")
+
+    if args.format == 'markdown':
+        print(f"\n{Colors.CYAN}Incident Report:{Colors.RESET}\n")
+        print(incident.to_markdown())
+    elif args.format == 'json':
+        print(incident.to_json())
+
+
+def cmd_update(args):
+    """Update an existing incident"""
+    manager = IncidentManager(args.dir)
+
+    update_fields = {}
+    if args.status:
+        update_fields['status'] = args.status
+    if args.severity:
+        update_fields['severity'] = args.severity
+    if args.title:
+        update_fields['title'] = args.title
+    if args.symptoms:
+        update_fields['symptoms'] = args.symptoms
+    if args.impact:
+        update_fields['impact'] = args.impact
+    if args.assignee:
+        update_fields['assignee'] = args.assignee
+
+    incident = manager.update_incident(args.incident_id, **update_fields)
+
+    print(f"{Colors.GREEN}Updated incident: {incident.incident_id}{Colors.RESET}")
+    print(f"Status: {incident.status}")
+    print(f"Updated: {incident.updated_at}")
+
+
+def cmd_show(args):
+    """Show an incident report"""
+    manager = IncidentManager(args.dir)
+
+    try:
+        incident = manager.load_incident(args.incident_id)
+
+        if args.format == 'markdown':
+            print(incident.to_markdown())
+        elif args.format == 'json':
+            print(incident.to_json())
+        else:
+            # Text format
+            print(f"\n{Colors.CYAN}{Colors.BOLD}Incident: {incident.incident_id}{Colors.RESET}")
+            print(f"Severity: {incident.severity}")
+            print(f"Status: {incident.status}")
+            print(f"Title: {incident.title}")
+            print(f"Reporter: {incident.reporter}")
+            print(f"Assignee: {incident.assignee}")
+            print(f"Created: {incident.created_at}")
+            print(f"Updated: {incident.updated_at}")
+
+    except FileNotFoundError as e:
+        print(f"{Colors.RED}Error: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_list(args):
+    """List all incidents"""
+    manager = IncidentManager(args.dir)
+
+    incidents = manager.list_incidents()
+
+    if not incidents:
+        print(f"{Colors.YELLOW}No incidents found{Colors.RESET}")
+        return
+
+    print(f"\n{Colors.CYAN}{Colors.BOLD}Incidents ({len(incidents)} total){Colors.RESET}\n")
+
+    for incident in incidents:
+        severity_color = {
+            'P0': Colors.RED,
+            'P1': Colors.YELLOW,
+            'P2': Colors.BLUE,
+            'P3': Colors.GREEN
+        }.get(incident.severity, Colors.RESET)
+
+        status_icon = {
+            'investigating': '🔍',
+            'mitigating': '🔧',
+            'resolved': '✅',
+            'closed': '📁'
+        }.get(incident.status, '')
+
+        print(f"{severity_color}{incident.severity}{Colors.RESET} "
+              f"{status_icon} {Colors.BOLD}{incident.incident_id}{Colors.RESET}: {incident.title}")
+        print(f"   Status: {incident.status} | Created: {incident.created_at}")
+        print()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate and manage incident reports",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+
+    subparsers = parser.add_subparsers(dest='command', help='Commands')
+
+    # Create command
+    create_parser = subparsers.add_parser('create', help='Create a new incident')
+    create_parser.add_argument('--severity', choices=['P0', 'P1', 'P2', 'P3'], default='P2')
+    create_parser.add_argument('--title', required=True)
+    create_parser.add_argument('--symptoms')
+    create_parser.add_argument('--impact')
+    create_parser.add_argument('--reporter')
+    create_parser.add_argument('--assignee')
+    create_parser.add_argument('--format', choices=['text', 'markdown', 'json'], default='markdown')
+    create_parser.add_argument('--dir', default='./incidents')
+
+    # Update command
+    update_parser = subparsers.add_parser('update', help='Update an existing incident')
+    update_parser.add_argument('incident_id')
+    update_parser.add_argument('--severity', choices=['P0', 'P1', 'P2', 'P3'])
+    update_parser.add_argument('--title')
+    update_parser.add_argument('--status', choices=['investigating', 'mitigating', 'resolved', 'closed'])
+    update_parser.add_argument('--symptoms')
+    update_parser.add_argument('--impact')
+    update_parser.add_argument('--assignee')
+    update_parser.add_argument('--dir', default='./incidents')
+
+    # Show command
+    show_parser = subparsers.add_parser('show', help='Show an incident report')
+    show_parser.add_argument('incident_id')
+    show_parser.add_argument('--format', choices=['text', 'markdown', 'json'], default='markdown')
+    show_parser.add_argument('--dir', default='./incidents')
+
+    # List command
+    list_parser = subparsers.add_parser('list', help='List all incidents')
+    list_parser.add_argument('--dir', default='./incidents')
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    # Execute command
+    if args.command == 'create':
+        cmd_create(args)
+    elif args.command == 'update':
+        cmd_update(args)
+    elif args.command == 'show':
+        cmd_show(args)
+    elif args.command == 'list':
+        cmd_list(args)
+
+
+if __name__ == "__main__":
+    main()

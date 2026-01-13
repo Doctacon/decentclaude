@@ -1,0 +1,415 @@
+#!/usr/bin/env python3
+"""
+runbook-tracker - Track runbook execution during incidents
+
+Usage:
+  runbook-tracker start <runbook_name> [options]
+  runbook-tracker step <session_id> <step_number> [options]
+  runbook-tracker status <session_id> [options]
+  runbook-tracker complete <session_id> [options]
+
+Commands:
+  start      Start a new runbook execution session
+  step       Mark a step as complete or in-progress
+  status     Show runbook execution status
+  complete   Mark entire runbook as complete
+
+Options:
+  --incident-id=<id>     Associated incident ID
+  --runbook-file=<path>  Path to runbook file (Markdown)
+  --notes=<text>         Notes for this step
+  --status=<status>      Step status: pending, in-progress, completed, skipped
+  --format=<format>      Output format: text, markdown, json (default: text)
+  --dir=<path>           Directory for runbook sessions (default: ./runbooks)
+  --help, -h             Show this help message
+
+Examples:
+  # Start tracking a runbook
+  runbook-tracker start "Data Pipeline Failure" --incident-id=INC-001
+
+  # Mark step as completed
+  runbook-tracker step RBOOK-001 1 --status=completed --notes="Checked logs"
+
+  # Show progress
+  runbook-tracker status RBOOK-001
+
+  # Complete runbook
+  runbook-tracker complete RBOOK-001
+"""
+
+import sys
+import os
+import json
+from datetime import datetime
+from pathlib import Path
+import argparse
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+class RunbookSession:
+    """Represents a runbook execution session"""
+
+    def __init__(self, session_id: str = None, runbook_name: str = None, incident_id: str = None):
+        self.session_id = session_id or self._generate_id()
+        self.runbook_name = runbook_name
+        self.incident_id = incident_id
+        self.created_at = datetime.utcnow().isoformat()
+        self.updated_at = self.created_at
+        self.status = 'in-progress'
+        self.steps = []
+        self.notes = []
+
+    def _generate_id(self) -> str:
+        """Generate unique session ID"""
+        timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')
+        return f"RBOOK-{timestamp}"
+
+    def add_step(self, step_number: int, description: str = None, status: str = 'pending'):
+        """Add or update a step"""
+        # Find existing step
+        for step in self.steps:
+            if step['number'] == step_number:
+                step['status'] = status
+                step['updated_at'] = datetime.utcnow().isoformat()
+                if description:
+                    step['description'] = description
+                self.updated_at = datetime.utcnow().isoformat()
+                return step
+
+        # Add new step
+        step = {
+            'number': step_number,
+            'description': description or f'Step {step_number}',
+            'status': status,
+            'created_at': datetime.utcnow().isoformat(),
+            'updated_at': datetime.utcnow().isoformat(),
+            'notes': []
+        }
+        self.steps.append(step)
+        self.steps.sort(key=lambda x: x['number'])
+        self.updated_at = datetime.utcnow().isoformat()
+
+        return step
+
+    def add_step_note(self, step_number: int, note: str):
+        """Add a note to a specific step"""
+        for step in self.steps:
+            if step['number'] == step_number:
+                step['notes'].append({
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'note': note
+                })
+                self.updated_at = datetime.utcnow().isoformat()
+                return
+
+    def get_progress(self) -> dict:
+        """Calculate progress statistics"""
+        if not self.steps:
+            return {'total': 0, 'completed': 0, 'in_progress': 0, 'pending': 0, 'skipped': 0, 'percentage': 0}
+
+        completed = len([s for s in self.steps if s['status'] == 'completed'])
+        in_progress = len([s for s in self.steps if s['status'] == 'in-progress'])
+        pending = len([s for s in self.steps if s['status'] == 'pending'])
+        skipped = len([s for s in self.steps if s['status'] == 'skipped'])
+        total = len(self.steps)
+
+        percentage = int((completed / total) * 100) if total > 0 else 0
+
+        return {
+            'total': total,
+            'completed': completed,
+            'in_progress': in_progress,
+            'pending': pending,
+            'skipped': skipped,
+            'percentage': percentage
+        }
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary"""
+        return {
+            'session_id': self.session_id,
+            'runbook_name': self.runbook_name,
+            'incident_id': self.incident_id,
+            'created_at': self.created_at,
+            'updated_at': self.updated_at,
+            'status': self.status,
+            'steps': self.steps,
+            'notes': self.notes
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        """Create from dictionary"""
+        session = cls(
+            session_id=data['session_id'],
+            runbook_name=data['runbook_name'],
+            incident_id=data.get('incident_id')
+        )
+        session.created_at = data['created_at']
+        session.updated_at = data['updated_at']
+        session.status = data['status']
+        session.steps = data.get('steps', [])
+        session.notes = data.get('notes', [])
+        return session
+
+
+class RunbookTracker:
+    """Tracks runbook execution"""
+
+    def __init__(self, sessions_dir: str = './runbooks'):
+        self.sessions_dir = Path(sessions_dir)
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    def _get_session_path(self, session_id: str) -> Path:
+        """Get path to session file"""
+        return self.sessions_dir / f"{session_id}.json"
+
+    def start_session(self, runbook_name: str, incident_id: str = None) -> RunbookSession:
+        """Start a new runbook session"""
+        session = RunbookSession(runbook_name=runbook_name, incident_id=incident_id)
+        self.save_session(session)
+        return session
+
+    def load_session(self, session_id: str) -> RunbookSession:
+        """Load a session from disk"""
+        path = self._get_session_path(session_id)
+
+        if not path.exists():
+            raise FileNotFoundError(f"Session {session_id} not found")
+
+        with open(path, 'r') as f:
+            data = json.load(f)
+
+        return RunbookSession.from_dict(data)
+
+    def save_session(self, session: RunbookSession):
+        """Save a session to disk"""
+        path = self._get_session_path(session.session_id)
+
+        with open(path, 'w') as f:
+            json.dump(session.to_dict(), f, indent=2)
+
+    def update_step(self, session_id: str, step_number: int, status: str, notes: str = None) -> RunbookSession:
+        """Update a step status"""
+        session = self.load_session(session_id)
+
+        session.add_step(step_number, status=status)
+
+        if notes:
+            session.add_step_note(step_number, notes)
+
+        self.save_session(session)
+
+        return session
+
+    def complete_session(self, session_id: str) -> RunbookSession:
+        """Mark session as complete"""
+        session = self.load_session(session_id)
+        session.status = 'completed'
+        session.updated_at = datetime.utcnow().isoformat()
+        self.save_session(session)
+        return session
+
+
+def format_status_text(session: RunbookSession) -> str:
+    """Format session status as text"""
+    progress = session.get_progress()
+
+    output = f"\n{Colors.CYAN}{Colors.BOLD}Runbook Execution Status{Colors.RESET}\n\n"
+    output += f"Session ID: {session.session_id}\n"
+    output += f"Runbook: {session.runbook_name}\n"
+
+    if session.incident_id:
+        output += f"Incident: {session.incident_id}\n"
+
+    output += f"Status: {session.status}\n"
+    output += f"Created: {session.created_at}\n"
+    output += f"Updated: {session.updated_at}\n\n"
+
+    # Progress bar
+    output += f"{Colors.BOLD}Progress: {progress['percentage']}%{Colors.RESET}\n"
+
+    bar_length = 40
+    filled = int((progress['percentage'] / 100) * bar_length)
+    bar = '█' * filled + '░' * (bar_length - filled)
+    output += f"[{bar}]\n\n"
+
+    output += f"Total Steps: {progress['total']}\n"
+    output += f"✅ Completed: {progress['completed']}\n"
+    output += f"🔄 In Progress: {progress['in_progress']}\n"
+    output += f"⬜ Pending: {progress['pending']}\n"
+    output += f"⏭️  Skipped: {progress['skipped']}\n\n"
+
+    if session.steps:
+        output += f"{Colors.BOLD}Steps:{Colors.RESET}\n\n"
+
+        for step in session.steps:
+            status_icon = {
+                'completed': '✅',
+                'in-progress': '🔄',
+                'pending': '⬜',
+                'skipped': '⏭️'
+            }.get(step['status'], '•')
+
+            status_color = {
+                'completed': Colors.GREEN,
+                'in-progress': Colors.YELLOW,
+                'pending': Colors.BLUE,
+                'skipped': Colors.MAGENTA
+            }.get(step['status'], Colors.RESET)
+
+            output += f"{status_icon} {Colors.BOLD}{step['number']}.{Colors.RESET} {step['description']}\n"
+            output += f"   {status_color}Status: {step['status']}{Colors.RESET}\n"
+
+            if step.get('notes'):
+                for note in step['notes']:
+                    output += f"   💬 {note['note']}\n"
+
+            output += "\n"
+
+    return output
+
+
+def cmd_start(args):
+    """Start a new runbook session"""
+    tracker = RunbookTracker(args.dir)
+
+    session = tracker.start_session(
+        args.runbook_name,
+        incident_id=args.incident_id
+    )
+
+    print(f"{Colors.GREEN}Started runbook session: {session.session_id}{Colors.RESET}")
+    print(f"Runbook: {session.runbook_name}")
+
+    if session.incident_id:
+        print(f"Incident: {session.incident_id}")
+
+    print(f"Saved to: {tracker._get_session_path(session.session_id)}")
+
+
+def cmd_step(args):
+    """Update a step"""
+    tracker = RunbookTracker(args.dir)
+
+    try:
+        session = tracker.update_step(
+            args.session_id,
+            args.step_number,
+            args.status or 'completed',
+            notes=args.notes
+        )
+
+        print(f"{Colors.GREEN}Updated step {args.step_number} in {args.session_id}{Colors.RESET}")
+        print(f"Status: {args.status or 'completed'}")
+
+        if args.notes:
+            print(f"Notes: {args.notes}")
+
+        # Show progress
+        progress = session.get_progress()
+        print(f"\nProgress: {progress['percentage']}% ({progress['completed']}/{progress['total']} steps)")
+
+    except FileNotFoundError as e:
+        print(f"{Colors.RED}Error: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_status(args):
+    """Show session status"""
+    tracker = RunbookTracker(args.dir)
+
+    try:
+        session = tracker.load_session(args.session_id)
+
+        if args.format == 'json':
+            print(json.dumps(session.to_dict(), indent=2))
+        else:
+            print(format_status_text(session))
+
+    except FileNotFoundError as e:
+        print(f"{Colors.RED}Error: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_complete(args):
+    """Complete a runbook session"""
+    tracker = RunbookTracker(args.dir)
+
+    try:
+        session = tracker.complete_session(args.session_id)
+
+        print(f"{Colors.GREEN}Completed runbook session: {session.session_id}{Colors.RESET}")
+
+        progress = session.get_progress()
+        print(f"Final Progress: {progress['percentage']}% ({progress['completed']}/{progress['total']} steps)")
+
+    except FileNotFoundError as e:
+        print(f"{Colors.RED}Error: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Track runbook execution during incidents",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+
+    subparsers = parser.add_subparsers(dest='command', help='Commands')
+
+    # Start command
+    start_parser = subparsers.add_parser('start', help='Start runbook session')
+    start_parser.add_argument('runbook_name')
+    start_parser.add_argument('--incident-id')
+    start_parser.add_argument('--dir', default='./runbooks')
+
+    # Step command
+    step_parser = subparsers.add_parser('step', help='Update step')
+    step_parser.add_argument('session_id')
+    step_parser.add_argument('step_number', type=int)
+    step_parser.add_argument('--status', choices=['pending', 'in-progress', 'completed', 'skipped'])
+    step_parser.add_argument('--notes')
+    step_parser.add_argument('--dir', default='./runbooks')
+
+    # Status command
+    status_parser = subparsers.add_parser('status', help='Show status')
+    status_parser.add_argument('session_id')
+    status_parser.add_argument('--format', choices=['text', 'json'], default='text')
+    status_parser.add_argument('--dir', default='./runbooks')
+
+    # Complete command
+    complete_parser = subparsers.add_parser('complete', help='Complete session')
+    complete_parser.add_argument('session_id')
+    complete_parser.add_argument('--dir', default='./runbooks')
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    # Execute command
+    if args.command == 'start':
+        cmd_start(args)
+    elif args.command == 'step':
+        cmd_step(args)
+    elif args.command == 'status':
+        cmd_status(args)
+    elif args.command == 'complete':
+        cmd_complete(args)
+
+
+if __name__ == "__main__":
+    main()
