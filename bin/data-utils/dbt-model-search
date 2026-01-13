@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+"""
+dbt-model-search - Search dbt models by name, description, or column
+
+Usage:
+  dbt-model-search <query> [options]
+
+Arguments:
+  query          Search term to find in models
+
+Options:
+  --manifest=<path>     Path to manifest.json (default: target/manifest.json)
+  --catalog=<path>      Path to catalog.json (default: target/catalog.json)
+  --search-in=<fields>  Comma-separated fields to search: name,description,columns,tags (default: all)
+  --case-sensitive      Enable case-sensitive search (default: case-insensitive)
+  --format=<format>     Output format: text, json, csv (default: text)
+  --limit=<n>           Maximum number of results to show (default: unlimited)
+  --help, -h            Show this help message
+
+Examples:
+  dbt-model-search user                           # Find models containing "user"
+  dbt-model-search email --search-in=columns      # Find models with "email" column
+  dbt-model-search "staging" --search-in=name,tags  # Search only in names and tags
+  dbt-model-search customer --format=json         # Output as JSON
+  dbt-model-search order --limit=5                # Show top 5 results
+"""
+
+import sys
+import json
+import csv
+import argparse
+import re
+from pathlib import Path
+from typing import Dict, List, Optional, Set
+from io import StringIO
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+
+
+class DbtModelSearch:
+    """Search dbt models by various criteria"""
+
+    def __init__(self, manifest_path: Path, catalog_path: Optional[Path] = None):
+        self.manifest_path = manifest_path
+        self.catalog_path = catalog_path
+        self.manifest = self._load_manifest()
+        self.catalog = self._load_catalog() if catalog_path and catalog_path.exists() else None
+        self.models = self._extract_models()
+
+    def _load_manifest(self) -> dict:
+        """Load and parse manifest.json"""
+        try:
+            with open(self.manifest_path) as f:
+                return json.load(f)
+        except FileNotFoundError:
+            print(f"{Colors.RED}Error: manifest.json not found at {self.manifest_path}{Colors.RESET}", file=sys.stderr)
+            print(f"{Colors.YELLOW}Run 'dbt compile' or 'dbt run' to generate manifest.json{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
+        except json.JSONDecodeError as e:
+            print(f"{Colors.RED}Error: Invalid JSON in manifest.json: {str(e)}{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
+
+    def _load_catalog(self) -> Optional[dict]:
+        """Load and parse catalog.json"""
+        try:
+            with open(self.catalog_path) as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+
+    def _extract_models(self) -> Dict[str, dict]:
+        """Extract model information from manifest and catalog"""
+        models = {}
+
+        for node_id, node in self.manifest.get('nodes', {}).items():
+            if node.get('resource_type') == 'model':
+                model_name = node.get('name')
+
+                # Get column info from catalog if available
+                catalog_columns = {}
+                if self.catalog:
+                    catalog_node = self.catalog.get('nodes', {}).get(node_id, {})
+                    catalog_columns = catalog_node.get('columns', {})
+
+                # Merge manifest and catalog column info
+                all_columns = {}
+                for col_name, col_info in node.get('columns', {}).items():
+                    all_columns[col_name] = {
+                        'name': col_name,
+                        'description': col_info.get('description', ''),
+                        'data_type': catalog_columns.get(col_name, {}).get('type', ''),
+                    }
+
+                # Add catalog-only columns
+                for col_name, col_info in catalog_columns.items():
+                    if col_name not in all_columns:
+                        all_columns[col_name] = {
+                            'name': col_name,
+                            'description': '',
+                            'data_type': col_info.get('type', ''),
+                        }
+
+                models[model_name] = {
+                    'unique_id': node_id,
+                    'name': model_name,
+                    'description': node.get('description', ''),
+                    'columns': all_columns,
+                    'tags': node.get('tags', []),
+                    'schema': node.get('schema', ''),
+                    'database': node.get('database', ''),
+                    'materialized': node.get('config', {}).get('materialized', 'view'),
+                    'path': node.get('original_file_path', ''),
+                    'package_name': node.get('package_name', '')
+                }
+
+        return models
+
+    def search(self, query: str, search_in: Set[str], case_sensitive: bool = False) -> List[dict]:
+        """Search models based on query and search fields"""
+        results = []
+
+        # Prepare search pattern
+        if case_sensitive:
+            pattern = re.compile(re.escape(query))
+        else:
+            pattern = re.compile(re.escape(query), re.IGNORECASE)
+
+        for model_name, model_info in self.models.items():
+            matches = []
+            score = 0
+
+            # Search in model name
+            if 'name' in search_in:
+                if pattern.search(model_name):
+                    matches.append(('name', model_name))
+                    score += 10  # Highest priority for name matches
+
+            # Search in description
+            if 'description' in search_in and model_info['description']:
+                if pattern.search(model_info['description']):
+                    matches.append(('description', model_info['description']))
+                    score += 5
+
+            # Search in columns
+            if 'columns' in search_in:
+                for col_name, col_info in model_info['columns'].items():
+                    # Search column name
+                    if pattern.search(col_name):
+                        matches.append(('column_name', col_name))
+                        score += 3
+
+                    # Search column description
+                    if col_info.get('description') and pattern.search(col_info['description']):
+                        matches.append(('column_description', f"{col_name}: {col_info['description']}"))
+                        score += 2
+
+            # Search in tags
+            if 'tags' in search_in:
+                for tag in model_info['tags']:
+                    if pattern.search(tag):
+                        matches.append(('tag', tag))
+                        score += 2
+
+            # If any matches found, add to results
+            if matches:
+                results.append({
+                    'model': model_name,
+                    'info': model_info,
+                    'matches': matches,
+                    'score': score
+                })
+
+        # Sort by score (highest first), then by model name
+        results.sort(key=lambda x: (-x['score'], x['model']))
+
+        return results
+
+    def format_text(self, results: List[dict], limit: Optional[int] = None) -> str:
+        """Format search results as text"""
+        if not results:
+            return f"{Colors.YELLOW}No models found matching the search criteria{Colors.RESET}"
+
+        output = []
+        output.append(f"\n{Colors.CYAN}{Colors.BOLD}Search Results{Colors.RESET}")
+        output.append(f"{Colors.DIM}Found {len(results)} model(s){Colors.RESET}\n")
+
+        # Limit results if specified
+        display_results = results[:limit] if limit else results
+
+        for i, result in enumerate(display_results, 1):
+            model_name = result['model']
+            model_info = result['info']
+            matches = result['matches']
+
+            output.append(f"{Colors.GREEN}{Colors.BOLD}{i}. {model_name}{Colors.RESET}")
+            output.append(f"   {Colors.DIM}Path: {model_info['path']}{Colors.RESET}")
+            output.append(f"   {Colors.DIM}Type: {model_info['materialized']}{Colors.RESET}")
+
+            if model_info['description']:
+                desc = model_info['description'][:100]
+                if len(model_info['description']) > 100:
+                    desc += "..."
+                output.append(f"   {Colors.DIM}Description: {desc}{Colors.RESET}")
+
+            # Show matches
+            output.append(f"   {Colors.YELLOW}Matches:{Colors.RESET}")
+            match_types = {}
+            for match_type, match_value in matches:
+                if match_type not in match_types:
+                    match_types[match_type] = []
+                match_types[match_type].append(match_value)
+
+            for match_type, values in match_types.items():
+                if match_type == 'name':
+                    output.append(f"     • Model name")
+                elif match_type == 'description':
+                    output.append(f"     • Description")
+                elif match_type == 'column_name':
+                    output.append(f"     • Columns: {', '.join(values)}")
+                elif match_type == 'column_description':
+                    output.append(f"     • Column descriptions")
+                elif match_type == 'tag':
+                    output.append(f"     • Tags: {', '.join(values)}")
+
+            output.append("")  # Blank line between results
+
+        if limit and len(results) > limit:
+            output.append(f"{Colors.DIM}... and {len(results) - limit} more result(s){Colors.RESET}")
+
+        return "\n".join(output)
+
+    def format_json(self, results: List[dict], limit: Optional[int] = None) -> str:
+        """Format search results as JSON"""
+        display_results = results[:limit] if limit else results
+
+        output = {
+            'total_results': len(results),
+            'displayed_results': len(display_results),
+            'models': []
+        }
+
+        for result in display_results:
+            output['models'].append({
+                'name': result['model'],
+                'path': result['info']['path'],
+                'description': result['info']['description'],
+                'materialized': result['info']['materialized'],
+                'schema': result['info']['schema'],
+                'database': result['info']['database'],
+                'tags': result['info']['tags'],
+                'matches': [
+                    {'type': match_type, 'value': match_value}
+                    for match_type, match_value in result['matches']
+                ],
+                'score': result['score']
+            })
+
+        return json.dumps(output, indent=2)
+
+    def format_csv(self, results: List[dict], limit: Optional[int] = None) -> str:
+        """Format search results as CSV"""
+        display_results = results[:limit] if limit else results
+
+        output = StringIO()
+        writer = csv.writer(output)
+
+        # Write header
+        writer.writerow(['Model', 'Path', 'Type', 'Description', 'Tags', 'Match Types', 'Score'])
+
+        # Write rows
+        for result in display_results:
+            match_types = set(match_type for match_type, _ in result['matches'])
+            writer.writerow([
+                result['model'],
+                result['info']['path'],
+                result['info']['materialized'],
+                result['info']['description'][:100],
+                ', '.join(result['info']['tags']),
+                ', '.join(match_types),
+                result['score']
+            ])
+
+        return output.getvalue()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Search dbt models by name, description, or column",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("query", help="Search term to find in models")
+    parser.add_argument("--manifest", default="target/manifest.json",
+                       help="Path to manifest.json (default: target/manifest.json)")
+    parser.add_argument("--catalog", default="target/catalog.json",
+                       help="Path to catalog.json (default: target/catalog.json)")
+    parser.add_argument("--search-in",
+                       help="Comma-separated fields to search: name,description,columns,tags (default: all)")
+    parser.add_argument("--case-sensitive", action="store_true",
+                       help="Enable case-sensitive search")
+    parser.add_argument("--format", choices=["text", "json", "csv"], default="text",
+                       help="Output format (default: text)")
+    parser.add_argument("--limit", type=int, help="Maximum number of results to show")
+
+    args = parser.parse_args()
+
+    # Determine search fields
+    if args.search_in:
+        search_in = set(args.search_in.split(','))
+    else:
+        search_in = {'name', 'description', 'columns', 'tags'}
+
+    # Initialize searcher
+    searcher = DbtModelSearch(
+        Path(args.manifest),
+        Path(args.catalog) if args.catalog else None
+    )
+
+    # Perform search
+    results = searcher.search(args.query, search_in, args.case_sensitive)
+
+    # Format and print results
+    if args.format == "text":
+        output = searcher.format_text(results, args.limit)
+    elif args.format == "json":
+        output = searcher.format_json(results, args.limit)
+    else:  # csv
+        output = searcher.format_csv(results, args.limit)
+
+    print(output)
+
+
+if __name__ == "__main__":
+    main()
