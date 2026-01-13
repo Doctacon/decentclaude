@@ -1,0 +1,777 @@
+#!/usr/bin/env python3
+"""
+ai-docs - Auto-generate documentation for BigQuery models and tables
+
+Usage:
+  ai-docs <target> [options]
+
+Arguments:
+  target         Model SQL file path, BigQuery table ID (project.dataset.table), or directory
+
+Options:
+  --type=<type>          Documentation type: model, dictionary, erd, runbook, all (default: model)
+  --format=<format>      Output format: markdown, json, yaml (default: markdown)
+  --output=<path>        Output file path (default: stdout)
+  --template=<template>  Template file to use (default: built-in)
+  --watch                Watch mode: regenerate docs on file changes
+  --recursive            Process directory recursively
+  --help, -h             Show this help message
+
+Documentation Types:
+  model       - Generate model description from SQL (includes schema, config, dependencies)
+  dictionary  - Generate data dictionary with column-level documentation
+  erd         - Generate ERD diagram (Mermaid format)
+  runbook     - Generate operational runbook
+  all         - Generate all documentation types
+
+Examples:
+  ai-docs models/staging/stg_orders.sql
+  ai-docs project.dataset.orders --type=dictionary
+  ai-docs models/ --recursive --type=all
+  ai-docs models/staging/stg_orders.sql --watch
+  ai-docs project.dataset.orders --format=json --output=docs/orders.json
+"""
+
+import sys
+import os
+import json
+import argparse
+import re
+import time
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+from datetime import datetime
+
+try:
+    import yaml
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
+
+try:
+    from google.cloud import bigquery
+    HAS_BIGQUERY = True
+except ImportError:
+    HAS_BIGQUERY = False
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+
+
+class SQLModelParser:
+    """Parse SQL model files to extract metadata and configuration"""
+
+    @staticmethod
+    def parse_dbt_config(sql_content: str) -> Dict[str, Any]:
+        """Extract dbt configuration from SQL model"""
+        config = {}
+
+        # Extract config block
+        config_pattern = r'{{\s*config\((.*?)\)\s*}}'
+        match = re.search(config_pattern, sql_content, re.DOTALL)
+
+        if match:
+            config_str = match.group(1)
+
+            # Extract materialization
+            mat_match = re.search(r"materialized\s*=\s*['\"](\w+)['\"]", config_str)
+            if mat_match:
+                config['materialization'] = mat_match.group(1)
+
+            # Extract partition_by
+            part_match = re.search(r"partition_by\s*=\s*{(.*?)}", config_str, re.DOTALL)
+            if part_match:
+                config['partition_by'] = part_match.group(1).strip()
+
+            # Extract cluster_by
+            cluster_match = re.search(r"cluster_by\s*=\s*\[(.*?)\]", config_str)
+            if cluster_match:
+                config['cluster_by'] = [c.strip().strip("'\"") for c in cluster_match.group(1).split(',')]
+
+        return config
+
+    @staticmethod
+    def parse_sqlmesh_config(sql_content: str) -> Dict[str, Any]:
+        """Extract SQLMesh configuration from SQL model"""
+        config = {}
+
+        # Extract MODEL directive
+        model_pattern = r'MODEL\s*\((.*?)\);'
+        match = re.search(model_pattern, sql_content, re.DOTALL)
+
+        if match:
+            config_str = match.group(1)
+
+            # Extract name
+            name_match = re.search(r"name\s*=\s*['\"]([^'\"]+)['\"]", config_str)
+            if name_match:
+                config['name'] = name_match.group(1)
+
+            # Extract kind
+            kind_match = re.search(r"kind\s*=\s*(\w+)", config_str)
+            if kind_match:
+                config['kind'] = kind_match.group(1)
+
+            # Extract partitioned_by
+            part_match = re.search(r"partitioned_by\s*=\s*\[(.*?)\]", config_str, re.DOTALL)
+            if part_match:
+                config['partitioned_by'] = [p.strip().strip("'\"") for p in part_match.group(1).split(',')]
+
+        return config
+
+    @staticmethod
+    def extract_ctes(sql_content: str) -> List[Dict[str, str]]:
+        """Extract CTEs from SQL content"""
+        ctes = []
+
+        # Pattern to match CTEs
+        cte_pattern = r'(\w+)\s+AS\s*\((.*?)\)'
+
+        # Find WITH clause
+        with_match = re.search(r'WITH\s+(.*?)(?:SELECT|INSERT|UPDATE|DELETE)', sql_content, re.DOTALL | re.IGNORECASE)
+
+        if with_match:
+            with_content = with_match.group(1)
+
+            # Split by comma (simple approach - may need refinement for nested CTEs)
+            for match in re.finditer(cte_pattern, with_content, re.DOTALL | re.IGNORECASE):
+                cte_name = match.group(1).strip()
+                cte_query = match.group(2).strip()
+
+                ctes.append({
+                    'name': cte_name,
+                    'query': cte_query[:100] + '...' if len(cte_query) > 100 else cte_query
+                })
+
+        return ctes
+
+    @staticmethod
+    def extract_dependencies(sql_content: str) -> Dict[str, List[str]]:
+        """Extract source and ref dependencies from SQL"""
+        dependencies = {
+            'sources': [],
+            'refs': []
+        }
+
+        # Extract {{ source(...) }}
+        source_pattern = r"{{\s*source\(['\"](\w+)['\"]\s*,\s*['\"](\w+)['\"]\)\s*}}"
+        sources = re.findall(source_pattern, sql_content)
+        dependencies['sources'] = [f"{src[0]}.{src[1]}" for src in sources]
+
+        # Extract {{ ref(...) }}
+        ref_pattern = r"{{\s*ref\(['\"]([^'\"]+)['\"]\)\s*}}"
+        refs = re.findall(ref_pattern, sql_content)
+        dependencies['refs'] = refs
+
+        return dependencies
+
+
+class BigQueryMetadataExtractor:
+    """Extract metadata from BigQuery tables"""
+
+    def __init__(self):
+        self.client = None
+
+    def _get_client(self):
+        """Lazy initialization of BigQuery client"""
+        if self.client is None:
+            if not HAS_BIGQUERY:
+                print(f"{Colors.RED}Error: google-cloud-bigquery is not installed. Install with: pip install google-cloud-bigquery{Colors.RESET}", file=sys.stderr)
+                sys.exit(1)
+            self.client = bigquery.Client()
+        return self.client
+
+    def get_table_metadata(self, table_id: str) -> Dict[str, Any]:
+        """Get comprehensive metadata for a BigQuery table"""
+        try:
+            client = self._get_client()
+            table = client.get_table(table_id)
+
+            metadata = {
+                'table_id': table_id,
+                'table_type': table.table_type,
+                'created': table.created.isoformat() if table.created else None,
+                'modified': table.modified.isoformat() if table.modified else None,
+                'num_rows': table.num_rows,
+                'num_bytes': table.num_bytes,
+                'description': table.description or '',
+                'schema': self._format_schema(table.schema),
+                'partitioning': self._get_partitioning_info(table),
+                'clustering': table.clustering_fields or [],
+                'labels': table.labels or {}
+            }
+
+            return metadata
+
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _format_schema(self, schema: List) -> List[Dict[str, str]]:
+        """Format BigQuery schema for documentation"""
+        formatted = []
+        for field in schema:
+            formatted.append({
+                'name': field.name,
+                'type': field.field_type,
+                'mode': field.mode,
+                'description': field.description or ''
+            })
+        return formatted
+
+    def _get_partitioning_info(self, table) -> Optional[Dict[str, Any]]:
+        """Extract partitioning configuration"""
+        if not table.time_partitioning and not table.range_partitioning:
+            return None
+
+        if table.time_partitioning:
+            return {
+                'type': 'time',
+                'field': table.time_partitioning.field,
+                'expiration_ms': table.time_partitioning.expiration_ms
+            }
+
+        if table.range_partitioning:
+            return {
+                'type': 'range',
+                'field': table.range_partitioning.field,
+                'range': {
+                    'start': table.range_partitioning.range_.start,
+                    'end': table.range_partitioning.range_.end,
+                    'interval': table.range_partitioning.range_.interval
+                }
+            }
+
+        return None
+
+    def get_lineage(self, table_id: str) -> Dict[str, List[str]]:
+        """Get upstream and downstream dependencies"""
+        lineage = {
+            'upstream': [],
+            'downstream': []
+        }
+
+        try:
+            client = self._get_client()
+            parts = table_id.split('.')
+            if len(parts) != 3:
+                return lineage
+
+            project, dataset, table_name = parts
+
+            # Get upstream (for views)
+            table = client.get_table(table_id)
+            if table.table_type in ['VIEW', 'MATERIALIZED_VIEW']:
+                view_query = table.view_query or table.mview_query
+                if view_query:
+                    # Extract table references
+                    pattern = r'`?([a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)`?'
+                    matches = re.findall(pattern, view_query)
+                    lineage['upstream'] = list(set(matches))
+
+            # Get downstream (tables that reference this one)
+            query = f"""
+            SELECT
+              CONCAT(table_catalog, '.', table_schema, '.', table_name) as dependent_table
+            FROM `{project}.{dataset}.INFORMATION_SCHEMA.TABLES`
+            WHERE table_type IN ('VIEW', 'MATERIALIZED_VIEW')
+            """
+
+            query_job = client.query(query)
+            for row in query_job:
+                try:
+                    dependent_table = client.get_table(row.dependent_table)
+                    view_query = dependent_table.view_query or dependent_table.mview_query
+                    if view_query and table_id in view_query:
+                        lineage['downstream'].append(row.dependent_table)
+                except:
+                    continue
+
+        except Exception as e:
+            pass
+
+        return lineage
+
+
+class DocumentationGenerator:
+    """Generate different types of documentation"""
+
+    def __init__(self):
+        self.bq_extractor = BigQueryMetadataExtractor()
+
+    def generate_model_documentation(self, target: str, is_file: bool = True) -> Dict[str, Any]:
+        """Generate comprehensive model documentation"""
+
+        if is_file:
+            # Parse SQL file
+            with open(target, 'r') as f:
+                sql_content = f.read()
+
+            parser = SQLModelParser()
+
+            # Detect model type (dbt or SQLMesh)
+            is_dbt = '{{ config(' in sql_content or '{{ source(' in sql_content or '{{ ref(' in sql_content
+            is_sqlmesh = 'MODEL(' in sql_content
+
+            doc = {
+                'source_file': target,
+                'generated_at': datetime.now().isoformat(),
+                'model_type': 'dbt' if is_dbt else ('sqlmesh' if is_sqlmesh else 'sql'),
+                'config': {},
+                'dependencies': {},
+                'ctes': []
+            }
+
+            if is_dbt:
+                doc['config'] = parser.parse_dbt_config(sql_content)
+                doc['dependencies'] = parser.extract_dependencies(sql_content)
+            elif is_sqlmesh:
+                doc['config'] = parser.parse_sqlmesh_config(sql_content)
+
+            doc['ctes'] = parser.extract_ctes(sql_content)
+
+        else:
+            # Extract from BigQuery table
+            metadata = self.bq_extractor.get_table_metadata(target)
+            lineage = self.bq_extractor.get_lineage(target)
+
+            doc = {
+                'table_id': target,
+                'generated_at': datetime.now().isoformat(),
+                'metadata': metadata,
+                'lineage': lineage
+            }
+
+        return doc
+
+    def generate_data_dictionary(self, target: str) -> Dict[str, Any]:
+        """Generate data dictionary with column-level documentation"""
+
+        metadata = self.bq_extractor.get_table_metadata(target)
+
+        dictionary = {
+            'table_id': target,
+            'generated_at': datetime.now().isoformat(),
+            'description': metadata.get('description', ''),
+            'columns': []
+        }
+
+        for field in metadata.get('schema', []):
+            dictionary['columns'].append({
+                'name': field['name'],
+                'type': field['type'],
+                'mode': field['mode'],
+                'description': field['description'] or '[Add description]',
+                'sample_values': '[Run query to get samples]'
+            })
+
+        return dictionary
+
+    def generate_erd(self, target: str, related_tables: List[str] = None) -> str:
+        """Generate ERD diagram in Mermaid format"""
+
+        metadata = self.bq_extractor.get_table_metadata(target)
+        lineage = self.bq_extractor.get_lineage(target)
+
+        # Build Mermaid ER diagram
+        mermaid = ["erDiagram"]
+
+        # Main table
+        table_name = target.split('.')[-1]
+        for field in metadata.get('schema', []):
+            field_type = field['type']
+            field_name = field['name']
+            mermaid.append(f"    {table_name} {{")
+            mermaid.append(f"        {field_type} {field_name}")
+            mermaid.append(f"    }}")
+            break  # Just show structure, not all fields
+
+        # Related tables (upstream)
+        for upstream in lineage.get('upstream', [])[:5]:  # Limit to 5
+            upstream_name = upstream.split('.')[-1]
+            mermaid.append(f"    {upstream_name} ||--o{{ {table_name} : references")
+
+        # Related tables (downstream)
+        for downstream in lineage.get('downstream', [])[:5]:  # Limit to 5
+            downstream_name = downstream.split('.')[-1]
+            mermaid.append(f"    {table_name} ||--o{{ {downstream_name} : referenced_by")
+
+        return '\n'.join(mermaid)
+
+    def generate_runbook(self, target: str) -> Dict[str, Any]:
+        """Generate operational runbook"""
+
+        metadata = self.bq_extractor.get_table_metadata(target)
+
+        runbook = {
+            'table_id': target,
+            'generated_at': datetime.now().isoformat(),
+            'overview': {
+                'description': metadata.get('description', '[Add description]'),
+                'owner': '[Add owner]',
+                'sla': '[Add SLA]'
+            },
+            'schedule': {
+                'frequency': '[Add frequency]',
+                'dependencies': '[Add dependencies]'
+            },
+            'monitoring': {
+                'data_quality_checks': [
+                    'Row count validation',
+                    'Null value checks',
+                    'Freshness validation'
+                ],
+                'alerts': '[Add alert configuration]'
+            },
+            'troubleshooting': {
+                'common_issues': [
+                    {
+                        'issue': 'Pipeline failure',
+                        'solution': '[Add solution]'
+                    },
+                    {
+                        'issue': 'Data quality issue',
+                        'solution': '[Add solution]'
+                    }
+                ]
+            },
+            'maintenance': {
+                'partition_management': metadata.get('partitioning', {}),
+                'clustering': metadata.get('clustering', [])
+            }
+        }
+
+        return runbook
+
+
+class DocumentationFormatter:
+    """Format documentation in different output formats"""
+
+    @staticmethod
+    def format_markdown(doc: Dict[str, Any], doc_type: str) -> str:
+        """Format documentation as Markdown"""
+
+        if doc_type == 'model':
+            return DocumentationFormatter._format_model_markdown(doc)
+        elif doc_type == 'dictionary':
+            return DocumentationFormatter._format_dictionary_markdown(doc)
+        elif doc_type == 'runbook':
+            return DocumentationFormatter._format_runbook_markdown(doc)
+        else:
+            return "# Documentation\n\n" + json.dumps(doc, indent=2)
+
+    @staticmethod
+    def _format_model_markdown(doc: Dict[str, Any]) -> str:
+        """Format model documentation as Markdown"""
+
+        md = []
+
+        # Header
+        if 'source_file' in doc:
+            md.append(f"# Model Documentation: {Path(doc['source_file']).stem}")
+            md.append(f"\n**Source File:** `{doc['source_file']}`")
+        else:
+            md.append(f"# Table Documentation: {doc.get('table_id', 'Unknown')}")
+
+        md.append(f"\n**Generated:** {doc.get('generated_at', 'Unknown')}")
+        md.append("\n---\n")
+
+        # Configuration
+        if 'config' in doc and doc['config']:
+            md.append("## Configuration\n")
+            for key, value in doc['config'].items():
+                md.append(f"- **{key}:** {value}")
+            md.append("")
+
+        # Dependencies
+        if 'dependencies' in doc:
+            deps = doc['dependencies']
+            if deps.get('sources') or deps.get('refs'):
+                md.append("## Dependencies\n")
+
+                if deps.get('sources'):
+                    md.append("### Sources")
+                    for source in deps['sources']:
+                        md.append(f"- `{source}`")
+                    md.append("")
+
+                if deps.get('refs'):
+                    md.append("### Refs")
+                    for ref in deps['refs']:
+                        md.append(f"- `{ref}`")
+                    md.append("")
+
+        # CTEs
+        if 'ctes' in doc and doc['ctes']:
+            md.append("## CTEs\n")
+            for cte in doc['ctes']:
+                md.append(f"### {cte['name']}")
+                md.append(f"```sql\n{cte['query']}\n```\n")
+
+        # BigQuery metadata
+        if 'metadata' in doc:
+            meta = doc['metadata']
+            md.append("## Table Metadata\n")
+            md.append(f"- **Type:** {meta.get('table_type', 'Unknown')}")
+            md.append(f"- **Rows:** {meta.get('num_rows', 0):,}")
+            md.append(f"- **Size:** {meta.get('num_bytes', 0):,} bytes")
+
+            if meta.get('partitioning'):
+                md.append(f"- **Partitioning:** {meta['partitioning']}")
+
+            if meta.get('clustering'):
+                md.append(f"- **Clustering:** {', '.join(meta['clustering'])}")
+
+            md.append("\n### Schema\n")
+            md.append("| Column | Type | Mode | Description |")
+            md.append("|--------|------|------|-------------|")
+            for field in meta.get('schema', []):
+                md.append(f"| {field['name']} | {field['type']} | {field['mode']} | {field['description']} |")
+            md.append("")
+
+        # Lineage
+        if 'lineage' in doc:
+            lineage = doc['lineage']
+            if lineage.get('upstream') or lineage.get('downstream'):
+                md.append("## Lineage\n")
+
+                if lineage.get('upstream'):
+                    md.append("### Upstream Dependencies")
+                    for table in lineage['upstream']:
+                        md.append(f"- `{table}`")
+                    md.append("")
+
+                if lineage.get('downstream'):
+                    md.append("### Downstream Dependencies")
+                    for table in lineage['downstream']:
+                        md.append(f"- `{table}`")
+                    md.append("")
+
+        return '\n'.join(md)
+
+    @staticmethod
+    def _format_dictionary_markdown(doc: Dict[str, Any]) -> str:
+        """Format data dictionary as Markdown"""
+
+        md = []
+
+        md.append(f"# Data Dictionary: {doc.get('table_id', 'Unknown')}")
+        md.append(f"\n**Generated:** {doc.get('generated_at', 'Unknown')}")
+        md.append(f"\n**Description:** {doc.get('description', '[Add description]')}")
+        md.append("\n---\n")
+
+        md.append("## Columns\n")
+        md.append("| Column Name | Data Type | Mode | Description | Sample Values |")
+        md.append("|-------------|-----------|------|-------------|---------------|")
+
+        for col in doc.get('columns', []):
+            md.append(f"| {col['name']} | {col['type']} | {col['mode']} | {col['description']} | {col['sample_values']} |")
+
+        return '\n'.join(md)
+
+    @staticmethod
+    def _format_runbook_markdown(doc: Dict[str, Any]) -> str:
+        """Format runbook as Markdown"""
+
+        md = []
+
+        md.append(f"# Runbook: {doc.get('table_id', 'Unknown')}")
+        md.append(f"\n**Generated:** {doc.get('generated_at', 'Unknown')}")
+        md.append("\n---\n")
+
+        # Overview
+        overview = doc.get('overview', {})
+        md.append("## Overview\n")
+        md.append(f"**Description:** {overview.get('description', '[Add description]')}")
+        md.append(f"**Owner:** {overview.get('owner', '[Add owner]')}")
+        md.append(f"**SLA:** {overview.get('sla', '[Add SLA]')}")
+        md.append("")
+
+        # Schedule
+        schedule = doc.get('schedule', {})
+        md.append("## Schedule\n")
+        md.append(f"**Frequency:** {schedule.get('frequency', '[Add frequency]')}")
+        md.append(f"**Dependencies:** {schedule.get('dependencies', '[Add dependencies]')}")
+        md.append("")
+
+        # Monitoring
+        monitoring = doc.get('monitoring', {})
+        md.append("## Monitoring\n")
+        md.append("### Data Quality Checks")
+        for check in monitoring.get('data_quality_checks', []):
+            md.append(f"- {check}")
+        md.append(f"\n**Alerts:** {monitoring.get('alerts', '[Add alert configuration]')}")
+        md.append("")
+
+        # Troubleshooting
+        troubleshooting = doc.get('troubleshooting', {})
+        md.append("## Troubleshooting\n")
+        for issue in troubleshooting.get('common_issues', []):
+            md.append(f"### {issue['issue']}")
+            md.append(f"{issue['solution']}\n")
+
+        return '\n'.join(md)
+
+    @staticmethod
+    def format_json(doc: Dict[str, Any]) -> str:
+        """Format documentation as JSON"""
+        return json.dumps(doc, indent=2)
+
+    @staticmethod
+    def format_yaml(doc: Dict[str, Any]) -> str:
+        """Format documentation as YAML"""
+        if not HAS_YAML:
+            print(f"{Colors.RED}Error: PyYAML is not installed. Install with: pip install pyyaml{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
+        return yaml.dump(doc, default_flow_style=False, sort_keys=False)
+
+
+class FileWatcher:
+    """Watch files for changes and regenerate documentation"""
+
+    def __init__(self, target: str, callback):
+        self.target = target
+        self.callback = callback
+        self.last_modified = 0
+
+    def watch(self):
+        """Watch file for changes"""
+        print(f"{Colors.CYAN}Watching {self.target} for changes...{Colors.RESET}")
+        print(f"{Colors.DIM}Press Ctrl+C to stop{Colors.RESET}\n")
+
+        try:
+            while True:
+                if os.path.exists(self.target):
+                    current_modified = os.path.getmtime(self.target)
+
+                    if current_modified != self.last_modified:
+                        self.last_modified = current_modified
+
+                        if self.last_modified > 0:  # Skip first run
+                            print(f"\n{Colors.YELLOW}File changed, regenerating documentation...{Colors.RESET}\n")
+                            self.callback()
+
+                time.sleep(1)
+
+        except KeyboardInterrupt:
+            print(f"\n{Colors.CYAN}Stopped watching{Colors.RESET}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Auto-generate documentation for BigQuery models and tables",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+
+    parser.add_argument("target", help="Model SQL file, BigQuery table ID, or directory")
+    parser.add_argument("--type", choices=["model", "dictionary", "erd", "runbook", "all"],
+                       default="model", help="Documentation type (default: model)")
+    parser.add_argument("--format", choices=["markdown", "json", "yaml"],
+                       default="markdown", help="Output format (default: markdown)")
+    parser.add_argument("--output", help="Output file path (default: stdout)")
+    parser.add_argument("--template", help="Template file to use")
+    parser.add_argument("--watch", action="store_true", help="Watch mode")
+    parser.add_argument("--recursive", action="store_true", help="Process directory recursively")
+
+    args = parser.parse_args()
+
+    # Determine if target is a file or table ID
+    is_file = os.path.exists(args.target)
+
+    # Initialize generator
+    generator = DocumentationGenerator()
+    formatter = DocumentationFormatter()
+
+    def generate_docs():
+        """Generate documentation based on type"""
+
+        if args.type == "model" or args.type == "all":
+            doc = generator.generate_model_documentation(args.target, is_file)
+
+            # Format output
+            if args.format == "json":
+                output = formatter.format_json(doc)
+            elif args.format == "yaml":
+                output = formatter.format_yaml(doc)
+            else:
+                output = formatter.format_markdown(doc, "model")
+
+            # Write or print
+            if args.output:
+                with open(args.output, 'w') as f:
+                    f.write(output)
+                print(f"{Colors.GREEN}Documentation written to {args.output}{Colors.RESET}")
+            else:
+                print(output)
+
+        if args.type == "dictionary" or args.type == "all":
+            if not is_file:
+                doc = generator.generate_data_dictionary(args.target)
+
+                if args.format == "json":
+                    output = formatter.format_json(doc)
+                elif args.format == "yaml":
+                    output = formatter.format_yaml(doc)
+                else:
+                    output = formatter.format_markdown(doc, "dictionary")
+
+                if args.output:
+                    output_file = args.output if args.type == "dictionary" else args.output.replace('.md', '_dictionary.md')
+                    with open(output_file, 'w') as f:
+                        f.write(output)
+                    print(f"{Colors.GREEN}Data dictionary written to {output_file}{Colors.RESET}")
+                else:
+                    print(output)
+
+        if args.type == "erd" or args.type == "all":
+            if not is_file:
+                erd = generator.generate_erd(args.target)
+
+                if args.output:
+                    output_file = args.output if args.type == "erd" else args.output.replace('.md', '_erd.md')
+                    with open(output_file, 'w') as f:
+                        f.write(f"# ERD: {args.target}\n\n{erd}\n")
+                    print(f"{Colors.GREEN}ERD written to {output_file}{Colors.RESET}")
+                else:
+                    print(erd)
+
+        if args.type == "runbook" or args.type == "all":
+            if not is_file:
+                doc = generator.generate_runbook(args.target)
+
+                if args.format == "json":
+                    output = formatter.format_json(doc)
+                elif args.format == "yaml":
+                    output = formatter.format_yaml(doc)
+                else:
+                    output = formatter.format_markdown(doc, "runbook")
+
+                if args.output:
+                    output_file = args.output if args.type == "runbook" else args.output.replace('.md', '_runbook.md')
+                    with open(output_file, 'w') as f:
+                        f.write(output)
+                    print(f"{Colors.GREEN}Runbook written to {output_file}{Colors.RESET}")
+                else:
+                    print(output)
+
+    # Generate documentation
+    generate_docs()
+
+    # Watch mode
+    if args.watch and is_file:
+        watcher = FileWatcher(args.target, generate_docs)
+        watcher.watch()
+
+
+if __name__ == "__main__":
+    main()
