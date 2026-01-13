@@ -12,6 +12,7 @@ This repository provides a comprehensive set of Claude Code hooks designed speci
 
 Powerful command-line utilities for common BigQuery operations:
 
+- **bq-profile**: Generate comprehensive data profiles with statistics, quality metrics, and anomaly detection
 - **bq-schema-diff**: Compare schemas of two tables to identify differences
 - **bq-query-cost**: Estimate query costs before execution
 - **bq-partition-info**: Analyze partitioning configuration and partition sizes
@@ -157,6 +158,67 @@ Executes the Python script at `scripts/data_quality.py` with customizable checks
 
 ## Data Utilities
 
+### bq-profile
+
+Generate comprehensive data profiles for BigQuery tables with detailed statistics, quality metrics, and anomaly detection.
+
+**Usage:**
+```bash
+bin/data-utils/bq-profile <table_id> [options]
+```
+
+**Options:**
+- `--format=<format>` - Output format: text, json, markdown, html (default: text)
+- `--sample-size=<n>` - Number of sample rows to include (default: 10)
+- `--detect-anomalies` - Enable anomaly detection for numeric columns
+
+**Examples:**
+```bash
+# Generate text profile
+bin/data-utils/bq-profile project.dataset.customers
+
+# Generate JSON profile
+bin/data-utils/bq-profile project.dataset.orders --format=json
+
+# Generate HTML report with anomaly detection
+bin/data-utils/bq-profile project.dataset.sales --format=html --detect-anomalies
+
+# Generate Markdown profile with more samples
+bin/data-utils/bq-profile project.dataset.events --format=markdown --sample-size=20
+```
+
+**Output includes:**
+
+*Table Metadata:*
+- Table type, row count, size
+- Creation and modification timestamps
+- Column count and schema
+
+*Data Type Distribution:*
+- Count and percentage of each data type
+- Quick overview of column composition
+
+*Column Statistics:*
+- **All columns**: null count/percentage, distinct values, uniqueness ratio
+- **Numeric columns**: min, max, mean, median, standard deviation, quartiles (Q25, Q75)
+- **String columns**: min/max/average length
+
+*Sample Values:*
+- Representative sample rows from the table
+- Configurable sample size
+
+*Anomaly Detection (optional):*
+- Outlier detection using IQR (Interquartile Range) method
+- Outlier count and percentage per numeric column
+- Lower and upper bounds for expected values
+
+**Use Cases:**
+- Initial data exploration and profiling
+- Data quality assessment
+- Documentation generation
+- Anomaly and outlier detection
+- Schema understanding and validation
+
 ### bq-schema-diff
 
 Compare schemas of two BigQuery tables to identify differences.
@@ -296,6 +358,7 @@ export PATH="$PATH:/path/to/decentclaude/bin/data-utils"
 Or create symlinks:
 
 ```bash
+sudo ln -s /path/to/decentclaude/bin/data-utils/bq-profile /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-schema-diff /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-query-cost /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-partition-info /usr/local/bin/
@@ -365,6 +428,7 @@ chmod +x .git/hooks/pre-commit
 │   └── HOOKS.md               # Hook documentation
 ├── bin/
 │   ├── data-utils/            # CLI utilities for BigQuery
+│   │   ├── bq-profile         # Generate data profiles
 │   │   ├── bq-schema-diff     # Compare table schemas
 │   │   ├── bq-query-cost      # Estimate query costs
 │   │   ├── bq-partition-info  # Analyze partitions

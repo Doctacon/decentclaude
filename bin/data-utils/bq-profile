@@ -1,0 +1,910 @@
+#!/usr/bin/env python3
+"""
+bq-profile - Generate comprehensive data profiles for BigQuery tables
+
+Usage:
+  bq-profile <table_id> [options]
+
+Arguments:
+  table_id   Table ID (format: project.dataset.table)
+
+Options:
+  --format=<format>     Output format: text, json, markdown, html (default: text)
+  --sample-size=<n>     Number of sample rows to include (default: 10)
+  --detect-anomalies    Enable anomaly detection for numeric columns
+  --help, -h            Show this help message
+
+Examples:
+  bq-profile project.dataset.customers
+  bq-profile project.dataset.orders --format=json
+  bq-profile project.dataset.sales --format=markdown --detect-anomalies
+  bq-profile project.dataset.events --format=html --sample-size=20
+"""
+
+import sys
+import json
+import argparse
+from typing import Dict, List, Any
+from pathlib import Path
+from google.cloud import bigquery
+from datetime import datetime
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def get_table_metadata(client: bigquery.Client, table_id: str) -> Dict[str, Any]:
+    """
+    Get basic table metadata.
+
+    Args:
+        client: BigQuery client
+        table_id: Full table ID
+
+    Returns:
+        Dictionary with table metadata
+    """
+    try:
+        table = client.get_table(table_id)
+        return {
+            "table_id": table_id,
+            "project": table.project,
+            "dataset": table.dataset_id,
+            "table_name": table.table_id,
+            "table_type": table.table_type,
+            "num_rows": table.num_rows,
+            "num_bytes": table.num_bytes,
+            "created": table.created.isoformat() if table.created else None,
+            "modified": table.modified.isoformat() if table.modified else None,
+            "description": table.description or "",
+            "schema": [{"name": field.name, "type": field.field_type, "mode": field.mode}
+                      for field in table.schema]
+        }
+    except Exception as e:
+        print(f"{Colors.RED}Error getting table metadata: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def get_column_statistics(client: bigquery.Client, table_id: str, schema: List[Dict]) -> Dict[str, Any]:
+    """
+    Get comprehensive statistics for all columns.
+
+    Args:
+        client: BigQuery client
+        table_id: Full table ID
+        schema: Table schema
+
+    Returns:
+        Dictionary with column statistics
+    """
+    try:
+        stats = {}
+
+        # Build a comprehensive statistics query
+        numeric_types = ['INTEGER', 'INT64', 'FLOAT', 'FLOAT64', 'NUMERIC', 'BIGNUMERIC', 'DECIMAL']
+        string_types = ['STRING', 'BYTES']
+
+        # Collect statistics for each column
+        for field in schema:
+            col_name = field['name']
+            col_type = field['type']
+
+            col_stats = {
+                "column_name": col_name,
+                "data_type": col_type,
+                "mode": field.get('mode', 'NULLABLE')
+            }
+
+            # Count nulls and total for all columns
+            null_query = f"""
+            SELECT
+              COUNT(*) as total_count,
+              COUNTIF({col_name} IS NULL) as null_count
+            FROM `{table_id}`
+            """
+
+            result = list(client.query(null_query).result())
+            if result:
+                row = result[0]
+                total = row.total_count
+                nulls = row.null_count
+                col_stats['total_count'] = total
+                col_stats['null_count'] = nulls
+                col_stats['null_percentage'] = round((nulls / total * 100) if total > 0 else 0, 2)
+                col_stats['non_null_count'] = total - nulls
+
+            # Distinct count for all columns
+            distinct_query = f"""
+            SELECT COUNT(DISTINCT {col_name}) as distinct_count
+            FROM `{table_id}`
+            """
+
+            result = list(client.query(distinct_query).result())
+            if result:
+                col_stats['distinct_count'] = result[0].distinct_count
+                col_stats['uniqueness_ratio'] = round(
+                    (result[0].distinct_count / total) if total > 0 else 0, 4
+                )
+
+            # Type-specific statistics
+            if col_type in numeric_types:
+                # Numeric statistics
+                numeric_query = f"""
+                SELECT
+                  MIN({col_name}) as min_value,
+                  MAX({col_name}) as max_value,
+                  AVG({col_name}) as mean_value,
+                  STDDEV({col_name}) as stddev_value,
+                  APPROX_QUANTILES({col_name}, 100)[OFFSET(50)] as median_value,
+                  APPROX_QUANTILES({col_name}, 100)[OFFSET(25)] as q25_value,
+                  APPROX_QUANTILES({col_name}, 100)[OFFSET(75)] as q75_value
+                FROM `{table_id}`
+                WHERE {col_name} IS NOT NULL
+                """
+
+                result = list(client.query(numeric_query).result())
+                if result:
+                    row = result[0]
+                    col_stats['min'] = float(row.min_value) if row.min_value is not None else None
+                    col_stats['max'] = float(row.max_value) if row.max_value is not None else None
+                    col_stats['mean'] = round(float(row.mean_value), 4) if row.mean_value is not None else None
+                    col_stats['stddev'] = round(float(row.stddev_value), 4) if row.stddev_value is not None else None
+                    col_stats['median'] = float(row.median_value) if row.median_value is not None else None
+                    col_stats['q25'] = float(row.q25_value) if row.q25_value is not None else None
+                    col_stats['q75'] = float(row.q75_value) if row.q75_value is not None else None
+
+            elif col_type in string_types:
+                # String statistics
+                string_query = f"""
+                SELECT
+                  MIN(LENGTH({col_name})) as min_length,
+                  MAX(LENGTH({col_name})) as max_length,
+                  AVG(LENGTH({col_name})) as avg_length
+                FROM `{table_id}`
+                WHERE {col_name} IS NOT NULL
+                """
+
+                result = list(client.query(string_query).result())
+                if result:
+                    row = result[0]
+                    col_stats['min_length'] = row.min_length
+                    col_stats['max_length'] = row.max_length
+                    col_stats['avg_length'] = round(float(row.avg_length), 2) if row.avg_length is not None else None
+
+            stats[col_name] = col_stats
+
+        return stats
+
+    except Exception as e:
+        print(f"{Colors.RED}Error calculating column statistics: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def get_sample_values(client: bigquery.Client, table_id: str, sample_size: int = 10) -> List[Dict]:
+    """
+    Get sample rows from the table.
+
+    Args:
+        client: BigQuery client
+        table_id: Full table ID
+        sample_size: Number of sample rows
+
+    Returns:
+        List of sample rows
+    """
+    try:
+        query = f"""
+        SELECT *
+        FROM `{table_id}`
+        LIMIT {sample_size}
+        """
+
+        results = client.query(query).result()
+        samples = []
+        for row in results:
+            samples.append(dict(row))
+
+        return samples
+
+    except Exception as e:
+        print(f"{Colors.RED}Error getting sample values: {str(e)}{Colors.RESET}", file=sys.stderr)
+        return []
+
+
+def detect_outliers(client: bigquery.Client, table_id: str, schema: List[Dict]) -> Dict[str, Any]:
+    """
+    Detect outliers in numeric columns using IQR method.
+
+    Args:
+        client: BigQuery client
+        table_id: Full table ID
+        schema: Table schema
+
+    Returns:
+        Dictionary with outlier information for each numeric column
+    """
+    try:
+        outliers = {}
+        numeric_types = ['INTEGER', 'INT64', 'FLOAT', 'FLOAT64', 'NUMERIC', 'BIGNUMERIC', 'DECIMAL']
+
+        for field in schema:
+            if field['type'] in numeric_types:
+                col_name = field['name']
+
+                # Calculate IQR and identify outliers
+                outlier_query = f"""
+                WITH stats AS (
+                  SELECT
+                    APPROX_QUANTILES({col_name}, 100)[OFFSET(25)] as q1,
+                    APPROX_QUANTILES({col_name}, 100)[OFFSET(75)] as q3
+                  FROM `{table_id}`
+                  WHERE {col_name} IS NOT NULL
+                ),
+                bounds AS (
+                  SELECT
+                    q1,
+                    q3,
+                    q3 - q1 as iqr,
+                    q1 - 1.5 * (q3 - q1) as lower_bound,
+                    q3 + 1.5 * (q3 - q1) as upper_bound
+                  FROM stats
+                )
+                SELECT
+                  bounds.*,
+                  COUNTIF({col_name} < lower_bound OR {col_name} > upper_bound) as outlier_count,
+                  COUNT(*) as total_count
+                FROM `{table_id}`, bounds
+                WHERE {col_name} IS NOT NULL
+                GROUP BY q1, q3, iqr, lower_bound, upper_bound
+                """
+
+                result = list(client.query(outlier_query).result())
+                if result:
+                    row = result[0]
+                    outlier_pct = (row.outlier_count / row.total_count * 100) if row.total_count > 0 else 0
+
+                    outliers[col_name] = {
+                        "outlier_count": row.outlier_count,
+                        "total_count": row.total_count,
+                        "outlier_percentage": round(outlier_pct, 2),
+                        "lower_bound": float(row.lower_bound) if row.lower_bound is not None else None,
+                        "upper_bound": float(row.upper_bound) if row.upper_bound is not None else None,
+                        "iqr": float(row.iqr) if row.iqr is not None else None
+                    }
+
+        return outliers
+
+    except Exception as e:
+        print(f"{Colors.RED}Error detecting outliers: {str(e)}{Colors.RESET}", file=sys.stderr)
+        return {}
+
+
+def get_data_type_distribution(metadata: Dict[str, Any]) -> Dict[str, int]:
+    """
+    Calculate data type distribution from schema.
+
+    Args:
+        metadata: Table metadata
+
+    Returns:
+        Dictionary with count of each data type
+    """
+    distribution = {}
+    for field in metadata['schema']:
+        dtype = field['type']
+        distribution[dtype] = distribution.get(dtype, 0) + 1
+
+    return distribution
+
+
+def generate_profile(client: bigquery.Client, table_id: str, sample_size: int = 10,
+                     detect_anomalies: bool = False) -> Dict[str, Any]:
+    """
+    Generate comprehensive data profile for a BigQuery table.
+
+    Args:
+        client: BigQuery client
+        table_id: Full table ID
+        sample_size: Number of sample rows
+        detect_anomalies: Whether to detect anomalies
+
+    Returns:
+        Complete profile dictionary
+    """
+    print(f"{Colors.CYAN}Profiling table: {table_id}{Colors.RESET}", file=sys.stderr)
+
+    # Get metadata
+    print(f"{Colors.BLUE}Gathering table metadata...{Colors.RESET}", file=sys.stderr)
+    metadata = get_table_metadata(client, table_id)
+
+    # Get column statistics
+    print(f"{Colors.BLUE}Calculating column statistics...{Colors.RESET}", file=sys.stderr)
+    column_stats = get_column_statistics(client, table_id, metadata['schema'])
+
+    # Get sample values
+    print(f"{Colors.BLUE}Collecting sample values...{Colors.RESET}", file=sys.stderr)
+    samples = get_sample_values(client, table_id, sample_size)
+
+    # Get data type distribution
+    type_distribution = get_data_type_distribution(metadata)
+
+    # Detect outliers if requested
+    outliers = {}
+    if detect_anomalies:
+        print(f"{Colors.BLUE}Detecting anomalies...{Colors.RESET}", file=sys.stderr)
+        outliers = detect_outliers(client, table_id, metadata['schema'])
+
+    profile = {
+        "table_metadata": metadata,
+        "column_statistics": column_stats,
+        "data_type_distribution": type_distribution,
+        "sample_values": samples,
+        "profile_timestamp": datetime.utcnow().isoformat(),
+        "sample_size": len(samples)
+    }
+
+    if outliers:
+        profile["outlier_analysis"] = outliers
+
+    print(f"{Colors.GREEN}Profile complete!{Colors.RESET}", file=sys.stderr)
+
+    return profile
+
+
+def format_bytes(bytes_value: int) -> str:
+    """Format bytes into human-readable string"""
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB', 'PB']:
+        if bytes_value < 1024.0:
+            return f"{bytes_value:.2f} {unit}"
+        bytes_value /= 1024.0
+    return f"{bytes_value:.2f} EB"
+
+
+def print_text_report(profile: Dict[str, Any]):
+    """Print formatted text report"""
+
+    meta = profile['table_metadata']
+    col_stats = profile['column_statistics']
+    type_dist = profile['data_type_distribution']
+
+    # Header
+    print(f"\n{Colors.CYAN}{Colors.BOLD}{'=' * 80}{Colors.RESET}")
+    print(f"{Colors.CYAN}{Colors.BOLD}BigQuery Table Profile{Colors.RESET}")
+    print(f"{Colors.CYAN}{Colors.BOLD}{'=' * 80}{Colors.RESET}\n")
+
+    # Table Overview
+    print(f"{Colors.BOLD}Table Overview{Colors.RESET}")
+    print(f"  Table ID:      {meta['table_id']}")
+    print(f"  Type:          {meta['table_type']}")
+    print(f"  Rows:          {meta['num_rows']:,}")
+    print(f"  Size:          {format_bytes(meta['num_bytes'])}")
+    print(f"  Created:       {meta['created']}")
+    print(f"  Modified:      {meta['modified']}")
+    if meta['description']:
+        print(f"  Description:   {meta['description']}")
+
+    # Data Type Distribution
+    print(f"\n{Colors.BOLD}Data Type Distribution{Colors.RESET}")
+    for dtype, count in sorted(type_dist.items(), key=lambda x: x[1], reverse=True):
+        pct = (count / len(col_stats)) * 100
+        print(f"  {dtype:15s} {count:3d} columns ({pct:5.1f}%)")
+
+    # Column Statistics
+    print(f"\n{Colors.BOLD}Column Statistics{Colors.RESET}")
+    print(f"{Colors.CYAN}{'=' * 80}{Colors.RESET}")
+
+    for col_name, stats in col_stats.items():
+        print(f"\n{Colors.YELLOW}{Colors.BOLD}{col_name}{Colors.RESET}")
+        print(f"  Type:          {stats['data_type']} ({stats['mode']})")
+        print(f"  Null:          {stats['null_count']:,} ({stats['null_percentage']:.2f}%)")
+        print(f"  Distinct:      {stats['distinct_count']:,} (uniqueness: {stats['uniqueness_ratio']:.4f})")
+
+        # Numeric statistics
+        if 'min' in stats:
+            print(f"  Min:           {stats['min']}")
+            print(f"  Max:           {stats['max']}")
+            print(f"  Mean:          {stats['mean']}")
+            print(f"  Median:        {stats['median']}")
+            print(f"  Std Dev:       {stats['stddev']}")
+            print(f"  Q25:           {stats['q25']}")
+            print(f"  Q75:           {stats['q75']}")
+
+        # String statistics
+        if 'min_length' in stats:
+            print(f"  Min Length:    {stats['min_length']}")
+            print(f"  Max Length:    {stats['max_length']}")
+            print(f"  Avg Length:    {stats['avg_length']}")
+
+    # Outlier Analysis
+    if 'outlier_analysis' in profile:
+        print(f"\n{Colors.BOLD}Outlier Analysis{Colors.RESET}")
+        print(f"{Colors.CYAN}{'=' * 80}{Colors.RESET}")
+
+        outliers = profile['outlier_analysis']
+        if outliers:
+            for col_name, outlier_info in outliers.items():
+                if outlier_info['outlier_count'] > 0:
+                    print(f"\n{Colors.YELLOW}{Colors.BOLD}{col_name}{Colors.RESET}")
+                    print(f"  Outliers:      {outlier_info['outlier_count']:,} ({outlier_info['outlier_percentage']:.2f}%)")
+                    print(f"  Lower Bound:   {outlier_info['lower_bound']}")
+                    print(f"  Upper Bound:   {outlier_info['upper_bound']}")
+                    print(f"  IQR:           {outlier_info['iqr']}")
+        else:
+            print(f"\n  {Colors.GREEN}No outliers detected{Colors.RESET}")
+
+    # Sample Values
+    if profile['sample_values']:
+        print(f"\n{Colors.BOLD}Sample Values ({profile['sample_size']} rows){Colors.RESET}")
+        print(f"{Colors.CYAN}{'=' * 80}{Colors.RESET}")
+
+        for i, row in enumerate(profile['sample_values'][:5], 1):
+            print(f"\n{Colors.MAGENTA}Row {i}:{Colors.RESET}")
+            for key, value in row.items():
+                # Truncate long values
+                str_val = str(value)
+                if len(str_val) > 60:
+                    str_val = str_val[:57] + "..."
+                print(f"  {key:20s} {str_val}")
+
+        if len(profile['sample_values']) > 5:
+            print(f"\n  ... ({len(profile['sample_values']) - 5} more rows)")
+
+    # Footer
+    print(f"\n{Colors.CYAN}{'=' * 80}{Colors.RESET}")
+    print(f"{Colors.GREEN}Profile generated: {profile['profile_timestamp']}{Colors.RESET}")
+    print(f"{Colors.CYAN}{'=' * 80}{Colors.RESET}\n")
+
+
+def print_json_report(profile: Dict[str, Any]):
+    """Print JSON formatted report"""
+    # Convert to JSON-serializable format
+    output = {
+        "table_id": profile['table_metadata']['table_id'],
+        "profile_timestamp": profile['profile_timestamp'],
+        "table_overview": {
+            "table_type": profile['table_metadata']['table_type'],
+            "num_rows": profile['table_metadata']['num_rows'],
+            "num_bytes": profile['table_metadata']['num_bytes'],
+            "num_columns": len(profile['table_metadata']['schema']),
+            "created": profile['table_metadata']['created'],
+            "modified": profile['table_metadata']['modified'],
+            "description": profile['table_metadata']['description']
+        },
+        "data_type_distribution": profile['data_type_distribution'],
+        "column_statistics": profile['column_statistics'],
+        "sample_size": profile['sample_size']
+    }
+
+    if 'outlier_analysis' in profile:
+        output['outlier_analysis'] = profile['outlier_analysis']
+
+    print(json.dumps(output, indent=2, default=str))
+
+
+def print_markdown_report(profile: Dict[str, Any]):
+    """Print Markdown formatted report"""
+
+    meta = profile['table_metadata']
+    col_stats = profile['column_statistics']
+    type_dist = profile['data_type_distribution']
+
+    print("# BigQuery Table Profile\n")
+
+    # Table Overview
+    print("## Table Overview\n")
+    print(f"- **Table ID**: `{meta['table_id']}`")
+    print(f"- **Type**: {meta['table_type']}")
+    print(f"- **Rows**: {meta['num_rows']:,}")
+    print(f"- **Size**: {format_bytes(meta['num_bytes'])}")
+    print(f"- **Created**: {meta['created']}")
+    print(f"- **Modified**: {meta['modified']}")
+    if meta['description']:
+        print(f"- **Description**: {meta['description']}")
+    print()
+
+    # Data Type Distribution
+    print("## Data Type Distribution\n")
+    print("| Data Type | Count | Percentage |")
+    print("|-----------|-------|------------|")
+    for dtype, count in sorted(type_dist.items(), key=lambda x: x[1], reverse=True):
+        pct = (count / len(col_stats)) * 100
+        print(f"| {dtype} | {count} | {pct:.1f}% |")
+    print()
+
+    # Column Statistics
+    print("## Column Statistics\n")
+
+    for col_name, stats in col_stats.items():
+        print(f"### {col_name}\n")
+        print(f"- **Type**: {stats['data_type']} ({stats['mode']})")
+        print(f"- **Null Count**: {stats['null_count']:,} ({stats['null_percentage']:.2f}%)")
+        print(f"- **Distinct Count**: {stats['distinct_count']:,} (uniqueness: {stats['uniqueness_ratio']:.4f})")
+
+        if 'min' in stats:
+            print(f"- **Min**: {stats['min']}")
+            print(f"- **Max**: {stats['max']}")
+            print(f"- **Mean**: {stats['mean']}")
+            print(f"- **Median**: {stats['median']}")
+            print(f"- **Std Dev**: {stats['stddev']}")
+            print(f"- **Q25**: {stats['q25']}")
+            print(f"- **Q75**: {stats['q75']}")
+
+        if 'min_length' in stats:
+            print(f"- **Min Length**: {stats['min_length']}")
+            print(f"- **Max Length**: {stats['max_length']}")
+            print(f"- **Avg Length**: {stats['avg_length']}")
+
+        print()
+
+    # Outlier Analysis
+    if 'outlier_analysis' in profile:
+        print("## Outlier Analysis\n")
+
+        outliers = profile['outlier_analysis']
+        if outliers:
+            has_outliers = any(o['outlier_count'] > 0 for o in outliers.values())
+            if has_outliers:
+                print("| Column | Outliers | Percentage | Lower Bound | Upper Bound | IQR |")
+                print("|--------|----------|------------|-------------|-------------|-----|")
+                for col_name, outlier_info in outliers.items():
+                    if outlier_info['outlier_count'] > 0:
+                        print(f"| {col_name} | {outlier_info['outlier_count']:,} | "
+                              f"{outlier_info['outlier_percentage']:.2f}% | "
+                              f"{outlier_info['lower_bound']} | {outlier_info['upper_bound']} | "
+                              f"{outlier_info['iqr']} |")
+            else:
+                print("No outliers detected.\n")
+        print()
+
+    # Footer
+    print(f"\n---\n*Profile generated: {profile['profile_timestamp']}*\n")
+
+
+def print_html_report(profile: Dict[str, Any]):
+    """Print HTML formatted report"""
+
+    meta = profile['table_metadata']
+    col_stats = profile['column_statistics']
+    type_dist = profile['data_type_distribution']
+
+    html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BigQuery Table Profile</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #1a73e8;
+            border-bottom: 3px solid #1a73e8;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #333;
+            margin-top: 30px;
+            border-bottom: 2px solid #e0e0e0;
+            padding-bottom: 8px;
+        }
+        h3 {
+            color: #555;
+            margin-top: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #1a73e8;
+            color: white;
+            font-weight: 600;
+        }
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            border-left: 4px solid #1a73e8;
+        }
+        .stat-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .stat-value {
+            font-size: 1.3em;
+            font-weight: 600;
+            color: #333;
+        }
+        .column-section {
+            background-color: #fafafa;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 4px;
+            border-left: 4px solid #34a853;
+        }
+        .metric {
+            margin: 8px 0;
+        }
+        .metric-label {
+            display: inline-block;
+            width: 150px;
+            color: #666;
+            font-weight: 500;
+        }
+        .metric-value {
+            color: #333;
+        }
+        .footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 2px solid #e0e0e0;
+            color: #666;
+            font-size: 0.9em;
+            text-align: center;
+        }
+        .outlier-warning {
+            background-color: #fff3cd;
+            border-left: 4px solid #ffc107;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>BigQuery Table Profile</h1>
+"""
+
+    # Table Overview
+    html += f"""
+        <h2>Table Overview</h2>
+        <div class="stat-grid">
+            <div class="stat-card">
+                <div class="stat-label">Table ID</div>
+                <div class="stat-value">{meta['table_id']}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Type</div>
+                <div class="stat-value">{meta['table_type']}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Rows</div>
+                <div class="stat-value">{meta['num_rows']:,}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Size</div>
+                <div class="stat-value">{format_bytes(meta['num_bytes'])}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Columns</div>
+                <div class="stat-value">{len(meta['schema'])}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Created</div>
+                <div class="stat-value">{meta['created']}</div>
+            </div>
+        </div>
+"""
+
+    # Data Type Distribution
+    html += """
+        <h2>Data Type Distribution</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Data Type</th>
+                    <th>Count</th>
+                    <th>Percentage</th>
+                </tr>
+            </thead>
+            <tbody>
+"""
+
+    for dtype, count in sorted(type_dist.items(), key=lambda x: x[1], reverse=True):
+        pct = (count / len(col_stats)) * 100
+        html += f"""
+                <tr>
+                    <td>{dtype}</td>
+                    <td>{count}</td>
+                    <td>{pct:.1f}%</td>
+                </tr>
+"""
+
+    html += """
+            </tbody>
+        </table>
+"""
+
+    # Column Statistics
+    html += "<h2>Column Statistics</h2>"
+
+    for col_name, stats in col_stats.items():
+        html += f"""
+        <div class="column-section">
+            <h3>{col_name}</h3>
+            <div class="metric">
+                <span class="metric-label">Type:</span>
+                <span class="metric-value">{stats['data_type']} ({stats['mode']})</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Null Count:</span>
+                <span class="metric-value">{stats['null_count']:,} ({stats['null_percentage']:.2f}%)</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Distinct Count:</span>
+                <span class="metric-value">{stats['distinct_count']:,} (uniqueness: {stats['uniqueness_ratio']:.4f})</span>
+            </div>
+"""
+
+        if 'min' in stats:
+            html += f"""
+            <div class="metric">
+                <span class="metric-label">Min / Max:</span>
+                <span class="metric-value">{stats['min']} / {stats['max']}</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Mean:</span>
+                <span class="metric-value">{stats['mean']}</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Median:</span>
+                <span class="metric-value">{stats['median']}</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Std Dev:</span>
+                <span class="metric-value">{stats['stddev']}</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Q25 / Q75:</span>
+                <span class="metric-value">{stats['q25']} / {stats['q75']}</span>
+            </div>
+"""
+
+        if 'min_length' in stats:
+            html += f"""
+            <div class="metric">
+                <span class="metric-label">Length (Min/Max/Avg):</span>
+                <span class="metric-value">{stats['min_length']} / {stats['max_length']} / {stats['avg_length']}</span>
+            </div>
+"""
+
+        html += "</div>"
+
+    # Outlier Analysis
+    if 'outlier_analysis' in profile:
+        html += "<h2>Outlier Analysis</h2>"
+
+        outliers = profile['outlier_analysis']
+        has_outliers = any(o['outlier_count'] > 0 for o in outliers.values())
+
+        if has_outliers:
+            html += """
+        <table>
+            <thead>
+                <tr>
+                    <th>Column</th>
+                    <th>Outliers</th>
+                    <th>Percentage</th>
+                    <th>Lower Bound</th>
+                    <th>Upper Bound</th>
+                    <th>IQR</th>
+                </tr>
+            </thead>
+            <tbody>
+"""
+
+            for col_name, outlier_info in outliers.items():
+                if outlier_info['outlier_count'] > 0:
+                    html += f"""
+                <tr>
+                    <td>{col_name}</td>
+                    <td>{outlier_info['outlier_count']:,}</td>
+                    <td>{outlier_info['outlier_percentage']:.2f}%</td>
+                    <td>{outlier_info['lower_bound']}</td>
+                    <td>{outlier_info['upper_bound']}</td>
+                    <td>{outlier_info['iqr']}</td>
+                </tr>
+"""
+
+            html += """
+            </tbody>
+        </table>
+"""
+        else:
+            html += "<p>No outliers detected.</p>"
+
+    # Footer
+    html += f"""
+        <div class="footer">
+            Profile generated: {profile['profile_timestamp']}
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+    print(html)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate comprehensive data profiles for BigQuery tables",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("table_id", help="Table ID (project.dataset.table)")
+    parser.add_argument("--format", choices=["text", "json", "markdown", "html"],
+                       default="text", help="Output format (default: text)")
+    parser.add_argument("--sample-size", type=int, default=10,
+                       help="Number of sample rows to include (default: 10)")
+    parser.add_argument("--detect-anomalies", action="store_true",
+                       help="Enable anomaly detection for numeric columns")
+
+    args = parser.parse_args()
+
+    # Initialize BigQuery client
+    try:
+        client = bigquery.Client()
+    except Exception as e:
+        print(f"{Colors.RED}Error initializing BigQuery client: {str(e)}{Colors.RESET}",
+              file=sys.stderr)
+        print(f"{Colors.YELLOW}Make sure you have valid credentials and the BigQuery API is enabled.{Colors.RESET}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # Generate profile
+    profile = generate_profile(
+        client,
+        args.table_id,
+        sample_size=args.sample_size,
+        detect_anomalies=args.detect_anomalies
+    )
+
+    # Print report in requested format
+    if args.format == "json":
+        print_json_report(profile)
+    elif args.format == "markdown":
+        print_markdown_report(profile)
+    elif args.format == "html":
+        print_html_report(profile)
+    else:
+        print_text_report(profile)
+
+
+if __name__ == "__main__":
+    main()
