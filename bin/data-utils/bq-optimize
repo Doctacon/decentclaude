@@ -1,0 +1,488 @@
+#!/usr/bin/env python3
+"""
+bq-optimize - Analyze queries and suggest BigQuery optimizations
+
+Usage:
+  bq-optimize <query> [options]
+  bq-optimize --file=<sql_file> [options]
+  bq-optimize --job-id=<job_id> [options]
+
+Arguments:
+  query      SQL query to analyze (use quotes for multi-line)
+
+Options:
+  --file=<path>       Read query from SQL file
+  --job-id=<id>       Analyze existing job by ID
+  --format=<format>   Output format: text, json (default: text)
+  --help, -h          Show this help message
+
+Examples:
+  bq-optimize "SELECT * FROM project.dataset.table WHERE date = '2024-01-01'"
+  bq-optimize --file=query.sql
+  bq-optimize --job-id=abc123-def456-ghi789
+  bq-optimize --file=query.sql --format=json
+"""
+
+import sys
+import json
+import argparse
+import re
+from pathlib import Path
+from typing import Dict, List, Tuple
+from google.cloud import bigquery
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+class OptimizationAnalyzer:
+    """Analyzes queries for optimization opportunities"""
+
+    def __init__(self, client: bigquery.Client):
+        self.client = client
+
+    def analyze_query(self, query: str, job_id: str = None) -> Dict:
+        """
+        Analyze a query for optimization opportunities.
+
+        Args:
+            query: SQL query to analyze
+            job_id: Optional job ID for additional execution analysis
+
+        Returns:
+            Dictionary with optimization recommendations
+        """
+        recommendations = []
+        warnings = []
+        info = []
+
+        # Run static analysis
+        recommendations.extend(self._check_select_star(query))
+        recommendations.extend(self._check_partition_filter(query))
+        recommendations.extend(self._check_limit_clause(query))
+        recommendations.extend(self._check_order_by(query))
+        recommendations.extend(self._check_distinct(query))
+        recommendations.extend(self._check_subqueries(query))
+        recommendations.extend(self._check_joins(query))
+
+        # Run query plan analysis if possible
+        try:
+            job_config = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
+            query_job = self.client.query(query, job_config=job_config)
+
+            bytes_processed = query_job.total_bytes_processed
+            gb_processed = bytes_processed / (1024 ** 3)
+
+            # Check data volume
+            if gb_processed > 100:
+                recommendations.append({
+                    "severity": "high",
+                    "category": "cost",
+                    "title": "Very large data scan detected",
+                    "description": f"Query will process {gb_processed:.2f} GB of data",
+                    "suggestion": "Consider adding partition filters or reducing scope"
+                })
+            elif gb_processed > 10:
+                recommendations.append({
+                    "severity": "medium",
+                    "category": "cost",
+                    "title": "Large data scan",
+                    "description": f"Query will process {gb_processed:.2f} GB of data",
+                    "suggestion": "Review if all data is necessary"
+                })
+
+            info.append({
+                "key": "bytes_processed",
+                "value": bytes_processed,
+                "human_readable": self._format_bytes(bytes_processed)
+            })
+
+        except Exception as e:
+            warnings.append(f"Could not perform dry run analysis: {str(e)}")
+
+        # Analyze execution if job_id provided
+        if job_id:
+            try:
+                job = self.client.get_job(job_id)
+                exec_recommendations = self._analyze_execution(job)
+                recommendations.extend(exec_recommendations)
+            except Exception as e:
+                warnings.append(f"Could not analyze job {job_id}: {str(e)}")
+
+        # Categorize recommendations by severity
+        high_priority = [r for r in recommendations if r['severity'] == 'high']
+        medium_priority = [r for r in recommendations if r['severity'] == 'medium']
+        low_priority = [r for r in recommendations if r['severity'] == 'low']
+
+        return {
+            "query": query,
+            "recommendations": {
+                "high": high_priority,
+                "medium": medium_priority,
+                "low": low_priority
+            },
+            "total_recommendations": len(recommendations),
+            "warnings": warnings,
+            "info": info
+        }
+
+    def _check_select_star(self, query: str) -> List[Dict]:
+        """Check for SELECT * usage"""
+        recommendations = []
+
+        # Look for SELECT * patterns
+        if re.search(r'\bSELECT\s+\*\s+FROM\b', query, re.IGNORECASE):
+            recommendations.append({
+                "severity": "medium",
+                "category": "performance",
+                "title": "SELECT * detected",
+                "description": "Query uses SELECT * which may scan unnecessary columns",
+                "suggestion": "Specify only the columns you need to reduce data processed"
+            })
+
+        return recommendations
+
+    def _check_partition_filter(self, query: str) -> List[Dict]:
+        """Check for partition filter usage"""
+        recommendations = []
+
+        # Check if query references partition columns without filtering
+        # This is a heuristic check
+        has_where = re.search(r'\bWHERE\b', query, re.IGNORECASE)
+        has_date_filter = re.search(r'\b(date|_PARTITIONTIME|_PARTITIONDATE)\s*[=<>]', query, re.IGNORECASE)
+
+        if not has_where:
+            recommendations.append({
+                "severity": "high",
+                "category": "cost",
+                "title": "No WHERE clause detected",
+                "description": "Query has no filtering which may scan entire table",
+                "suggestion": "Add filters, especially on partition columns (date, _PARTITIONTIME)"
+            })
+        elif not has_date_filter:
+            recommendations.append({
+                "severity": "medium",
+                "category": "cost",
+                "title": "No partition filter detected",
+                "description": "Query may not be using partition pruning",
+                "suggestion": "Add filters on partition columns to reduce data scanned"
+            })
+
+        return recommendations
+
+    def _check_limit_clause(self, query: str) -> List[Dict]:
+        """Check for LIMIT clause in exploratory queries"""
+        recommendations = []
+
+        has_limit = re.search(r'\bLIMIT\s+\d+', query, re.IGNORECASE)
+        has_aggregation = re.search(r'\b(COUNT|SUM|AVG|MAX|MIN|GROUP BY)\b', query, re.IGNORECASE)
+
+        # For non-aggregation queries without LIMIT, suggest adding one
+        if not has_limit and not has_aggregation:
+            recommendations.append({
+                "severity": "low",
+                "category": "best-practice",
+                "title": "Consider adding LIMIT clause",
+                "description": "Query without LIMIT may return more data than needed",
+                "suggestion": "Add LIMIT clause for exploratory queries to reduce data transfer"
+            })
+
+        return recommendations
+
+    def _check_order_by(self, query: str) -> List[Dict]:
+        """Check for ORDER BY without LIMIT"""
+        recommendations = []
+
+        has_order_by = re.search(r'\bORDER BY\b', query, re.IGNORECASE)
+        has_limit = re.search(r'\bLIMIT\s+\d+', query, re.IGNORECASE)
+
+        if has_order_by and not has_limit:
+            recommendations.append({
+                "severity": "medium",
+                "category": "performance",
+                "title": "ORDER BY without LIMIT",
+                "description": "Sorting entire result set without LIMIT is expensive",
+                "suggestion": "Add LIMIT clause or consider if sorting is necessary"
+            })
+
+        return recommendations
+
+    def _check_distinct(self, query: str) -> List[Dict]:
+        """Check for DISTINCT usage"""
+        recommendations = []
+
+        distinct_count = len(re.findall(r'\bDISTINCT\b', query, re.IGNORECASE))
+
+        if distinct_count > 1:
+            recommendations.append({
+                "severity": "low",
+                "category": "performance",
+                "title": "Multiple DISTINCT operations",
+                "description": f"Query contains {distinct_count} DISTINCT operations",
+                "suggestion": "Consider if all DISTINCT operations are necessary; use GROUP BY when appropriate"
+            })
+
+        return recommendations
+
+    def _check_subqueries(self, query: str) -> List[Dict]:
+        """Check for subquery patterns"""
+        recommendations = []
+
+        # Count nested SELECT statements
+        select_count = len(re.findall(r'\bSELECT\b', query, re.IGNORECASE))
+
+        if select_count > 3:
+            recommendations.append({
+                "severity": "medium",
+                "category": "performance",
+                "title": "Complex nested query",
+                "description": f"Query has {select_count} nested SELECT statements",
+                "suggestion": "Consider using WITH clauses (CTEs) for readability and potential optimization"
+            })
+
+        # Check for correlated subqueries (heuristic)
+        if re.search(r'WHERE\s+\w+\s+IN\s*\(\s*SELECT', query, re.IGNORECASE):
+            # Check if it looks correlated
+            if re.search(r'WHERE.*=\s*\w+\.\w+', query, re.IGNORECASE):
+                recommendations.append({
+                    "severity": "high",
+                    "category": "performance",
+                    "title": "Potential correlated subquery",
+                    "description": "Correlated subqueries can be very expensive",
+                    "suggestion": "Consider rewriting as a JOIN for better performance"
+                })
+
+        return recommendations
+
+    def _check_joins(self, query: str) -> List[Dict]:
+        """Check for JOIN optimization opportunities"""
+        recommendations = []
+
+        # Count number of JOINs
+        join_count = len(re.findall(r'\bJOIN\b', query, re.IGNORECASE))
+
+        if join_count > 5:
+            recommendations.append({
+                "severity": "medium",
+                "category": "performance",
+                "title": "Many JOIN operations",
+                "description": f"Query performs {join_count} JOIN operations",
+                "suggestion": "Review join order and consider if all joins are necessary; put largest table first"
+            })
+
+        # Check for CROSS JOIN
+        if re.search(r'\bCROSS JOIN\b', query, re.IGNORECASE):
+            recommendations.append({
+                "severity": "high",
+                "category": "performance",
+                "title": "CROSS JOIN detected",
+                "description": "CROSS JOIN creates cartesian product which is often unintentional",
+                "suggestion": "Verify CROSS JOIN is intentional; consider using INNER JOIN with proper conditions"
+            })
+
+        return recommendations
+
+    def _analyze_execution(self, job) -> List[Dict]:
+        """Analyze actual execution statistics from a completed job"""
+        recommendations = []
+
+        if not hasattr(job, 'query_plan') or not job.query_plan:
+            return recommendations
+
+        # Check for stages with high shuffle
+        for stage in job.query_plan:
+            if stage.shuffle_output_bytes and stage.shuffle_output_bytes > 1024**3:  # > 1GB
+                gb_shuffled = stage.shuffle_output_bytes / (1024**3)
+                recommendations.append({
+                    "severity": "medium",
+                    "category": "performance",
+                    "title": f"High shuffle in stage {stage.id}",
+                    "description": f"Stage shuffled {gb_shuffled:.2f} GB of data",
+                    "suggestion": "Consider partitioning or clustering to reduce shuffle"
+                })
+
+            # Check for spilled shuffle
+            if stage.shuffle_output_bytes_spilled and stage.shuffle_output_bytes_spilled > 0:
+                recommendations.append({
+                    "severity": "high",
+                    "category": "performance",
+                    "title": f"Shuffle spill in stage {stage.id}",
+                    "description": "Data spilled to disk during shuffle (memory pressure)",
+                    "suggestion": "Reduce data volume or optimize query to fit in memory"
+                })
+
+        # Check slot utilization
+        if hasattr(job, 'total_slot_ms') and job.total_slot_ms:
+            # If job ran but used very few slots for a long time, it might be inefficient
+            if hasattr(job, 'started') and hasattr(job, 'ended') and job.started and job.ended:
+                duration_ms = (job.ended - job.started).total_seconds() * 1000
+                avg_slots = job.total_slot_ms / duration_ms if duration_ms > 0 else 0
+
+                if avg_slots < 10 and duration_ms > 10000:  # Less than 10 slots for > 10 seconds
+                    recommendations.append({
+                        "severity": "low",
+                        "category": "performance",
+                        "title": "Low parallelism",
+                        "description": f"Query used only {avg_slots:.1f} slots on average",
+                        "suggestion": "Query may not be parallelizing well; check for sequential operations"
+                    })
+
+        return recommendations
+
+    @staticmethod
+    def _format_bytes(bytes_value: int) -> str:
+        """Format bytes into human-readable string"""
+        if bytes_value is None:
+            return "N/A"
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if bytes_value < 1024.0:
+                return f"{bytes_value:.2f} {unit}"
+            bytes_value /= 1024.0
+        return f"{bytes_value:.2f} PB"
+
+
+def print_text_report(result: Dict):
+    """Print a formatted text report of optimization recommendations"""
+
+    print(f"\n{Colors.CYAN}{Colors.BOLD}BigQuery Query Optimization Analysis{Colors.RESET}")
+    print("=" * 80)
+
+    # Summary
+    total = result['total_recommendations']
+    high = len(result['recommendations']['high'])
+    medium = len(result['recommendations']['medium'])
+    low = len(result['recommendations']['low'])
+
+    print(f"\n{Colors.BOLD}Summary:{Colors.RESET}")
+    print(f"  Total Recommendations: {total}")
+    if high > 0:
+        print(f"  {Colors.RED}High Priority:    {high}{Colors.RESET}")
+    if medium > 0:
+        print(f"  {Colors.YELLOW}Medium Priority:  {medium}{Colors.RESET}")
+    if low > 0:
+        print(f"  {Colors.GREEN}Low Priority:     {low}{Colors.RESET}")
+
+    if total == 0:
+        print(f"\n{Colors.GREEN}No optimization recommendations found!{Colors.RESET}")
+        print("Query appears to follow BigQuery best practices.")
+
+    # Information
+    if result['info']:
+        print(f"\n{Colors.BOLD}Query Information:{Colors.RESET}")
+        for item in result['info']:
+            print(f"  {item['key']}: {item['human_readable']}")
+
+    # Warnings
+    if result['warnings']:
+        print(f"\n{Colors.YELLOW}{Colors.BOLD}Warnings:{Colors.RESET}")
+        for warning in result['warnings']:
+            print(f"  {Colors.YELLOW}!{Colors.RESET} {warning}")
+
+    # High priority recommendations
+    if result['recommendations']['high']:
+        print(f"\n{Colors.RED}{Colors.BOLD}HIGH PRIORITY RECOMMENDATIONS{Colors.RESET}")
+        print()
+        for i, rec in enumerate(result['recommendations']['high'], 1):
+            print(f"{Colors.RED}{i}. {rec['title']}{Colors.RESET}")
+            print(f"   Category: {rec['category']}")
+            print(f"   Issue: {rec['description']}")
+            print(f"   {Colors.BOLD}Action:{Colors.RESET} {rec['suggestion']}")
+            print()
+
+    # Medium priority recommendations
+    if result['recommendations']['medium']:
+        print(f"{Colors.YELLOW}{Colors.BOLD}MEDIUM PRIORITY RECOMMENDATIONS{Colors.RESET}")
+        print()
+        for i, rec in enumerate(result['recommendations']['medium'], 1):
+            print(f"{Colors.YELLOW}{i}. {rec['title']}{Colors.RESET}")
+            print(f"   Category: {rec['category']}")
+            print(f"   Issue: {rec['description']}")
+            print(f"   {Colors.BOLD}Action:{Colors.RESET} {rec['suggestion']}")
+            print()
+
+    # Low priority recommendations
+    if result['recommendations']['low']:
+        print(f"{Colors.GREEN}{Colors.BOLD}LOW PRIORITY RECOMMENDATIONS{Colors.RESET}")
+        print()
+        for i, rec in enumerate(result['recommendations']['low'], 1):
+            print(f"{Colors.GREEN}{i}. {rec['title']}{Colors.RESET}")
+            print(f"   Category: {rec['category']}")
+            print(f"   Issue: {rec['description']}")
+            print(f"   {Colors.BOLD}Action:{Colors.RESET} {rec['suggestion']}")
+            print()
+
+    # Query preview
+    print(f"{Colors.BOLD}Query Preview:{Colors.RESET}")
+    query_lines = result['query'].strip().split('\n')
+    preview_lines = query_lines[:5]
+    for line in preview_lines:
+        print(f"  {line}")
+    if len(query_lines) > 5:
+        print(f"  ... ({len(query_lines) - 5} more lines)")
+
+    print("\n" + "=" * 80)
+
+
+def print_json_report(result: Dict):
+    """Print a JSON report of optimization recommendations"""
+    output = {
+        "total_recommendations": result['total_recommendations'],
+        "recommendations": result['recommendations'],
+        "warnings": result['warnings'],
+        "info": result['info']
+    }
+    print(json.dumps(output, indent=2))
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Analyze queries and suggest BigQuery optimizations",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("query", nargs="?", help="SQL query to analyze")
+    parser.add_argument("--file", help="Read query from SQL file")
+    parser.add_argument("--job-id", help="Analyze existing job by ID (for execution analysis)")
+    parser.add_argument("--format", choices=["text", "json"], default="text",
+                       help="Output format (default: text)")
+
+    args = parser.parse_args()
+
+    # Get query from argument or file
+    if args.file:
+        try:
+            query = Path(args.file).read_text()
+        except Exception as e:
+            print(f"{Colors.RED}Error reading file {args.file}: {str(e)}{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
+    elif args.query:
+        query = args.query
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+    # Initialize BigQuery client
+    client = bigquery.Client()
+
+    # Analyze query
+    analyzer = OptimizationAnalyzer(client)
+    result = analyzer.analyze_query(query, job_id=args.job_id)
+
+    # Print report
+    if args.format == "json":
+        print_json_report(result)
+    else:
+        print_text_report(result)
+
+
+if __name__ == "__main__":
+    main()

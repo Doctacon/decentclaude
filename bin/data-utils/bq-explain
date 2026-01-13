@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+"""
+bq-explain - Analyze and visualize BigQuery query execution plans
+
+Usage:
+  bq-explain <query> [options]
+  bq-explain --file=<sql_file> [options]
+  bq-explain --job-id=<job_id> [options]
+
+Arguments:
+  query      SQL query to analyze (use quotes for multi-line)
+
+Options:
+  --file=<path>       Read query from SQL file
+  --job-id=<id>       Analyze existing job by ID
+  --format=<format>   Output format: text, json (default: text)
+  --dry-run           Analyze without executing query
+  --help, -h          Show this help message
+
+Examples:
+  bq-explain "SELECT * FROM project.dataset.table WHERE date = '2024-01-01'"
+  bq-explain --file=query.sql
+  bq-explain --job-id=abc123-def456-ghi789
+  bq-explain --file=query.sql --format=json
+  bq-explain --file=query.sql --dry-run
+"""
+
+import sys
+import json
+import argparse
+from pathlib import Path
+from typing import Optional, Dict, List
+from google.cloud import bigquery
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+
+
+def format_bytes(bytes_value: int) -> str:
+    """Format bytes into human-readable string"""
+    if bytes_value is None:
+        return "N/A"
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB', 'PB']:
+        if bytes_value < 1024.0:
+            return f"{bytes_value:.2f} {unit}"
+        bytes_value /= 1024.0
+    return f"{bytes_value:.2f} EB"
+
+
+def format_duration(ms: float) -> str:
+    """Format milliseconds into human-readable duration"""
+    if ms is None:
+        return "N/A"
+    if ms < 1000:
+        return f"{ms:.0f}ms"
+    elif ms < 60000:
+        return f"{ms/1000:.2f}s"
+    elif ms < 3600000:
+        return f"{ms/60000:.2f}m"
+    else:
+        return f"{ms/3600000:.2f}h"
+
+
+def get_performance_color(ratio: float) -> str:
+    """Get color based on performance ratio (relative to total)"""
+    if ratio > 0.5:
+        return Colors.RED
+    elif ratio > 0.25:
+        return Colors.YELLOW
+    else:
+        return Colors.GREEN
+
+
+def analyze_query_plan(client: bigquery.Client, query: str, dry_run: bool = False) -> Dict:
+    """
+    Analyze query execution plan by running the query.
+
+    Args:
+        client: BigQuery client
+        query: SQL query to analyze
+        dry_run: If True, only get plan estimate without execution
+
+    Returns:
+        Dictionary with execution plan and statistics
+    """
+    try:
+        job_config = bigquery.QueryJobConfig()
+        if dry_run:
+            job_config.dry_run = True
+            job_config.use_query_cache = False
+
+        query_job = client.query(query, job_config=job_config)
+
+        # Wait for job to complete if not dry run
+        if not dry_run:
+            query_job.result()
+
+        return extract_job_info(query_job, query)
+
+    except Exception as e:
+        print(f"{Colors.RED}Error analyzing query: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def analyze_job(client: bigquery.Client, job_id: str) -> Dict:
+    """
+    Analyze an existing BigQuery job by ID.
+
+    Args:
+        client: BigQuery client
+        job_id: Job ID to analyze
+
+    Returns:
+        Dictionary with execution plan and statistics
+    """
+    try:
+        job = client.get_job(job_id)
+        return extract_job_info(job, job.query)
+
+    except Exception as e:
+        print(f"{Colors.RED}Error retrieving job {job_id}: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def extract_job_info(job, query: str) -> Dict:
+    """Extract execution information from a BigQuery job"""
+
+    result = {
+        "job_id": job.job_id,
+        "query": query,
+        "state": job.state,
+        "created": job.created.isoformat() if job.created else None,
+        "started": job.started.isoformat() if job.started else None,
+        "ended": job.ended.isoformat() if job.ended else None,
+        "total_bytes_processed": job.total_bytes_processed,
+        "total_bytes_billed": job.total_bytes_billed,
+        "cache_hit": job.cache_hit if hasattr(job, 'cache_hit') else False,
+        "query_plan": [],
+        "timeline": [],
+        "statistics": {}
+    }
+
+    # Extract statistics
+    if hasattr(job, 'total_slot_ms'):
+        result['statistics']['total_slot_ms'] = job.total_slot_ms
+    if hasattr(job, 'estimated_bytes_processed'):
+        result['statistics']['estimated_bytes_processed'] = job.estimated_bytes_processed
+
+    # Extract query plan stages
+    if hasattr(job, 'query_plan') and job.query_plan:
+        total_compute_ms = sum(
+            stage.compute_ms_avg * stage.parallel_inputs
+            for stage in job.query_plan
+            if stage.compute_ms_avg and stage.parallel_inputs
+        )
+
+        for stage in job.query_plan:
+            stage_info = {
+                "name": stage.name,
+                "id": stage.id,
+                "status": stage.status if hasattr(stage, 'status') else 'COMPLETE',
+                "input_stages": list(stage.input_stages) if stage.input_stages else [],
+                "records_read": stage.records_read,
+                "records_written": stage.records_written,
+                "parallel_inputs": stage.parallel_inputs,
+                "compute_ms_avg": stage.compute_ms_avg,
+                "compute_ms_max": stage.compute_ms_max,
+                "read_ms_avg": stage.read_ms_avg,
+                "read_ms_max": stage.read_ms_max,
+                "write_ms_avg": stage.write_ms_avg,
+                "write_ms_max": stage.write_ms_max,
+                "wait_ms_avg": stage.wait_ms_avg,
+                "wait_ms_max": stage.wait_ms_max,
+                "shuffle_output_bytes": stage.shuffle_output_bytes,
+                "shuffle_output_bytes_spilled": stage.shuffle_output_bytes_spilled,
+                "steps": []
+            }
+
+            # Calculate relative compute time
+            if total_compute_ms > 0 and stage.compute_ms_avg and stage.parallel_inputs:
+                stage_compute = stage.compute_ms_avg * stage.parallel_inputs
+                stage_info['compute_ratio'] = stage_compute / total_compute_ms
+            else:
+                stage_info['compute_ratio'] = 0.0
+
+            # Extract steps
+            if stage.steps:
+                for step in stage.steps:
+                    step_info = {
+                        "kind": step.kind,
+                        "substeps": list(step.substeps) if step.substeps else []
+                    }
+                    stage_info['steps'].append(step_info)
+
+            result['query_plan'].append(stage_info)
+
+    # Extract timeline
+    if hasattr(job, 'timeline') and job.timeline:
+        for entry in job.timeline:
+            timeline_info = {
+                "elapsed_ms": entry.elapsed_ms,
+                "active_units": entry.active_units if hasattr(entry, 'active_units') else None,
+                "pending_units": entry.pending_units if hasattr(entry, 'pending_units') else None,
+                "completed_units": entry.completed_units if hasattr(entry, 'completed_units') else None,
+                "total_slot_ms": entry.total_slot_ms if hasattr(entry, 'total_slot_ms') else None,
+            }
+            result['timeline'].append(timeline_info)
+
+    return result
+
+
+def print_text_report(result: Dict):
+    """Print a formatted text report of query execution plan"""
+
+    print(f"\n{Colors.CYAN}{Colors.BOLD}BigQuery Query Execution Plan{Colors.RESET}")
+    print("=" * 80)
+
+    # Job information
+    print(f"\n{Colors.BOLD}Job Information:{Colors.RESET}")
+    print(f"  Job ID:        {result['job_id']}")
+    print(f"  State:         {result['state']}")
+    if result['created']:
+        print(f"  Created:       {result['created']}")
+    if result['started']:
+        print(f"  Started:       {result['started']}")
+    if result['ended']:
+        print(f"  Ended:         {result['ended']}")
+
+    # Data processed
+    print(f"\n{Colors.BOLD}Data Processed:{Colors.RESET}")
+    print(f"  Bytes Processed: {format_bytes(result['total_bytes_processed'])}")
+    if result['total_bytes_billed']:
+        print(f"  Bytes Billed:    {format_bytes(result['total_bytes_billed'])}")
+    print(f"  Cache Hit:       {'Yes' if result['cache_hit'] else 'No'}")
+
+    # Statistics
+    if result['statistics']:
+        print(f"\n{Colors.BOLD}Statistics:{Colors.RESET}")
+        if 'total_slot_ms' in result['statistics']:
+            slot_ms = result['statistics']['total_slot_ms']
+            print(f"  Total Slot Time: {format_duration(slot_ms)} ({slot_ms:,} slot-ms)")
+        if 'estimated_bytes_processed' in result['statistics']:
+            print(f"  Estimated Bytes: {format_bytes(result['statistics']['estimated_bytes_processed'])}")
+
+    # Query plan stages
+    if result['query_plan']:
+        print(f"\n{Colors.BOLD}Execution Plan Stages:{Colors.RESET}")
+        print()
+
+        for stage in result['query_plan']:
+            compute_ratio = stage.get('compute_ratio', 0.0)
+            perf_color = get_performance_color(compute_ratio)
+
+            print(f"{Colors.BOLD}{Colors.BLUE}Stage {stage['id']}: {stage['name']}{Colors.RESET}")
+            print(f"  Status:          {stage['status']}")
+
+            if stage['input_stages']:
+                print(f"  Input Stages:    {', '.join(map(str, stage['input_stages']))}")
+
+            if stage['records_read'] is not None:
+                print(f"  Records Read:    {stage['records_read']:,}")
+            if stage['records_written'] is not None:
+                print(f"  Records Written: {stage['records_written']:,}")
+
+            print(f"  Parallel Inputs: {stage['parallel_inputs']}")
+
+            # Timing information
+            if stage['compute_ms_avg'] is not None:
+                bar_length = int(compute_ratio * 40)
+                bar = '█' * bar_length
+                print(f"  Compute Time:    {perf_color}{format_duration(stage['compute_ms_avg'])} avg{Colors.RESET} " +
+                      f"(max: {format_duration(stage['compute_ms_max'])}) {perf_color}{bar}{Colors.RESET}")
+
+            if stage['read_ms_avg'] is not None and stage['read_ms_avg'] > 0:
+                print(f"  Read Time:       {format_duration(stage['read_ms_avg'])} avg " +
+                      f"(max: {format_duration(stage['read_ms_max'])})")
+
+            if stage['write_ms_avg'] is not None and stage['write_ms_avg'] > 0:
+                print(f"  Write Time:      {format_duration(stage['write_ms_avg'])} avg " +
+                      f"(max: {format_duration(stage['write_ms_max'])})")
+
+            if stage['wait_ms_avg'] is not None and stage['wait_ms_avg'] > 0:
+                print(f"  Wait Time:       {format_duration(stage['wait_ms_avg'])} avg " +
+                      f"(max: {format_duration(stage['wait_ms_max'])})")
+
+            # Shuffle information
+            if stage['shuffle_output_bytes'] is not None and stage['shuffle_output_bytes'] > 0:
+                print(f"  Shuffle Output:  {format_bytes(stage['shuffle_output_bytes'])}")
+                if stage['shuffle_output_bytes_spilled'] is not None and stage['shuffle_output_bytes_spilled'] > 0:
+                    print(f"  Spilled:         {Colors.YELLOW}{format_bytes(stage['shuffle_output_bytes_spilled'])}{Colors.RESET}")
+
+            # Steps
+            if stage['steps']:
+                print(f"  {Colors.DIM}Steps:{Colors.RESET}")
+                for step in stage['steps']:
+                    print(f"    - {step['kind']}")
+                    if step['substeps']:
+                        for substep in step['substeps'][:3]:  # Limit to first 3
+                            print(f"      {Colors.DIM}{substep}{Colors.RESET}")
+                        if len(step['substeps']) > 3:
+                            print(f"      {Colors.DIM}... and {len(step['substeps']) - 3} more{Colors.RESET}")
+
+            print()
+
+    # Timeline summary
+    if result['timeline']:
+        print(f"{Colors.BOLD}Execution Timeline:{Colors.RESET}")
+        print(f"  Timeline Entries: {len(result['timeline'])}")
+
+        max_active = max((t.get('active_units') or 0 for t in result['timeline']), default=0)
+        max_pending = max((t.get('pending_units') or 0 for t in result['timeline']), default=0)
+
+        if max_active > 0:
+            print(f"  Max Active Units:   {max_active}")
+        if max_pending > 0:
+            print(f"  Max Pending Units:  {max_pending}")
+        print()
+
+    # Query preview
+    print(f"{Colors.BOLD}Query Preview:{Colors.RESET}")
+    query_lines = result['query'].strip().split('\n')
+    preview_lines = query_lines[:5]
+    for line in preview_lines:
+        print(f"  {line}")
+    if len(query_lines) > 5:
+        print(f"  {Colors.DIM}... ({len(query_lines) - 5} more lines){Colors.RESET}")
+
+    print("\n" + "=" * 80)
+
+
+def print_json_report(result: Dict):
+    """Print a JSON report of query execution plan"""
+    output = {
+        "job_id": result['job_id'],
+        "state": result['state'],
+        "created": result['created'],
+        "started": result['started'],
+        "ended": result['ended'],
+        "total_bytes_processed": result['total_bytes_processed'],
+        "total_bytes_billed": result['total_bytes_billed'],
+        "cache_hit": result['cache_hit'],
+        "statistics": result['statistics'],
+        "query_plan": result['query_plan'],
+        "timeline": result['timeline']
+    }
+    print(json.dumps(output, indent=2))
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Analyze and visualize BigQuery query execution plans",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("query", nargs="?", help="SQL query to analyze")
+    parser.add_argument("--file", help="Read query from SQL file")
+    parser.add_argument("--job-id", help="Analyze existing job by ID")
+    parser.add_argument("--format", choices=["text", "json"], default="text",
+                       help="Output format (default: text)")
+    parser.add_argument("--dry-run", action="store_true",
+                       help="Analyze without executing query")
+
+    args = parser.parse_args()
+
+    # Initialize BigQuery client
+    client = bigquery.Client()
+
+    # Determine mode
+    if args.job_id:
+        result = analyze_job(client, args.job_id)
+    else:
+        # Get query from argument or file
+        if args.file:
+            try:
+                query = Path(args.file).read_text()
+            except Exception as e:
+                print(f"{Colors.RED}Error reading file {args.file}: {str(e)}{Colors.RESET}", file=sys.stderr)
+                sys.exit(1)
+        elif args.query:
+            query = args.query
+        else:
+            parser.print_help()
+            sys.exit(1)
+
+        result = analyze_query_plan(client, query, dry_run=args.dry_run)
+
+    # Print report
+    if args.format == "json":
+        print_json_report(result)
+    else:
+        print_text_report(result)
+
+
+if __name__ == "__main__":
+    main()

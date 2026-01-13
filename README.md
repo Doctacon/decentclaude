@@ -31,8 +31,11 @@ Powerful command-line utilities for common data engineering operations:
 - **bq-query-cost**: Estimate query costs before execution
 - **bq-partition-info**: Analyze partitioning configuration and partition sizes
 - **bq-lineage**: Explore table dependencies (upstream and downstream)
-<<<<<<< HEAD
 - **bq-table-compare**: Comprehensive table comparison with row counts, schema drift, statistics, and sample data
+- **bq-explain**: Visualize query execution plans with detailed stage analysis
+- **bq-optimize**: Analyze queries and suggest performance optimizations
+- **bq-benchmark**: Benchmark query performance with multiple runs and comparisons
+- **bq-cost-report**: Analyze historical costs and usage patterns
 
 **dbt Utilities:**
 - **dbt-deps**: Visualize dbt model dependencies as graphs
@@ -865,6 +868,239 @@ GitHub Actions example:
     bin/data-utils/ai-review --pr --format=json --check-only
 ```
 
+### bq-explain
+
+Analyze and visualize BigQuery query execution plans with detailed stage-by-stage breakdowns.
+
+**Usage:**
+```bash
+bin/data-utils/bq-explain <query> [options]
+bin/data-utils/bq-explain --file=<sql_file> [options]
+bin/data-utils/bq-explain --job-id=<job_id> [options]
+```
+
+**Options:**
+- `--file=<path>` - Read query from SQL file
+- `--job-id=<id>` - Analyze existing job by ID
+- `--format=<format>` - Output format: text, json (default: text)
+- `--dry-run` - Analyze without executing query
+
+**Examples:**
+```bash
+# Analyze query execution plan
+bin/data-utils/bq-explain "SELECT * FROM project.dataset.table WHERE date = '2024-01-01'"
+
+# Analyze from file
+bin/data-utils/bq-explain --file=query.sql
+
+# Analyze existing job
+bin/data-utils/bq-explain --job-id=abc123-def456-ghi789
+
+# Dry run analysis (estimate only)
+bin/data-utils/bq-explain --file=query.sql --dry-run
+
+# JSON output
+bin/data-utils/bq-explain --file=query.sql --format=json
+```
+
+**Output includes:**
+- Job ID and execution state
+- Data processed and billed
+- Cache hit status
+- Slot usage statistics
+- Stage-by-stage execution breakdown
+  - Records read/written per stage
+  - Compute, read, write, and wait times
+  - Shuffle operations and spilling
+  - Parallel inputs and execution steps
+- Execution timeline
+- Visual performance indicators
+
+### bq-optimize
+
+Analyze queries and suggest BigQuery optimization opportunities to improve performance and reduce costs.
+
+**Usage:**
+```bash
+bin/data-utils/bq-optimize <query> [options]
+bin/data-utils/bq-optimize --file=<sql_file> [options]
+bin/data-utils/bq-optimize --job-id=<job_id> [options]
+```
+
+**Options:**
+- `--file=<path>` - Read query from SQL file
+- `--job-id=<id>` - Analyze existing job for execution-based recommendations
+- `--format=<format>` - Output format: text, json (default: text)
+
+**Examples:**
+```bash
+# Analyze query for optimizations
+bin/data-utils/bq-optimize "SELECT * FROM project.dataset.table WHERE date = '2024-01-01'"
+
+# Analyze from file
+bin/data-utils/bq-optimize --file=query.sql
+
+# Analyze with job execution data
+bin/data-utils/bq-optimize --file=query.sql --job-id=abc123-def456-ghi789
+
+# JSON output
+bin/data-utils/bq-optimize --file=query.sql --format=json
+```
+
+**Recommendations include:**
+- **High Priority**
+  - Missing partition filters (major cost impact)
+  - No WHERE clause detected
+  - Correlated subqueries
+  - CROSS JOIN usage
+  - Shuffle spilling to disk
+- **Medium Priority**
+  - SELECT * usage
+  - Large data scans
+  - ORDER BY without LIMIT
+  - Complex nested queries
+  - High shuffle operations
+  - Many JOIN operations
+- **Low Priority**
+  - Missing LIMIT clause
+  - Multiple DISTINCT operations
+  - Low parallelism
+
+**Categories:**
+- Cost optimization
+- Performance improvements
+- Best practices
+
+### bq-benchmark
+
+Benchmark BigQuery query performance with multiple runs, statistical analysis, and baseline comparisons.
+
+**Usage:**
+```bash
+bin/data-utils/bq-benchmark <query> [options]
+bin/data-utils/bq-benchmark --file=<sql_file> [options]
+```
+
+**Options:**
+- `--file=<path>` - Read query from SQL file
+- `--runs=<n>` - Number of benchmark runs (default: 3)
+- `--warmup` - Include a warmup run (not counted in results)
+- `--no-cache` - Disable query cache for benchmarking
+- `--baseline=<file>` - Compare against baseline results from JSON file
+- `--save=<file>` - Save benchmark results to JSON file
+- `--format=<format>` - Output format: text, json (default: text)
+
+**Examples:**
+```bash
+# Run basic benchmark
+bin/data-utils/bq-benchmark --file=query.sql
+
+# Run 5 times with warmup
+bin/data-utils/bq-benchmark --file=query.sql --runs=5 --warmup
+
+# Disable cache for true performance test
+bin/data-utils/bq-benchmark --file=query.sql --no-cache
+
+# Save baseline for future comparison
+bin/data-utils/bq-benchmark --file=query.sql --save=baseline.json
+
+# Compare against baseline
+bin/data-utils/bq-benchmark --file=query.sql --baseline=baseline.json
+
+# JSON output
+bin/data-utils/bq-benchmark --file=query.sql --format=json
+```
+
+**Output includes:**
+- Configuration (runs, warmup, cache settings)
+- Execution time statistics
+  - Min, max, mean, median
+  - Standard deviation and coefficient of variation
+- Data processed statistics
+- Slot usage metrics
+- Cache hit rate
+- Individual run details
+- Baseline comparison (when provided)
+  - Percent change in execution time
+  - Percent change in bytes processed
+  - Performance improvement/regression indicators
+
+**Use cases:**
+- Compare query performance before/after optimization
+- Track performance regression over time
+- Validate optimization improvements
+- Understand query performance variability
+
+### bq-cost-report
+
+Analyze historical BigQuery costs and usage patterns from job history.
+
+**Usage:**
+```bash
+bin/data-utils/bq-cost-report [options]
+```
+
+**Options:**
+- `--project=<id>` - Project ID to analyze (default: current project)
+- `--days=<n>` - Number of days to analyze (default: 7)
+- `--group-by=<field>` - Group results by: user, dataset, table, query_type (default: user)
+- `--top=<n>` - Show top N results (default: 10)
+- `--format=<format>` - Output format: text, json, csv (default: text)
+
+**Examples:**
+```bash
+# Analyze last 7 days by user
+bin/data-utils/bq-cost-report
+
+# Analyze last 30 days
+bin/data-utils/bq-cost-report --days=30
+
+# Group by dataset
+bin/data-utils/bq-cost-report --group-by=dataset --top=20
+
+# Group by table
+bin/data-utils/bq-cost-report --group-by=table
+
+# Group by query type
+bin/data-utils/bq-cost-report --group-by=query_type
+
+# Analyze different project
+bin/data-utils/bq-cost-report --project=my-project --days=90
+
+# JSON output
+bin/data-utils/bq-cost-report --format=json
+
+# CSV output for further analysis
+bin/data-utils/bq-cost-report --days=30 --format=csv > costs.csv
+```
+
+**Output includes:**
+- Summary
+  - Total jobs executed
+  - Total data processed
+  - Total cost (USD)
+  - Average cost per day
+  - Cache hit rate
+- Top N results by grouping
+  - Number of jobs
+  - Cost (total and per job)
+  - Cache hit rate
+  - Color-coded by cost impact
+- Daily breakdown
+  - Jobs per day
+  - Data processed per day
+  - Cost per day
+- Cost trends and patterns
+
+**Use cases:**
+- Identify cost hot spots
+- Track usage by user or team
+- Find expensive queries or tables
+- Monitor daily cost trends
+- Export data for budget reporting
+
+**Note:** Requires access to `INFORMATION_SCHEMA.JOBS_BY_PROJECT`. Costs calculated using on-demand pricing ($6.25/TB).
+
 ### Installation
 
 To make utilities accessible from anywhere, add to your PATH:
@@ -884,8 +1120,11 @@ sudo ln -s /path/to/decentclaude/bin/data-utils/bq-schema-diff /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-query-cost /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-partition-info /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-lineage /usr/local/bin/
-<<<<<<< HEAD
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-table-compare /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/bq-explain /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/bq-optimize /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/bq-benchmark /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/bq-cost-report /usr/local/bin/
 
 # dbt utilities
 sudo ln -s /path/to/decentclaude/bin/data-utils/dbt-deps /usr/local/bin/
