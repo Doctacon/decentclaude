@@ -19,6 +19,14 @@ Powerful command-line utilities for common BigQuery operations:
 
 See [Data Utilities](#data-utilities) for detailed usage.
 
+### CLI Debug Utilities
+
+AI-assisted debugging and troubleshooting tools:
+
+- **ai-debug**: Intelligent error analysis, root cause suggestions, fix recommendations, knowledge base search, debug query generation, and incident reporting
+
+See [Debug Utilities](#debug-utilities) for detailed usage.
+
 ### Automated Validation Hooks
 
 - **SQL Syntax Validation**: Automatically validate SQL before execution or file writes
@@ -261,6 +269,58 @@ bin/data-utils/bq-lineage project.dataset.orders --format=mermaid
 
 **Note:** Lineage detection works best with views and materialized views. For tables, it searches for references in view definitions across the project.
 
+## Debug Utilities
+
+### ai-debug
+
+AI-assisted debugging and troubleshooting tool for intelligent error analysis.
+
+**Usage:**
+```bash
+bin/debug-utils/ai-debug <command> [options]
+```
+
+**Commands:**
+- `analyze` - Analyze error messages and extract key information
+- `suggest` - Suggest potential root causes for errors
+- `fix` - Provide fix recommendations and patches
+- `search` - Search knowledge base for similar issues
+- `query` - Generate debug queries for investigation
+- `report` - Create comprehensive incident reports
+
+**Examples:**
+```bash
+# Analyze error from file
+bin/debug-utils/ai-debug analyze error.log
+
+# Get root cause suggestions
+bin/debug-utils/ai-debug suggest traceback.txt --depth=deep
+
+# Search for similar issues
+bin/debug-utils/ai-debug search "division by zero"
+
+# Generate BigQuery debug queries
+bin/debug-utils/ai-debug query "partition errors" --platform=bigquery
+
+# Create incident report
+bin/debug-utils/ai-debug report error.log --format=markdown --output=incident.md
+
+# Analyze from command output
+pytest tests/ 2>&1 | bin/debug-utils/ai-debug analyze -
+```
+
+**Features:**
+- Intelligent error type detection (Python, BigQuery, SQL, Git, etc.)
+- Root cause suggestions with confidence scoring
+- Actionable fix recommendations with step-by-step instructions
+- Knowledge base search across docs, beads, and git commits
+- Platform-specific debug query generation
+- Multiple output formats (text, json, markdown)
+
+**Documentation:**
+- [Quick Start Guide](docs/debug/README.md)
+- [Comprehensive Reference](docs/debug/AI_DEBUG.md)
+
 ### Installation
 
 To make utilities accessible from anywhere, add to your PATH:
@@ -268,15 +328,20 @@ To make utilities accessible from anywhere, add to your PATH:
 ```bash
 # Add to ~/.bashrc or ~/.zshrc
 export PATH="$PATH:/path/to/decentclaude/bin/data-utils"
+export PATH="$PATH:/path/to/decentclaude/bin/debug-utils"
 ```
 
 Or create symlinks:
 
 ```bash
+# Data utilities
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-schema-diff /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-query-cost /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-partition-info /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-lineage /usr/local/bin/
+
+# Debug utilities
+sudo ln -s /path/to/decentclaude/bin/debug-utils/ai-debug /usr/local/bin/
 ```
 
 ### Requirements
@@ -346,10 +411,14 @@ chmod +x .git/hooks/pre-commit
 │   │   ├── bq-query-cost      # Estimate query costs
 │   │   ├── bq-partition-info  # Analyze partitions
 │   │   └── bq-lineage         # Explore table lineage
+│   ├── debug-utils/           # AI-assisted debugging utilities
+│   │   └── ai-debug           # Intelligent troubleshooting tool
 │   └── worktree-utils/        # Git worktree utilities
 ├── scripts/
 │   └── data_quality.py        # Data quality check framework
-├── docs/                      # Documentation
+├── docs/
+│   ├── debug/                 # Debug utilities documentation
+│   └── worktrees/             # Worktree utilities documentation
 ├── examples/                  # Example SQL and configs
 ├── data-engineering-patterns.md  # Best practices guide
 └── README.md                  # This file

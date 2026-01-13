@@ -1,0 +1,1314 @@
+#!/usr/bin/env python3
+"""
+ai-debug - AI-assisted debugging and troubleshooting
+
+Usage:
+  ai-debug analyze [<error_source>] [--format=<format>] [--context=<path>]
+  ai-debug suggest [<error_source>] [--format=<format>] [--depth=<level>]
+  ai-debug fix [<error_source>] [--format=<format>] [--auto-apply]
+  ai-debug search <query> [--format=<format>] [--scope=<scope>]
+  ai-debug query <context> [--format=<format>] [--platform=<platform>]
+  ai-debug report [<error_source>] [--format=<format>] [--output=<file>]
+  ai-debug --help
+
+Commands:
+  analyze    Analyze error messages and extract key information
+  suggest    Suggest potential root causes for errors
+  fix        Provide fix recommendations and patches
+  search     Search knowledge base for similar issues
+  query      Generate debug queries for investigation
+  report     Create comprehensive incident reports
+
+Arguments:
+  error_source    Error message file, log file, or '-' for stdin
+  query           Search query for knowledge base
+  context         Context for query generation (error, logs, code)
+
+Options:
+  --format=<format>     Output format: text, json, markdown (default: text)
+  --context=<path>      Additional context path (code file, config, etc.)
+  --depth=<level>       Analysis depth: shallow, normal, deep (default: normal)
+  --auto-apply          Automatically apply suggested fixes (use with caution)
+  --scope=<scope>       Search scope: docs, beads, commits, all (default: all)
+  --platform=<platform> Query platform: bigquery, postgres, python (default: auto)
+  --output=<file>       Output file for reports (default: stdout)
+  --help, -h            Show this help message
+
+Examples:
+  # Analyze error from file
+  ai-debug analyze error.log
+
+  # Get root cause suggestions for Python traceback
+  ai-debug suggest traceback.txt --depth=deep
+
+  # Search for similar SQL errors
+  ai-debug search "division by zero in aggregation"
+
+  # Generate BigQuery debug query
+  ai-debug query "partition errors" --platform=bigquery
+
+  # Create incident report
+  ai-debug report error.log --format=markdown --output=incident.md
+
+  # Analyze error from command output
+  pytest tests/ 2>&1 | ai-debug analyze -
+
+  # Get fix recommendations with JSON output
+  ai-debug fix error.log --format=json
+"""
+
+import sys
+import os
+import json
+import argparse
+import re
+import subprocess
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+from datetime import datetime
+from collections import defaultdict
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    MAGENTA = '\033[0;35m'
+    CYAN = '\033[0;36m'
+    WHITE = '\033[0;37m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+
+
+class ErrorAnalyzer:
+    """Analyze error messages and extract structured information"""
+
+    # Common error patterns
+    PATTERNS = {
+        'python_traceback': r'Traceback \(most recent call last\):',
+        'python_exception': r'^(\w+Error|\w+Exception): (.+)$',
+        'sql_error': r'(ERROR|error).*?at line (\d+)',
+        'bigquery_error': r'BigQuery error in \w+ operation: (.+)',
+        'git_error': r'fatal: (.+)',
+        'npm_error': r'npm ERR! (.+)',
+        'compilation_error': r'(\w+\.[\w]+):(\d+):(\d+): error: (.+)',
+    }
+
+    def __init__(self, error_text: str, context_path: Optional[str] = None):
+        self.error_text = error_text
+        self.context_path = context_path
+        self.lines = error_text.strip().split('\n')
+
+    def analyze(self) -> Dict[str, Any]:
+        """Analyze error and return structured information"""
+        analysis = {
+            'error_type': self._detect_error_type(),
+            'summary': self._extract_summary(),
+            'location': self._extract_location(),
+            'stack_trace': self._extract_stack_trace(),
+            'keywords': self._extract_keywords(),
+            'severity': self._assess_severity(),
+            'timestamp': datetime.now().isoformat(),
+        }
+
+        if self.context_path:
+            analysis['context'] = self._load_context()
+
+        return analysis
+
+    def _detect_error_type(self) -> str:
+        """Detect the type of error"""
+        text = self.error_text.lower()
+
+        if 'traceback' in text and 'error' in text:
+            return 'python'
+        elif 'bigquery' in text or 'bq' in text:
+            return 'bigquery'
+        elif 'sql' in text or 'select' in text or 'from' in text:
+            return 'sql'
+        elif 'git' in text or 'fatal:' in text:
+            return 'git'
+        elif 'npm' in text or 'node' in text:
+            return 'nodejs'
+        elif re.search(r'\.\w+:\d+:\d+:', self.error_text):
+            return 'compilation'
+        else:
+            return 'generic'
+
+    def _extract_summary(self) -> str:
+        """Extract a concise error summary"""
+        # Try to find the main error message
+        for pattern_name, pattern in self.PATTERNS.items():
+            match = re.search(pattern, self.error_text, re.MULTILINE)
+            if match:
+                if pattern_name == 'python_exception':
+                    return f"{match.group(1)}: {match.group(2)}"
+                elif pattern_name == 'bigquery_error':
+                    return match.group(1)
+                elif pattern_name == 'git_error':
+                    return match.group(1)
+
+        # Fallback: use last non-empty line or first line
+        non_empty = [line.strip() for line in self.lines if line.strip()]
+        if non_empty:
+            # Often the error is at the end
+            return non_empty[-1][:200]
+        return "Unknown error"
+
+    def _extract_location(self) -> Optional[Dict[str, Any]]:
+        """Extract file location and line numbers"""
+        # Python traceback
+        file_line = re.search(r'File "([^"]+)", line (\d+)', self.error_text)
+        if file_line:
+            return {
+                'file': file_line.group(1),
+                'line': int(file_line.group(2)),
+                'type': 'python'
+            }
+
+        # Compilation error format (file.ext:line:col)
+        comp_error = re.search(r'(\S+\.[\w]+):(\d+):(\d+):', self.error_text)
+        if comp_error:
+            return {
+                'file': comp_error.group(1),
+                'line': int(comp_error.group(2)),
+                'column': int(comp_error.group(3)),
+                'type': 'compilation'
+            }
+
+        return None
+
+    def _extract_stack_trace(self) -> List[str]:
+        """Extract stack trace if present"""
+        stack = []
+        in_trace = False
+
+        for line in self.lines:
+            if 'Traceback' in line or 'Stack trace:' in line:
+                in_trace = True
+                continue
+
+            if in_trace:
+                stripped = line.strip()
+                if stripped:
+                    stack.append(stripped)
+                    # Python tracebacks often end with exception line
+                    if re.match(r'^\w+Error:|^\w+Exception:', stripped):
+                        break
+
+        return stack
+
+    def _extract_keywords(self) -> List[str]:
+        """Extract relevant keywords for searching"""
+        keywords = set()
+
+        # Error type keywords
+        error_types = re.findall(r'(\w+Error|\w+Exception)', self.error_text)
+        keywords.update(error_types)
+
+        # SQL/BigQuery keywords
+        sql_keywords = re.findall(r'\b(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|TABLE|VIEW|PARTITION)\b',
+                                  self.error_text, re.IGNORECASE)
+        keywords.update([k.lower() for k in sql_keywords])
+
+        # Common error terms
+        error_terms = ['failed', 'error', 'exception', 'invalid', 'missing',
+                       'not found', 'timeout', 'permission', 'denied']
+        for term in error_terms:
+            if term in self.error_text.lower():
+                keywords.add(term)
+
+        return sorted(list(keywords))
+
+    def _assess_severity(self) -> str:
+        """Assess error severity"""
+        text = self.error_text.lower()
+
+        # Critical indicators
+        if any(word in text for word in ['fatal', 'critical', 'corruption', 'data loss']):
+            return 'critical'
+
+        # High severity
+        if any(word in text for word in ['failed', 'exception', 'error', 'denied']):
+            return 'high'
+
+        # Medium severity
+        if any(word in text for word in ['warning', 'deprecated', 'skipped']):
+            return 'medium'
+
+        return 'low'
+
+    def _load_context(self) -> Optional[Dict[str, Any]]:
+        """Load additional context from file"""
+        if not self.context_path or not os.path.exists(self.context_path):
+            return None
+
+        try:
+            with open(self.context_path, 'r') as f:
+                content = f.read()
+
+            return {
+                'file': self.context_path,
+                'size': len(content),
+                'lines': len(content.split('\n')),
+                'preview': content[:500]
+            }
+        except Exception as e:
+            return {'error': str(e)}
+
+
+class RootCauseSuggester:
+    """Suggest potential root causes for errors"""
+
+    # Common root causes mapped to error patterns
+    ROOT_CAUSES = {
+        'bigquery': {
+            'partition': [
+                'Partition column not specified in query',
+                'Partition pruning not working due to complex filters',
+                'Partition column type mismatch',
+                'Missing partition filter causing full table scan'
+            ],
+            'quota': [
+                'Query exceeded project quota',
+                'Too many concurrent queries',
+                'Slot quota exceeded',
+                'Rate limit exceeded'
+            ],
+            'syntax': [
+                'Invalid SQL syntax for BigQuery',
+                'Using unsupported SQL features',
+                'Incorrect function usage',
+                'Missing required clause'
+            ],
+            'permission': [
+                'Insufficient permissions on dataset',
+                'Table access denied',
+                'Service account lacks required roles',
+                'Cross-project permission issue'
+            ]
+        },
+        'python': {
+            'import': [
+                'Module not installed',
+                'Python path misconfigured',
+                'Circular import dependency',
+                'Package version incompatibility'
+            ],
+            'type': [
+                'Incorrect type passed to function',
+                'Null/None value not handled',
+                'Type annotation mismatch',
+                'Dictionary key missing'
+            ],
+            'attribute': [
+                'Object missing expected attribute',
+                'Method called on wrong type',
+                'Attribute accessed before initialization',
+                'Typo in attribute name'
+            ]
+        },
+        'git': {
+            'conflict': [
+                'Merge conflict in file',
+                'Conflicting changes from different branches',
+                'Rebase conflict',
+                'Cherry-pick conflict'
+            ],
+            'permission': [
+                'No push access to repository',
+                'SSH key not configured',
+                'Authentication failed',
+                'Protected branch restriction'
+            ]
+        }
+    }
+
+    def __init__(self, analysis: Dict[str, Any], depth: str = 'normal'):
+        self.analysis = analysis
+        self.depth = depth
+
+    def suggest(self) -> List[Dict[str, Any]]:
+        """Generate root cause suggestions"""
+        suggestions = []
+        error_type = self.analysis.get('error_type', 'generic')
+        summary = self.analysis.get('summary', '').lower()
+
+        # Get base suggestions from patterns
+        base_suggestions = self._get_base_suggestions(error_type, summary)
+
+        # Enhance with code analysis if location available
+        if self.depth in ['normal', 'deep'] and self.analysis.get('location'):
+            code_suggestions = self._analyze_code_context()
+            base_suggestions.extend(code_suggestions)
+
+        # Add confidence scores
+        for i, suggestion in enumerate(base_suggestions, 1):
+            suggestions.append({
+                'rank': i,
+                'cause': suggestion,
+                'confidence': self._calculate_confidence(suggestion, summary),
+                'category': self._categorize_cause(suggestion)
+            })
+
+        # Sort by confidence
+        suggestions.sort(key=lambda x: x['confidence'], reverse=True)
+
+        # Limit based on depth
+        limit = {'shallow': 3, 'normal': 5, 'deep': 10}.get(self.depth, 5)
+        return suggestions[:limit]
+
+    def _get_base_suggestions(self, error_type: str, summary: str) -> List[str]:
+        """Get base suggestions from patterns"""
+        suggestions = []
+
+        if error_type in self.ROOT_CAUSES:
+            for category, causes in self.ROOT_CAUSES[error_type].items():
+                if category in summary:
+                    suggestions.extend(causes)
+
+        # Generic suggestions based on keywords
+        if 'not found' in summary:
+            suggestions.append('Referenced resource does not exist')
+        if 'timeout' in summary:
+            suggestions.append('Operation exceeded time limit')
+        if 'permission' in summary or 'denied' in summary:
+            suggestions.append('Insufficient permissions or access control issue')
+        if 'syntax' in summary:
+            suggestions.append('Invalid syntax or formatting error')
+
+        return suggestions if suggestions else ['Unknown root cause - manual investigation needed']
+
+    def _analyze_code_context(self) -> List[str]:
+        """Analyze code at error location for additional insights"""
+        location = self.analysis.get('location', {})
+        filepath = location.get('file')
+        line_num = location.get('line', 0)
+
+        if not filepath or not os.path.exists(filepath):
+            return []
+
+        suggestions = []
+        try:
+            with open(filepath, 'r') as f:
+                lines = f.readlines()
+
+            if 0 < line_num <= len(lines):
+                error_line = lines[line_num - 1].strip()
+
+                # Check for common issues
+                if '=' in error_line and '==' not in error_line:
+                    if 'if' in error_line or 'while' in error_line:
+                        suggestions.append('Possible assignment (=) instead of comparison (==)')
+
+                if 'None' in error_line:
+                    suggestions.append('Null/None value may not be handled properly')
+
+                # Check imports
+                if line_num > 10:
+                    imports = [l for l in lines[:20] if 'import' in l]
+                    if not imports:
+                        suggestions.append('Missing imports - check if all modules are imported')
+
+        except Exception:
+            pass
+
+        return suggestions
+
+    def _calculate_confidence(self, suggestion: str, summary: str) -> float:
+        """Calculate confidence score for suggestion"""
+        # Simple keyword matching confidence
+        keywords = suggestion.lower().split()
+        matches = sum(1 for keyword in keywords if keyword in summary)
+
+        if matches >= 3:
+            return 0.9
+        elif matches >= 2:
+            return 0.7
+        elif matches >= 1:
+            return 0.5
+        else:
+            return 0.3
+
+    def _categorize_cause(self, suggestion: str) -> str:
+        """Categorize the root cause"""
+        suggestion_lower = suggestion.lower()
+
+        if 'permission' in suggestion_lower or 'access' in suggestion_lower:
+            return 'permissions'
+        elif 'syntax' in suggestion_lower or 'invalid' in suggestion_lower:
+            return 'syntax'
+        elif 'quota' in suggestion_lower or 'limit' in suggestion_lower:
+            return 'resource_limit'
+        elif 'import' in suggestion_lower or 'module' in suggestion_lower:
+            return 'dependency'
+        elif 'type' in suggestion_lower or 'none' in suggestion_lower:
+            return 'type_error'
+        else:
+            return 'other'
+
+
+class FixRecommender:
+    """Provide fix recommendations and potential patches"""
+
+    def __init__(self, analysis: Dict[str, Any], suggestions: List[Dict[str, Any]]):
+        self.analysis = analysis
+        self.suggestions = suggestions
+
+    def recommend(self) -> List[Dict[str, Any]]:
+        """Generate fix recommendations"""
+        fixes = []
+
+        for suggestion in self.suggestions:
+            category = suggestion.get('category', 'other')
+            fix = self._generate_fix(category, suggestion['cause'])
+
+            if fix:
+                fixes.append({
+                    'root_cause': suggestion['cause'],
+                    'confidence': suggestion['confidence'],
+                    'fix_type': fix['type'],
+                    'description': fix['description'],
+                    'steps': fix['steps'],
+                    'code_patch': fix.get('patch'),
+                    'verification': fix.get('verification')
+                })
+
+        return fixes
+
+    def _generate_fix(self, category: str, cause: str) -> Optional[Dict[str, Any]]:
+        """Generate specific fix for a root cause"""
+
+        # Permission fixes
+        if category == 'permissions':
+            return {
+                'type': 'permission',
+                'description': 'Grant required permissions',
+                'steps': [
+                    'Identify the required permission level',
+                    'Check current user/service account roles',
+                    'Grant appropriate IAM roles (for BigQuery: bigquery.dataViewer, bigquery.user)',
+                    'Verify permission propagation (may take a few minutes)'
+                ],
+                'verification': 'Run the query/operation again to confirm access'
+            }
+
+        # Syntax fixes
+        elif category == 'syntax':
+            return {
+                'type': 'syntax',
+                'description': 'Fix syntax error',
+                'steps': [
+                    'Review the error line indicated in the traceback',
+                    'Check for common syntax issues (missing quotes, brackets, commas)',
+                    'Validate against language/SQL specification',
+                    'Run linter or syntax checker'
+                ],
+                'patch': self._generate_syntax_patch(),
+                'verification': 'Parse/compile the code successfully'
+            }
+
+        # Dependency fixes
+        elif category == 'dependency':
+            return {
+                'type': 'dependency',
+                'description': 'Install or fix module dependencies',
+                'steps': [
+                    'Identify the missing module',
+                    'Install using package manager (pip install <module>, npm install <package>)',
+                    'Check compatibility with existing dependencies',
+                    'Update requirements.txt or package.json'
+                ],
+                'verification': 'Import the module successfully'
+            }
+
+        # Type error fixes
+        elif category == 'type_error':
+            return {
+                'type': 'type_handling',
+                'description': 'Fix type error or null handling',
+                'steps': [
+                    'Add type checking or validation',
+                    'Handle None/null values explicitly',
+                    'Add type hints (Python) or type guards (TypeScript)',
+                    'Use defensive programming patterns'
+                ],
+                'patch': self._generate_type_fix_patch(),
+                'verification': 'Run type checker and unit tests'
+            }
+
+        # Resource limit fixes
+        elif category == 'resource_limit':
+            return {
+                'type': 'optimization',
+                'description': 'Optimize to reduce resource usage',
+                'steps': [
+                    'Add partition filters to reduce data scanned',
+                    'Use LIMIT clauses for testing',
+                    'Optimize query to reduce complexity',
+                    'Request quota increase if necessary'
+                ],
+                'verification': 'Check query execution plan and resource usage'
+            }
+
+        # Generic fix
+        else:
+            return {
+                'type': 'investigation',
+                'description': 'Requires manual investigation',
+                'steps': [
+                    'Review full error logs and context',
+                    'Check recent changes in git history',
+                    'Search documentation and known issues',
+                    'Reproduce in isolated environment',
+                    'Add debug logging to gather more information'
+                ],
+                'verification': 'Error is resolved and tests pass'
+            }
+
+    def _generate_syntax_patch(self) -> Optional[str]:
+        """Generate a syntax fix patch if possible"""
+        location = self.analysis.get('location')
+        if not location:
+            return None
+
+        # This is a placeholder - real implementation would analyze the actual code
+        return "# Review line {line} in {file} for syntax errors".format(
+            line=location.get('line', '?'),
+            file=location.get('file', '?')
+        )
+
+    def _generate_type_fix_patch(self) -> Optional[str]:
+        """Generate a type fix patch if possible"""
+        # Placeholder for actual code analysis
+        return """# Add null checking:
+if value is not None:
+    # your code here
+    pass"""
+
+
+class KnowledgeBaseSearch:
+    """Search knowledge base for similar issues"""
+
+    def __init__(self, repo_path: str = '.'):
+        self.repo_path = Path(repo_path)
+
+    def search(self, query: str, scope: str = 'all') -> List[Dict[str, Any]]:
+        """Search for similar issues in knowledge base"""
+        results = []
+
+        if scope in ['docs', 'all']:
+            results.extend(self._search_docs(query))
+
+        if scope in ['beads', 'all']:
+            results.extend(self._search_beads(query))
+
+        if scope in ['commits', 'all']:
+            results.extend(self._search_commits(query))
+
+        # Sort by relevance
+        results.sort(key=lambda x: x.get('relevance', 0), reverse=True)
+
+        return results
+
+    def _search_docs(self, query: str) -> List[Dict[str, Any]]:
+        """Search documentation"""
+        docs_path = self.repo_path / 'docs'
+        if not docs_path.exists():
+            return []
+
+        results = []
+        query_lower = query.lower()
+
+        for doc_file in docs_path.rglob('*.md'):
+            try:
+                content = doc_file.read_text()
+                content_lower = content.lower()
+
+                if query_lower in content_lower:
+                    # Count matches for relevance
+                    matches = content_lower.count(query_lower)
+
+                    results.append({
+                        'source': 'docs',
+                        'type': 'documentation',
+                        'file': str(doc_file.relative_to(self.repo_path)),
+                        'relevance': min(matches * 0.1, 1.0),
+                        'preview': self._extract_preview(content, query)
+                    })
+            except Exception:
+                continue
+
+        return results
+
+    def _search_beads(self, query: str) -> List[Dict[str, Any]]:
+        """Search beads (issues) for similar problems"""
+        try:
+            # Use bd search command
+            result = subprocess.run(
+                ['bd', 'search', query],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                return []
+
+            # Parse output (simplified - actual format may vary)
+            lines = result.stdout.strip().split('\n')
+            results = []
+
+            for line in lines:
+                if line.strip():
+                    results.append({
+                        'source': 'beads',
+                        'type': 'issue',
+                        'content': line,
+                        'relevance': 0.8
+                    })
+
+            return results
+
+        except Exception:
+            return []
+
+    def _search_commits(self, query: str) -> List[Dict[str, Any]]:
+        """Search git commits for similar fixes"""
+        try:
+            # Search commit messages
+            result = subprocess.run(
+                ['git', 'log', '--all', '--grep=' + query, '--oneline', '-n', '10'],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=self.repo_path
+            )
+
+            if result.returncode != 0:
+                return []
+
+            results = []
+            for line in result.stdout.strip().split('\n'):
+                if line.strip():
+                    parts = line.split(' ', 1)
+                    if len(parts) == 2:
+                        results.append({
+                            'source': 'git',
+                            'type': 'commit',
+                            'hash': parts[0],
+                            'message': parts[1],
+                            'relevance': 0.7
+                        })
+
+            return results
+
+        except Exception:
+            return []
+
+    def _extract_preview(self, content: str, query: str, context_lines: int = 2) -> str:
+        """Extract preview around query match"""
+        lines = content.split('\n')
+        query_lower = query.lower()
+
+        for i, line in enumerate(lines):
+            if query_lower in line.lower():
+                start = max(0, i - context_lines)
+                end = min(len(lines), i + context_lines + 1)
+                preview = '\n'.join(lines[start:end])
+                return preview[:300] + '...' if len(preview) > 300 else preview
+
+        return content[:200] + '...'
+
+
+class DebugQueryGenerator:
+    """Generate debug queries for investigation"""
+
+    def __init__(self, context: str, platform: str = 'auto'):
+        self.context = context
+        self.platform = platform
+
+    def generate(self) -> List[Dict[str, Any]]:
+        """Generate debug queries"""
+        # Auto-detect platform if needed
+        if self.platform == 'auto':
+            self.platform = self._detect_platform()
+
+        if self.platform == 'bigquery':
+            return self._generate_bigquery_queries()
+        elif self.platform == 'postgres':
+            return self._generate_postgres_queries()
+        elif self.platform == 'python':
+            return self._generate_python_queries()
+        else:
+            return self._generate_generic_queries()
+
+    def _detect_platform(self) -> str:
+        """Auto-detect platform from context"""
+        context_lower = self.context.lower()
+
+        if 'bigquery' in context_lower or 'bq' in context_lower:
+            return 'bigquery'
+        elif 'postgres' in context_lower or 'pg' in context_lower:
+            return 'postgres'
+        elif 'python' in context_lower or 'traceback' in context_lower:
+            return 'python'
+        else:
+            return 'generic'
+
+    def _generate_bigquery_queries(self) -> List[Dict[str, Any]]:
+        """Generate BigQuery debug queries"""
+        return [
+            {
+                'purpose': 'Check recent job errors',
+                'query': """SELECT
+  job_id,
+  creation_time,
+  error_result.message as error_message,
+  query
+FROM `region-us`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+WHERE error_result IS NOT NULL
+  AND creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR)
+ORDER BY creation_time DESC
+LIMIT 10"""
+            },
+            {
+                'purpose': 'Check partition information',
+                'query': """SELECT
+  table_name,
+  partition_id,
+  total_rows,
+  total_logical_bytes
+FROM `project.dataset.INFORMATION_SCHEMA.PARTITIONS`
+WHERE table_name = 'YOUR_TABLE'
+ORDER BY partition_id DESC
+LIMIT 10"""
+            },
+            {
+                'purpose': 'Estimate query cost',
+                'query': """-- Use DRY RUN to estimate bytes scanned
+-- Add your query below and run with --dry_run flag
+
+SELECT * FROM `project.dataset.table` LIMIT 10"""
+            }
+        ]
+
+    def _generate_postgres_queries(self) -> List[Dict[str, Any]]:
+        """Generate PostgreSQL debug queries"""
+        return [
+            {
+                'purpose': 'Check active queries',
+                'query': """SELECT
+  pid,
+  usename,
+  application_name,
+  state,
+  query,
+  query_start
+FROM pg_stat_activity
+WHERE state != 'idle'
+ORDER BY query_start DESC;"""
+            },
+            {
+                'purpose': 'Check table size',
+                'query': """SELECT
+  schemaname,
+  tablename,
+  pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
+FROM pg_tables
+WHERE schemaname = 'public'
+ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
+LIMIT 10;"""
+            }
+        ]
+
+    def _generate_python_queries(self) -> List[Dict[str, Any]]:
+        """Generate Python debug commands"""
+        return [
+            {
+                'purpose': 'Check installed packages',
+                'query': 'pip list | grep -i <package_name>'
+            },
+            {
+                'purpose': 'Run with verbose logging',
+                'query': 'python -v your_script.py'
+            },
+            {
+                'purpose': 'Check Python path',
+                'query': 'python -c "import sys; print(\'\\n\'.join(sys.path))"'
+            }
+        ]
+
+    def _generate_generic_queries(self) -> List[Dict[str, Any]]:
+        """Generate generic debug commands"""
+        return [
+            {
+                'purpose': 'Check recent logs',
+                'query': 'tail -n 100 /var/log/application.log'
+            },
+            {
+                'purpose': 'Search for error patterns',
+                'query': 'grep -r "ERROR" ./logs/'
+            }
+        ]
+
+
+class IncidentReporter:
+    """Create comprehensive incident reports"""
+
+    def __init__(self, analysis: Dict[str, Any], suggestions: List[Dict[str, Any]],
+                 fixes: List[Dict[str, Any]]):
+        self.analysis = analysis
+        self.suggestions = suggestions
+        self.fixes = fixes
+        self.timestamp = datetime.now()
+
+    def generate_report(self, format: str = 'markdown') -> str:
+        """Generate incident report"""
+        if format == 'markdown':
+            return self._generate_markdown()
+        elif format == 'json':
+            return self._generate_json()
+        else:
+            return self._generate_text()
+
+    def _generate_markdown(self) -> str:
+        """Generate Markdown format report"""
+        report = f"""# Incident Report
+
+**Generated:** {self.timestamp.strftime('%Y-%m-%d %H:%M:%S')}
+
+## Summary
+
+**Error Type:** {self.analysis.get('error_type', 'Unknown')}
+**Severity:** {self.analysis.get('severity', 'Unknown')}
+
+{self.analysis.get('summary', 'No summary available')}
+
+## Error Details
+
+"""
+
+        # Location
+        location = self.analysis.get('location')
+        if location:
+            report += f"""**Location:**
+- File: `{location.get('file', 'N/A')}`
+- Line: {location.get('line', 'N/A')}
+"""
+            if 'column' in location:
+                report += f"- Column: {location.get('column')}\n"
+            report += "\n"
+
+        # Stack trace
+        stack = self.analysis.get('stack_trace', [])
+        if stack:
+            report += "**Stack Trace:**\n```\n"
+            report += '\n'.join(stack[:10])
+            report += "\n```\n\n"
+
+        # Root causes
+        report += "## Root Cause Analysis\n\n"
+        for i, suggestion in enumerate(self.suggestions[:5], 1):
+            confidence_pct = int(suggestion['confidence'] * 100)
+            report += f"{i}. **{suggestion['cause']}** ({confidence_pct}% confidence)\n"
+            report += f"   - Category: {suggestion['category']}\n\n"
+
+        # Recommended fixes
+        report += "## Recommended Fixes\n\n"
+        for i, fix in enumerate(self.fixes[:3], 1):
+            report += f"### Fix {i}: {fix['fix_type']}\n\n"
+            report += f"{fix['description']}\n\n"
+            report += "**Steps:**\n"
+            for step in fix['steps']:
+                report += f"1. {step}\n"
+            report += "\n"
+
+            if fix.get('code_patch'):
+                report += f"**Code Patch:**\n```\n{fix['code_patch']}\n```\n\n"
+
+            if fix.get('verification'):
+                report += f"**Verification:** {fix['verification']}\n\n"
+
+        # Keywords
+        keywords = self.analysis.get('keywords', [])
+        if keywords:
+            report += f"## Keywords\n\n{', '.join(keywords)}\n\n"
+
+        report += "---\n*Generated by ai-debug*\n"
+
+        return report
+
+    def _generate_json(self) -> str:
+        """Generate JSON format report"""
+        report = {
+            'timestamp': self.timestamp.isoformat(),
+            'analysis': self.analysis,
+            'root_causes': self.suggestions,
+            'fixes': self.fixes,
+            'metadata': {
+                'generator': 'ai-debug',
+                'version': '1.0.0'
+            }
+        }
+        return json.dumps(report, indent=2)
+
+    def _generate_text(self) -> str:
+        """Generate plain text format report"""
+        lines = [
+            "=" * 80,
+            "INCIDENT REPORT",
+            "=" * 80,
+            f"Generated: {self.timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
+            "",
+            "SUMMARY",
+            "-" * 80,
+            f"Error Type: {self.analysis.get('error_type', 'Unknown')}",
+            f"Severity: {self.analysis.get('severity', 'Unknown')}",
+            "",
+            self.analysis.get('summary', 'No summary available'),
+            "",
+        ]
+
+        # Root causes
+        lines.extend([
+            "ROOT CAUSE ANALYSIS",
+            "-" * 80,
+        ])
+        for i, suggestion in enumerate(self.suggestions[:5], 1):
+            confidence_pct = int(suggestion['confidence'] * 100)
+            lines.append(f"{i}. {suggestion['cause']} ({confidence_pct}% confidence)")
+
+        lines.append("")
+
+        # Fixes
+        lines.extend([
+            "RECOMMENDED FIXES",
+            "-" * 80,
+        ])
+        for i, fix in enumerate(self.fixes[:3], 1):
+            lines.append(f"\nFix {i}: {fix['fix_type']}")
+            lines.append(fix['description'])
+            lines.append("\nSteps:")
+            for j, step in enumerate(fix['steps'], 1):
+                lines.append(f"  {j}. {step}")
+
+        lines.extend([
+            "",
+            "=" * 80,
+        ])
+
+        return '\n'.join(lines)
+
+
+class OutputFormatter:
+    """Format output for different formats"""
+
+    @staticmethod
+    def format_analysis(analysis: Dict[str, Any], format: str) -> str:
+        """Format analysis output"""
+        if format == 'json':
+            return json.dumps(analysis, indent=2)
+        else:
+            return OutputFormatter._format_analysis_text(analysis)
+
+    @staticmethod
+    def _format_analysis_text(analysis: Dict[str, Any]) -> str:
+        """Format analysis as colored text"""
+        output = []
+
+        output.append(f"\n{Colors.CYAN}{Colors.BOLD}Error Analysis{Colors.RESET}\n")
+        output.append(f"{Colors.BOLD}Type:{Colors.RESET} {analysis.get('error_type', 'Unknown')}")
+        output.append(f"{Colors.BOLD}Severity:{Colors.RESET} {OutputFormatter._colorize_severity(analysis.get('severity', 'unknown'))}")
+        output.append(f"\n{Colors.BOLD}Summary:{Colors.RESET}")
+        output.append(f"  {analysis.get('summary', 'No summary available')}")
+
+        location = analysis.get('location')
+        if location:
+            output.append(f"\n{Colors.BOLD}Location:{Colors.RESET}")
+            output.append(f"  File: {Colors.BLUE}{location.get('file', 'N/A')}{Colors.RESET}")
+            output.append(f"  Line: {location.get('line', 'N/A')}")
+
+        keywords = analysis.get('keywords', [])
+        if keywords:
+            output.append(f"\n{Colors.BOLD}Keywords:{Colors.RESET} {', '.join(keywords)}")
+
+        return '\n'.join(output)
+
+    @staticmethod
+    def format_suggestions(suggestions: List[Dict[str, Any]], format: str) -> str:
+        """Format suggestions output"""
+        if format == 'json':
+            return json.dumps(suggestions, indent=2)
+        else:
+            return OutputFormatter._format_suggestions_text(suggestions)
+
+    @staticmethod
+    def _format_suggestions_text(suggestions: List[Dict[str, Any]]) -> str:
+        """Format suggestions as colored text"""
+        output = []
+
+        output.append(f"\n{Colors.CYAN}{Colors.BOLD}Root Cause Suggestions{Colors.RESET}\n")
+
+        for suggestion in suggestions:
+            confidence_pct = int(suggestion['confidence'] * 100)
+            confidence_color = OutputFormatter._colorize_confidence(suggestion['confidence'])
+
+            output.append(f"{Colors.BOLD}{suggestion['rank']}.{Colors.RESET} {suggestion['cause']}")
+            output.append(f"   {Colors.DIM}Category:{Colors.RESET} {suggestion['category']}")
+            output.append(f"   {Colors.DIM}Confidence:{Colors.RESET} {confidence_color}{confidence_pct}%{Colors.RESET}\n")
+
+        return '\n'.join(output)
+
+    @staticmethod
+    def format_fixes(fixes: List[Dict[str, Any]], format: str) -> str:
+        """Format fix recommendations output"""
+        if format == 'json':
+            return json.dumps(fixes, indent=2)
+        else:
+            return OutputFormatter._format_fixes_text(fixes)
+
+    @staticmethod
+    def _format_fixes_text(fixes: List[Dict[str, Any]]) -> str:
+        """Format fixes as colored text"""
+        output = []
+
+        output.append(f"\n{Colors.CYAN}{Colors.BOLD}Fix Recommendations{Colors.RESET}\n")
+
+        for i, fix in enumerate(fixes, 1):
+            output.append(f"{Colors.GREEN}{Colors.BOLD}Fix {i}: {fix['fix_type']}{Colors.RESET}")
+            output.append(f"{fix['description']}\n")
+
+            output.append(f"{Colors.BOLD}Steps:{Colors.RESET}")
+            for j, step in enumerate(fix['steps'], 1):
+                output.append(f"  {j}. {step}")
+
+            if fix.get('verification'):
+                output.append(f"\n{Colors.BOLD}Verification:{Colors.RESET} {fix['verification']}")
+
+            output.append("")
+
+        return '\n'.join(output)
+
+    @staticmethod
+    def format_search_results(results: List[Dict[str, Any]], format: str) -> str:
+        """Format search results output"""
+        if format == 'json':
+            return json.dumps(results, indent=2)
+        else:
+            return OutputFormatter._format_search_text(results)
+
+    @staticmethod
+    def _format_search_text(results: List[Dict[str, Any]]) -> str:
+        """Format search results as colored text"""
+        output = []
+
+        output.append(f"\n{Colors.CYAN}{Colors.BOLD}Knowledge Base Search Results{Colors.RESET}")
+        output.append(f"Found {len(results)} results\n")
+
+        for i, result in enumerate(results, 1):
+            relevance_pct = int(result.get('relevance', 0) * 100)
+
+            output.append(f"{Colors.BOLD}{i}.{Colors.RESET} {Colors.BLUE}[{result['source']}]{Colors.RESET} {result.get('type', 'unknown')}")
+
+            if 'file' in result:
+                output.append(f"   File: {result['file']}")
+            if 'message' in result:
+                output.append(f"   {result['message']}")
+            if 'preview' in result:
+                preview = result['preview'][:150]
+                output.append(f"   {Colors.DIM}{preview}...{Colors.RESET}")
+
+            output.append(f"   Relevance: {relevance_pct}%\n")
+
+        return '\n'.join(output)
+
+    @staticmethod
+    def format_queries(queries: List[Dict[str, Any]], format: str) -> str:
+        """Format debug queries output"""
+        if format == 'json':
+            return json.dumps(queries, indent=2)
+        else:
+            return OutputFormatter._format_queries_text(queries)
+
+    @staticmethod
+    def _format_queries_text(queries: List[Dict[str, Any]]) -> str:
+        """Format queries as colored text"""
+        output = []
+
+        output.append(f"\n{Colors.CYAN}{Colors.BOLD}Debug Queries{Colors.RESET}\n")
+
+        for i, query in enumerate(queries, 1):
+            output.append(f"{Colors.GREEN}{Colors.BOLD}{i}. {query['purpose']}{Colors.RESET}")
+            output.append(f"\n{Colors.DIM}{query['query']}{Colors.RESET}\n")
+
+        return '\n'.join(output)
+
+    @staticmethod
+    def _colorize_severity(severity: str) -> str:
+        """Colorize severity level"""
+        severity_colors = {
+            'critical': f"{Colors.RED}{Colors.BOLD}CRITICAL{Colors.RESET}",
+            'high': f"{Colors.RED}HIGH{Colors.RESET}",
+            'medium': f"{Colors.YELLOW}MEDIUM{Colors.RESET}",
+            'low': f"{Colors.GREEN}LOW{Colors.RESET}",
+        }
+        return severity_colors.get(severity.lower(), severity.upper())
+
+    @staticmethod
+    def _colorize_confidence(confidence: float) -> str:
+        """Colorize confidence level"""
+        if confidence >= 0.8:
+            return Colors.GREEN
+        elif confidence >= 0.5:
+            return Colors.YELLOW
+        else:
+            return Colors.RED
+
+
+def read_input(source: Optional[str]) -> str:
+    """Read error input from file or stdin"""
+    if not source or source == '-':
+        # Read from stdin
+        return sys.stdin.read()
+    else:
+        # Read from file
+        try:
+            with open(source, 'r') as f:
+                return f.read()
+        except FileNotFoundError:
+            print(f"{Colors.RED}Error: File not found: {source}{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"{Colors.RED}Error reading file: {e}{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
+
+
+def main():
+    """Main entry point"""
+    parser = argparse.ArgumentParser(
+        description='AI-assisted debugging and troubleshooting',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+
+    subparsers = parser.add_subparsers(dest='command', help='Command to execute')
+
+    # Analyze command
+    analyze_parser = subparsers.add_parser('analyze', help='Analyze error messages')
+    analyze_parser.add_argument('error_source', nargs='?', help='Error file or - for stdin')
+    analyze_parser.add_argument('--format', choices=['text', 'json'], default='text')
+    analyze_parser.add_argument('--context', help='Additional context file path')
+
+    # Suggest command
+    suggest_parser = subparsers.add_parser('suggest', help='Suggest root causes')
+    suggest_parser.add_argument('error_source', nargs='?', help='Error file or - for stdin')
+    suggest_parser.add_argument('--format', choices=['text', 'json'], default='text')
+    suggest_parser.add_argument('--depth', choices=['shallow', 'normal', 'deep'], default='normal')
+
+    # Fix command
+    fix_parser = subparsers.add_parser('fix', help='Provide fix recommendations')
+    fix_parser.add_argument('error_source', nargs='?', help='Error file or - for stdin')
+    fix_parser.add_argument('--format', choices=['text', 'json'], default='text')
+    fix_parser.add_argument('--auto-apply', action='store_true', help='Auto-apply fixes')
+
+    # Search command
+    search_parser = subparsers.add_parser('search', help='Search knowledge base')
+    search_parser.add_argument('query', help='Search query')
+    search_parser.add_argument('--format', choices=['text', 'json'], default='text')
+    search_parser.add_argument('--scope', choices=['docs', 'beads', 'commits', 'all'], default='all')
+
+    # Query command
+    query_parser = subparsers.add_parser('query', help='Generate debug queries')
+    query_parser.add_argument('context', help='Context for query generation')
+    query_parser.add_argument('--format', choices=['text', 'json'], default='text')
+    query_parser.add_argument('--platform', choices=['bigquery', 'postgres', 'python', 'auto'], default='auto')
+
+    # Report command
+    report_parser = subparsers.add_parser('report', help='Create incident report')
+    report_parser.add_argument('error_source', nargs='?', help='Error file or - for stdin')
+    report_parser.add_argument('--format', choices=['text', 'json', 'markdown'], default='markdown')
+    report_parser.add_argument('--output', help='Output file (default: stdout)')
+
+    args = parser.parse_args()
+
+    # Show help if no command
+    if not args.command:
+        parser.print_help()
+        sys.exit(0)
+
+    try:
+        # Execute command
+        if args.command == 'analyze':
+            error_text = read_input(args.error_source)
+            analyzer = ErrorAnalyzer(error_text, args.context)
+            analysis = analyzer.analyze()
+            output = OutputFormatter.format_analysis(analysis, args.format)
+            print(output)
+
+        elif args.command == 'suggest':
+            error_text = read_input(args.error_source)
+            analyzer = ErrorAnalyzer(error_text)
+            analysis = analyzer.analyze()
+            suggester = RootCauseSuggester(analysis, args.depth)
+            suggestions = suggester.suggest()
+            output = OutputFormatter.format_suggestions(suggestions, args.format)
+            print(output)
+
+        elif args.command == 'fix':
+            error_text = read_input(args.error_source)
+            analyzer = ErrorAnalyzer(error_text)
+            analysis = analyzer.analyze()
+            suggester = RootCauseSuggester(analysis)
+            suggestions = suggester.suggest()
+            recommender = FixRecommender(analysis, suggestions)
+            fixes = recommender.recommend()
+            output = OutputFormatter.format_fixes(fixes, args.format)
+            print(output)
+
+            if args.auto_apply:
+                print(f"\n{Colors.YELLOW}Auto-apply not yet implemented{Colors.RESET}")
+
+        elif args.command == 'search':
+            searcher = KnowledgeBaseSearch()
+            results = searcher.search(args.query, args.scope)
+            output = OutputFormatter.format_search_results(results, args.format)
+            print(output)
+
+        elif args.command == 'query':
+            generator = DebugQueryGenerator(args.context, args.platform)
+            queries = generator.generate()
+            output = OutputFormatter.format_queries(queries, args.format)
+            print(output)
+
+        elif args.command == 'report':
+            error_text = read_input(args.error_source)
+            analyzer = ErrorAnalyzer(error_text)
+            analysis = analyzer.analyze()
+            suggester = RootCauseSuggester(analysis)
+            suggestions = suggester.suggest()
+            recommender = FixRecommender(analysis, suggestions)
+            fixes = recommender.recommend()
+            reporter = IncidentReporter(analysis, suggestions, fixes)
+            report = reporter.generate_report(args.format)
+
+            if args.output:
+                with open(args.output, 'w') as f:
+                    f.write(report)
+                print(f"{Colors.GREEN}Report written to: {args.output}{Colors.RESET}")
+            else:
+                print(report)
+
+    except KeyboardInterrupt:
+        print(f"\n{Colors.YELLOW}Interrupted{Colors.RESET}")
+        sys.exit(130)
+    except Exception as e:
+        print(f"{Colors.RED}Error: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
