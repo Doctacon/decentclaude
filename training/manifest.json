@@ -1,0 +1,166 @@
+{
+  "library_version": "1.0.0",
+  "last_updated": "2026-01-12",
+  "platform": "to-be-configured",
+  "videos": [
+    {
+      "id": "intro-decentclaude",
+      "title": "Introduction to DecentClaude",
+      "description": "Overview of the DecentClaude data engineering toolkit",
+      "url": "https://example.com/videos/intro-decentclaude",
+      "duration_minutes": 10,
+      "level": "beginner",
+      "course": "decentclaude-fundamentals",
+      "topics": ["overview", "architecture", "getting-started"],
+      "prerequisites": [],
+      "created_date": "2024-01-01",
+      "updated_date": "2024-01-01",
+      "instructor": "DecentClaude Team",
+      "transcript_available": true,
+      "related_resources": [
+        "README.md",
+        "tutorials/getting-started/"
+      ]
+    },
+    {
+      "id": "setup-environment",
+      "title": "Setting Up Your Development Environment",
+      "description": "Step-by-step guide to configuring your environment",
+      "url": "https://example.com/videos/setup-environment",
+      "duration_minutes": 15,
+      "level": "beginner",
+      "course": "decentclaude-fundamentals",
+      "topics": ["setup", "configuration", "bigquery", "dbt"],
+      "prerequisites": ["intro-decentclaude"],
+      "created_date": "2024-01-01",
+      "updated_date": "2024-01-01",
+      "instructor": "DecentClaude Team",
+      "transcript_available": true,
+      "related_resources": [
+        "onboarding/setup-wizard.sh",
+        "onboarding/checklist.md"
+      ]
+    },
+    {
+      "id": "first-dbt-model",
+      "title": "Creating Your First dbt Model",
+      "description": "Hands-on tutorial for building a dbt model from scratch",
+      "url": "https://example.com/videos/first-dbt-model",
+      "duration_minutes": 20,
+      "level": "beginner",
+      "course": "dbt-essentials",
+      "topics": ["dbt", "sql", "transformations"],
+      "prerequisites": ["setup-environment"],
+      "created_date": "2024-01-02",
+      "updated_date": "2024-01-02",
+      "instructor": "DecentClaude Team",
+      "transcript_available": true,
+      "related_resources": [
+        "tutorials/getting-started/steps/03-first-dbt-model.md",
+        "walkthroughs/01-create-dbt-model.md"
+      ]
+    },
+    {
+      "id": "dbt-testing-basics",
+      "title": "dbt Testing Fundamentals",
+      "description": "Learn how to write and run dbt tests",
+      "url": "https://example.com/videos/dbt-testing-basics",
+      "duration_minutes": 18,
+      "level": "beginner",
+      "course": "dbt-essentials",
+      "topics": ["dbt", "testing", "data-quality"],
+      "prerequisites": ["first-dbt-model"],
+      "created_date": "2024-01-03",
+      "updated_date": "2024-01-03",
+      "instructor": "DecentClaude Team",
+      "transcript_available": true,
+      "related_resources": [
+        "data-testing-patterns.md",
+        "walkthroughs/02-add-schema-tests.md"
+      ]
+    },
+    {
+      "id": "bigquery-partitioning",
+      "title": "BigQuery Partitioning Strategies",
+      "description": "Understanding when and how to partition tables",
+      "url": "https://example.com/videos/bigquery-partitioning",
+      "duration_minutes": 22,
+      "level": "intermediate",
+      "course": "bigquery-optimization",
+      "topics": ["bigquery", "partitioning", "performance", "cost"],
+      "prerequisites": ["first-dbt-model"],
+      "created_date": "2024-01-05",
+      "updated_date": "2024-01-05",
+      "instructor": "DecentClaude Team",
+      "transcript_available": true,
+      "related_resources": [
+        "data-engineering-patterns.md",
+        "walkthroughs/05-setup-partitioning.md"
+      ]
+    },
+    {
+      "id": "incremental-models",
+      "title": "Building Incremental dbt Models",
+      "description": "Efficiently process large datasets with incremental models",
+      "url": "https://example.com/videos/incremental-models",
+      "duration_minutes": 25,
+      "level": "intermediate",
+      "course": "advanced-dbt-patterns",
+      "topics": ["dbt", "incremental", "performance"],
+      "prerequisites": ["first-dbt-model", "dbt-testing-basics"],
+      "created_date": "2024-01-10",
+      "updated_date": "2024-01-10",
+      "instructor": "DecentClaude Team",
+      "transcript_available": true,
+      "related_resources": [
+        "data-engineering-patterns.md",
+        "walkthroughs/04-create-incremental-model.md"
+      ]
+    },
+    {
+      "id": "custom-quality-checks",
+      "title": "Writing Custom Data Quality Checks",
+      "description": "Create advanced data quality validations in Python",
+      "url": "https://example.com/videos/custom-quality-checks",
+      "duration_minutes": 20,
+      "level": "intermediate",
+      "course": "data-quality-engineering",
+      "topics": ["data-quality", "python", "testing"],
+      "prerequisites": ["dbt-testing-basics"],
+      "created_date": "2024-01-12",
+      "updated_date": "2024-01-12",
+      "instructor": "DecentClaude Team",
+      "transcript_available": true,
+      "related_resources": [
+        "scripts/data_quality.py",
+        "walkthroughs/06-custom-quality-checks.md"
+      ]
+    },
+    {
+      "id": "incident-response-walkthrough",
+      "title": "Responding to Production Incidents",
+      "description": "Best practices for handling data incidents",
+      "url": "https://example.com/videos/incident-response",
+      "duration_minutes": 30,
+      "level": "advanced",
+      "course": "production-data-engineering",
+      "topics": ["operations", "incident-response", "troubleshooting"],
+      "prerequisites": ["dbt-testing-basics", "custom-quality-checks"],
+      "created_date": "2024-01-15",
+      "updated_date": "2024-01-15",
+      "instructor": "DecentClaude Team",
+      "transcript_available": true,
+      "related_resources": [
+        "playbooks.md",
+        "walkthroughs/11-incident-response.md"
+      ]
+    }
+  ],
+  "stats": {
+    "total_videos": 8,
+    "total_duration_minutes": 160,
+    "beginner_videos": 3,
+    "intermediate_videos": 3,
+    "advanced_videos": 2
+  }
+}

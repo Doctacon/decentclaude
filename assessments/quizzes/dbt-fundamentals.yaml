@@ -1,0 +1,250 @@
+---
+quiz_id: dbt-fundamentals
+title: "dbt Fundamentals Quiz"
+description: "Test your understanding of dbt basics, models, and testing"
+version: "1.0.0"
+level: beginner
+estimated_minutes: 15
+pass_threshold: 0.7
+max_attempts: null  # Unlimited
+related_course: "dbt-essentials"
+related_resources:
+  - "tutorials/getting-started/steps/03-first-dbt-model.md"
+  - "data-engineering-patterns.md"
+
+questions:
+  - id: q1
+    type: multiple_choice
+    question: "What is dbt primarily used for?"
+    options:
+      - "Data extraction from source systems"
+      - "Data transformation and modeling"
+      - "Data visualization"
+      - "Database administration"
+    correct_answer: 1
+    points: 1
+    explanation: |
+      dbt (data build tool) is a transformation framework that enables data
+      analysts and engineers to transform data in their warehouse more effectively.
+      It focuses on the T in ELT (Extract, Load, Transform).
+
+  - id: q2
+    type: true_false
+    question: "dbt models are written in SQL"
+    correct_answer: true
+    points: 1
+    explanation: |
+      dbt models are SELECT statements written in SQL (with Jinja templating).
+      This makes dbt accessible to anyone who knows SQL.
+
+  - id: q3
+    type: multiple_choice
+    question: "What does the config block in a dbt model define?"
+    options:
+      - "The database connection settings"
+      - "How the model should be materialized"
+      - "The model's dependencies"
+      - "The test cases for the model"
+    correct_answer: 1
+    points: 1
+    explanation: |
+      The config block specifies how dbt should build the model - as a view,
+      table, incremental, or ephemeral. Example:
+      {{ config(materialized='table') }}
+
+  - id: q4
+    type: multiple_select
+    question: "Which of these are valid dbt materializations? (Select all that apply)"
+    options:
+      - "view"
+      - "table"
+      - "incremental"
+      - "snapshot"
+      - "procedure"
+    correct_answers: [0, 1, 2]
+    points: 1
+    explanation: |
+      Valid materializations are:
+      - view: Virtual table, computed at query time
+      - table: Physical table, data persisted
+      - incremental: Append/update only new records
+      - ephemeral: CTE in dependent models (not listed)
+
+      Snapshot is a separate feature (not a materialization).
+      Procedure is not a dbt concept.
+
+  - id: q5
+    type: multiple_choice
+    question: "What command compiles dbt models without executing them?"
+    options:
+      - "dbt build"
+      - "dbt compile"
+      - "dbt run"
+      - "dbt test"
+    correct_answer: 1
+    points: 1
+    explanation: |
+      'dbt compile' processes Jinja templates and generates SQL files without
+      running them. It's useful for checking syntax and viewing the compiled SQL.
+      'dbt run' both compiles and executes the models.
+
+  - id: q6
+    type: true_false
+    question: "dbt tests are defined in the schema.yml file"
+    correct_answer: true
+    points: 1
+    explanation: |
+      Tests are typically defined in schema.yml files, where you specify
+      column-level tests like unique, not_null, relationships, and accepted_values.
+      You can also write custom tests as SQL files.
+
+  - id: q7
+    type: multiple_choice
+    question: "What does the ref() function do in dbt?"
+    options:
+      - "Creates a reference to external documentation"
+      - "References another dbt model and manages dependencies"
+      - "Defines referential integrity constraints"
+      - "Links to the git repository"
+    correct_answer: 1
+    points: 1
+    explanation: |
+      The ref() function is how you reference other dbt models. It:
+      1. Creates dependencies (ensures models run in correct order)
+      2. Uses the correct database/schema based on environment
+      Example: SELECT * FROM {{ ref('stg_users') }}
+
+  - id: q8
+    type: multiple_select
+    question: "What are CTEs used for in dbt models? (Select all that apply)"
+    options:
+      - "Organizing complex SQL logic"
+      - "Breaking down transformations into steps"
+      - "Making code more readable"
+      - "Improving query performance"
+    correct_answers: [0, 1, 2]
+    points: 1
+    explanation: |
+      CTEs (Common Table Expressions) in dbt are primarily for code organization
+      and readability. They help break complex logic into named, sequential steps.
+      While they don't inherently improve performance, well-organized code is
+      easier to optimize.
+
+  - id: q9
+    type: multiple_choice
+    question: "What is the purpose of staging models (stg_) in dbt?"
+    options:
+      - "To store data temporarily during testing"
+      - "To provide light cleaning and renaming of source data"
+      - "To aggregate data for reporting"
+      - "To create backup copies of tables"
+    correct_answer: 1
+    points: 1
+    explanation: |
+      Staging models create a 1:1 relationship with source tables and perform
+      light transformations like:
+      - Renaming columns to standard conventions
+      - Casting data types
+      - Basic data cleaning
+      They don't contain complex business logic - that's for intermediate models.
+
+  - id: q10
+    type: true_false
+    question: "You should always use table materialization for best performance"
+    correct_answer: false
+    points: 1
+    explanation: |
+      The choice of materialization depends on your use case:
+      - Views: Good for staging, minimal storage, always fresh data
+      - Tables: Good for final marts, fast queries, takes storage
+      - Incremental: Good for large fact tables, efficient updates
+      There's no one-size-fits-all answer.
+
+  - id: q11
+    type: multiple_choice
+    question: "How do you run only a specific dbt model?"
+    options:
+      - "dbt run model_name"
+      - "dbt run --select model_name"
+      - "dbt run --model model_name"
+      - "dbt model_name run"
+    correct_answer: 1
+    points: 1
+    explanation: |
+      The --select (or -s) flag allows you to run specific models:
+      - dbt run --select model_name
+      - dbt run --select +model_name (includes upstream dependencies)
+      - dbt run --select model_name+ (includes downstream dependencies)
+
+  - id: q12
+    type: multiple_select
+    question: "What do dbt tests validate? (Select all that apply)"
+    options:
+      - "Data quality"
+      - "Model dependencies"
+      - "SQL syntax"
+      - "Business logic assumptions"
+    correct_answers: [0, 3]
+    points: 1
+    explanation: |
+      dbt tests primarily validate:
+      - Data quality (nulls, uniqueness, referential integrity)
+      - Business logic assumptions (accepted values, custom checks)
+
+      They don't test:
+      - Dependencies (managed by ref() function)
+      - SQL syntax (checked during compile/run)
+
+  - id: q13
+    type: multiple_choice
+    question: "What happens when a dbt test fails?"
+    options:
+      - "The model is not created"
+      - "The test failure is reported but the model still exists"
+      - "All downstream models are deleted"
+      - "The dbt project is invalidated"
+    correct_answer: 1
+    points: 1
+    explanation: |
+      When tests fail, dbt reports the failure (and can optionally store
+      failing rows), but already-created models remain. Tests run AFTER models
+      are built. This allows you to investigate failures without losing work.
+
+  - id: q14
+    type: true_false
+    question: "dbt can only work with BigQuery"
+    correct_answer: false
+    points: 1
+    explanation: |
+      dbt supports many data warehouses including:
+      - BigQuery (Google)
+      - Snowflake
+      - Redshift (AWS)
+      - Databricks
+      - Postgres
+      - And many others through adapters
+
+  - id: q15
+    type: multiple_choice
+    question: "What is the recommended directory structure for dbt models?"
+    options:
+      - "All models in a single directory"
+      - "Organized by database tables"
+      - "staging/ → intermediate/ → marts/"
+      - "models/ → tests/ → docs/"
+    correct_answer: 2
+    points: 1
+    explanation: |
+      The recommended structure follows the data transformation flow:
+      - staging/: 1:1 with sources, light cleaning
+      - intermediate/: Business logic, reusable components
+      - marts/: Final analytics tables (facts and dimensions)
+
+      This makes the data lineage clear and promotes reusability.
+
+metadata:
+  created_date: "2026-01-12"
+  created_by: "DecentClaude Team"
+  last_updated: "2026-01-12"
+  tags: ["dbt", "fundamentals", "beginner"]
+  difficulty_rating: 2.5  # Out of 5

@@ -1,0 +1,297 @@
+---
+# Assessment Scoring Rubrics
+version: "1.0.0"
+last_updated: "2026-01-12"
+
+# Quiz Scoring
+quiz_scoring:
+  default_pass_threshold: 0.7
+  partial_credit:
+    multiple_select: true  # Proportional credit
+    multiple_choice: false  # All or nothing
+  question_weights:
+    default: 1
+    can_override: true
+
+# Exercise Scoring
+exercise_rubrics:
+  staging_model:
+    total_points: 100
+    criteria:
+      - category: "Code Quality"
+        weight: 30
+        subcriteria:
+          - name: "Proper naming conventions"
+            points: 10
+          - name: "Effective use of CTEs"
+            points: 10
+          - name: "Clean, readable SQL"
+            points: 10
+
+      - category: "Functionality"
+        weight: 25
+        subcriteria:
+          - name: "Model runs successfully"
+            points: 10
+          - name: "Correct data transformations"
+            points: 10
+          - name: "Handles edge cases"
+            points: 5
+
+      - category: "Testing"
+        weight: 25
+        subcriteria:
+          - name: "Has appropriate tests"
+            points: 10
+          - name: "All tests pass"
+            points: 10
+          - name: "Tests cover edge cases"
+            points: 5
+
+      - category: "Documentation"
+        weight: 20
+        subcriteria:
+          - name: "Schema.yml complete"
+            points: 10
+          - name: "Clear column descriptions"
+            points: 5
+          - name: "Model description present"
+            points: 5
+
+    pass_threshold: 75
+
+  intermediate_model:
+    total_points: 100
+    criteria:
+      - category: "Code Quality"
+        weight: 25
+        subcriteria:
+          - name: "Well-organized CTEs"
+            points: 8
+          - name: "Efficient SQL"
+            points: 8
+          - name: "Follows style guide"
+            points: 9
+
+      - category: "Business Logic"
+        weight: 30
+        subcriteria:
+          - name: "Correct calculations"
+            points: 15
+          - name: "Handles nulls appropriately"
+            points: 8
+          - name: "Edge cases considered"
+            points: 7
+
+      - category: "Testing"
+        weight: 25
+        subcriteria:
+          - name: "Comprehensive test coverage"
+            points: 12
+          - name: "All tests pass"
+            points: 8
+          - name: "Custom tests where needed"
+            points: 5
+
+      - category: "Documentation"
+        weight: 20
+        subcriteria:
+          - name: "Clear documentation"
+            points: 10
+          - name: "Business context explained"
+            points: 10
+
+    pass_threshold: 75
+
+  data_quality_check:
+    total_points: 100
+    criteria:
+      - category: "Code Quality"
+        weight: 25
+        subcriteria:
+          - name: "Follows framework pattern"
+            points: 10
+          - name: "Clean, maintainable code"
+            points: 10
+          - name: "Proper error handling"
+            points: 5
+
+      - category: "Functionality"
+        weight: 35
+        subcriteria:
+          - name: "Check executes successfully"
+            points: 15
+          - name: "Validates correct dimension"
+            points: 10
+          - name: "Appropriate thresholds"
+            points: 10
+
+      - category: "Reporting"
+        weight: 20
+        subcriteria:
+          - name: "Clear pass/fail message"
+            points: 10
+          - name: "Helpful diagnostic info"
+            points: 10
+
+      - category: "Documentation"
+        weight: 20
+        subcriteria:
+          - name: "Docstrings present"
+            points: 10
+          - name: "Usage examples"
+            points: 10
+
+    pass_threshold: 75
+
+# Capstone Project Scoring
+capstone_rubrics:
+  junior_data_engineer:
+    total_points: 100
+    criteria:
+      - category: "Code Quality"
+        weight: 30
+        subcriteria:
+          - name: "Naming conventions followed"
+            points: 8
+          - name: "Code is organized and readable"
+            points: 8
+          - name: "Efficient SQL queries"
+            points: 7
+          - name: "DRY principle applied"
+            points: 7
+
+      - category: "Test Coverage"
+        weight: 25
+        subcriteria:
+          - name: "All critical fields tested"
+            points: 10
+          - name: "Tests are comprehensive"
+            points: 8
+          - name: "All tests pass"
+            points: 7
+
+      - category: "Documentation"
+        weight: 20
+        subcriteria:
+          - name: "README is clear and complete"
+            points: 7
+          - name: "Models documented in schema.yml"
+            points: 7
+          - name: "dbt docs generated"
+            points: 6
+
+      - category: "Functionality"
+        weight: 25
+        subcriteria:
+          - name: "All requirements met"
+            points: 10
+          - name: "Pipeline runs end-to-end"
+            points: 8
+          - name: "Data quality checks pass"
+            points: 7
+
+    pass_threshold: 75
+    excellence_threshold: 90
+
+# Certification Scoring
+certification_scoring:
+  components:
+    quizzes:
+      weight: 0.30
+      min_score: 0.70
+      scoring_method: "average"
+
+    exercises:
+      weight: 0.30
+      min_score: 0.75
+      scoring_method: "weighted_average"
+
+    capstone:
+      weight: 0.40
+      min_score: 0.75
+      scoring_method: "rubric"
+
+  overall_thresholds:
+    distinction: 0.90
+    merit: 0.80
+    pass: 0.75
+    fail: 0.00
+
+# Code Review Criteria
+code_review:
+  areas:
+    - name: "SQL Best Practices"
+      importance: high
+      checkpoints:
+        - "Uses CTEs for organization"
+        - "Avoids SELECT *"
+        - "Proper indentation"
+        - "Meaningful aliases"
+
+    - name: "dbt Patterns"
+      importance: high
+      checkpoints:
+        - "Appropriate materializations"
+        - "Correct use of ref()"
+        - "Follows staging/intermediate/marts structure"
+        - "Config blocks used properly"
+
+    - name: "Testing"
+      importance: high
+      checkpoints:
+        - "Critical fields have tests"
+        - "Relationships tested"
+        - "Custom tests where needed"
+        - "Tests are meaningful"
+
+    - name: "Documentation"
+      importance: medium
+      checkpoints:
+        - "All models documented"
+        - "Columns described"
+        - "Business context provided"
+        - "README is helpful"
+
+    - name: "Performance"
+      importance: medium
+      checkpoints:
+        - "Partitioning used appropriately"
+        - "Joins are efficient"
+        - "Materialization strategy sound"
+        - "Query costs considered"
+
+  result_categories:
+    - "Approved - Excellent work"
+    - "Approved - Minor suggestions"
+    - "Revisions requested - Address comments"
+    - "Major revisions needed"
+
+# Feedback Templates
+feedback_templates:
+  quiz_pass:
+    message: "Congratulations! You passed with {score}%. Review the explanations for questions you missed to reinforce learning."
+
+  quiz_fail:
+    message: "You scored {score}%, below the {threshold}% threshold. Review the material and try again. Focus on: {weak_areas}"
+
+  exercise_excellent:
+    message: "Excellent work! Your submission scored {score}%. {strengths}"
+
+  exercise_pass:
+    message: "Good work! You passed with {score}%. Consider these improvements: {suggestions}"
+
+  exercise_revise:
+    message: "Your submission needs revision. Score: {score}%. Please address: {required_changes}"
+
+  capstone_distinction:
+    message: "Outstanding work! Your project demonstrates mastery of the concepts. Score: {score}%"
+
+  capstone_merit:
+    message: "Very good work! Your project shows strong understanding. Score: {score}%. Minor improvements: {suggestions}"
+
+  capstone_pass:
+    message: "Good work! You've met the requirements. Score: {score}%. Areas for growth: {areas}"
+
+  capstone_revise:
+    message: "Your project needs revision before certification. Score: {score}%. Required changes: {changes}"

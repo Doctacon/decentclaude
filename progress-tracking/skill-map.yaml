@@ -1,0 +1,460 @@
+---
+# DecentClaude Skill Map
+# Defines the complete skill taxonomy and progression model
+version: "1.0.0"
+last_updated: "2026-01-12"
+
+skill_domains:
+  - id: sql-query-languages
+    name: "SQL & Query Languages"
+    description: "Foundational querying and data manipulation skills"
+    skills:
+      - id: basic-sql
+        name: "Basic SQL"
+        description: "SELECT, WHERE, JOIN, GROUP BY, aggregate functions"
+        level_definitions:
+          novice: "Understands SQL concepts"
+          beginner: "Can write simple SELECT queries"
+          intermediate: "Can use joins and aggregations effectively"
+          advanced: "Can write complex queries with subqueries and CTEs"
+          expert: "Can optimize queries and teach others"
+        prerequisites: []
+        learning_resources:
+          - type: tutorial
+            id: sql-basics
+          - type: video
+            id: intro-to-sql
+        validation:
+          - type: quiz
+            id: sql-fundamentals
+          - type: exercise
+            id: write-queries
+
+      - id: advanced-sql
+        name: "Advanced SQL"
+        description: "Window functions, CTEs, complex joins, query optimization"
+        prerequisites:
+          - skill: basic-sql
+            min_level: intermediate
+        learning_resources:
+          - type: tutorial
+            id: advanced-sql-patterns
+          - type: video
+            id: window-functions
+        validation:
+          - type: quiz
+            id: advanced-sql-quiz
+          - type: exercise
+            id: complex-analytics
+
+      - id: bigquery-specific
+        name: "BigQuery Specific Features"
+        description: "BigQuery-specific syntax, functions, and optimization"
+        prerequisites:
+          - skill: basic-sql
+            min_level: intermediate
+        learning_resources:
+          - type: course
+            id: bigquery-basics
+          - type: walkthrough
+            id: bigquery-optimization
+        validation:
+          - type: quiz
+            id: bigquery-basics
+          - type: exercise
+            id: optimize-bq-query
+
+  - id: transformation-frameworks
+    name: "Transformation Frameworks"
+    description: "Tools for data transformation and modeling"
+    skills:
+      - id: dbt-basics
+        name: "dbt Basics"
+        description: "Models, tests, materializations, basic Jinja"
+        prerequisites:
+          - skill: basic-sql
+            min_level: beginner
+        learning_resources:
+          - type: course
+            id: dbt-essentials
+          - type: tutorial
+            id: getting-started
+          - type: video
+            id: first-dbt-model
+        validation:
+          - type: quiz
+            id: dbt-fundamentals
+          - type: exercise
+            id: create-staging-model
+
+      - id: dbt-testing
+        name: "dbt Testing"
+        description: "Schema tests, custom tests, test coverage"
+        prerequisites:
+          - skill: dbt-basics
+            min_level: beginner
+        learning_resources:
+          - type: video
+            id: dbt-testing-basics
+          - type: walkthrough
+            id: add-schema-tests
+        validation:
+          - type: quiz
+            id: dbt-testing-quiz
+          - type: exercise
+            id: comprehensive-tests
+
+      - id: dbt-advanced
+        name: "Advanced dbt Patterns"
+        description: "Incremental models, snapshots, macros, packages"
+        prerequisites:
+          - skill: dbt-basics
+            min_level: intermediate
+          - skill: dbt-testing
+            min_level: intermediate
+        learning_resources:
+          - type: course
+            id: advanced-dbt-patterns
+          - type: video
+            id: incremental-models
+          - type: walkthrough
+            id: create-incremental-model
+        validation:
+          - type: quiz
+            id: advanced-dbt
+          - type: project
+            id: advanced-dbt-project
+
+      - id: sqlmesh-basics
+        name: "SQLMesh Basics"
+        description: "SQLMesh fundamentals, differences from dbt"
+        prerequisites:
+          - skill: basic-sql
+            min_level: intermediate
+        learning_resources:
+          - type: tutorial
+            id: sqlmesh-intro
+        validation:
+          - type: quiz
+            id: sqlmesh-quiz
+
+  - id: data-quality
+    name: "Data Quality & Testing"
+    description: "Ensuring data reliability and correctness"
+    skills:
+      - id: testing-strategies
+        name: "Testing Strategies"
+        description: "Unit, integration, and end-to-end testing approaches"
+        prerequisites:
+          - skill: dbt-basics
+            min_level: beginner
+        learning_resources:
+          - type: document
+            id: data-testing-patterns.md
+        validation:
+          - type: quiz
+            id: data-quality-basics
+
+      - id: quality-frameworks
+        name: "Quality Frameworks"
+        description: "Building custom quality check frameworks"
+        prerequisites:
+          - skill: testing-strategies
+            min_level: intermediate
+          - skill: python-basics
+            min_level: beginner
+        learning_resources:
+          - type: tutorial
+            id: getting-started/step-4
+          - type: video
+            id: custom-quality-checks
+          - type: walkthrough
+            id: custom-quality-checks
+        validation:
+          - type: exercise
+            id: implement-quality-check
+
+      - id: monitoring-alerting
+        name: "Monitoring & Alerting"
+        description: "Continuous quality monitoring and alerting"
+        prerequisites:
+          - skill: quality-frameworks
+            min_level: intermediate
+        learning_resources:
+          - type: document
+            id: playbooks.md
+        validation:
+          - type: project
+            id: monitoring-system
+
+  - id: operations
+    name: "Data Operations"
+    description: "Production operations and reliability"
+    skills:
+      - id: deployment
+        name: "Deployment & CI/CD"
+        description: "Deploying data pipelines safely to production"
+        prerequisites:
+          - skill: dbt-basics
+            min_level: intermediate
+          - skill: testing-strategies
+            min_level: intermediate
+        learning_resources:
+          - type: walkthrough
+            id: deploy-to-production
+        validation:
+          - type: exercise
+            id: cicd-pipeline
+
+      - id: incident-response
+        name: "Incident Response"
+        description: "Responding to and resolving production issues"
+        prerequisites:
+          - skill: dbt-advanced
+            min_level: intermediate
+          - skill: quality-frameworks
+            min_level: intermediate
+        learning_resources:
+          - type: video
+            id: incident-response-walkthrough
+          - type: walkthrough
+            id: incident-response
+          - type: document
+            id: playbooks.md
+        validation:
+          - type: simulation
+            id: incident-response-sim
+          - type: quiz
+            id: incident-response-quiz
+
+      - id: performance-tuning
+        name: "Performance Tuning"
+        description: "Optimizing query performance and resource usage"
+        prerequisites:
+          - skill: bigquery-specific
+            min_level: intermediate
+          - skill: dbt-advanced
+            min_level: intermediate
+        learning_resources:
+          - type: course
+            id: bigquery-optimization
+          - type: walkthrough
+            id: optimize-bigquery-costs
+        validation:
+          - type: quiz
+            id: bigquery-optimization
+          - type: exercise
+            id: optimization-exercise
+
+  - id: programming
+    name: "Programming Skills"
+    description: "Programming for data engineering"
+    skills:
+      - id: python-basics
+        name: "Python Basics"
+        description: "Python fundamentals for data engineering"
+        prerequisites: []
+        learning_resources:
+          - type: external
+            url: "https://docs.python.org/tutorial/"
+        validation:
+          - type: quiz
+            id: python-basics-quiz
+
+      - id: python-data-engineering
+        name: "Python for Data Engineering"
+        description: "Pandas, data quality frameworks, automation"
+        prerequisites:
+          - skill: python-basics
+            min_level: intermediate
+        learning_resources:
+          - type: tutorial
+            id: python-data-quality
+        validation:
+          - type: exercise
+            id: python-pipeline
+
+  - id: tools-platforms
+    name: "Tools & Platforms"
+    description: "Platform-specific knowledge"
+    skills:
+      - id: bigquery-platform
+        name: "BigQuery Platform"
+        description: "Console, APIs, cost management, admin"
+        prerequisites:
+          - skill: bigquery-specific
+            min_level: beginner
+        learning_resources:
+          - type: course
+            id: bigquery-basics
+        validation:
+          - type: quiz
+            id: bigquery-basics
+
+      - id: git-version-control
+        name: "Git Version Control"
+        description: "Git fundamentals for data projects"
+        prerequisites: []
+        learning_resources:
+          - type: external
+            url: "https://git-scm.com/book"
+        validation:
+          - type: exercise
+            id: git-workflow
+
+      - id: decentclaude-toolkit
+        name: "DecentClaude Toolkit"
+        description: "Using DecentClaude CLI utilities and frameworks"
+        prerequisites: []
+        learning_resources:
+          - type: course
+            id: decentclaude-fundamentals
+          - type: tutorial
+            id: getting-started
+        validation:
+          - type: quiz
+            id: decentclaude-quiz
+
+# Skill progression paths
+progression_paths:
+  junior_data_engineer:
+    name: "Junior Data Engineer"
+    description: "Path to junior data engineer competency"
+    milestones:
+      - level: 1
+        name: "Foundation"
+        required_skills:
+          - skill: basic-sql
+            min_level: intermediate
+          - skill: dbt-basics
+            min_level: beginner
+          - skill: bigquery-platform
+            min_level: beginner
+
+      - level: 2
+        name: "Core Skills"
+        required_skills:
+          - skill: dbt-basics
+            min_level: intermediate
+          - skill: dbt-testing
+            min_level: intermediate
+          - skill: testing-strategies
+            min_level: beginner
+
+      - level: 3
+        name: "Proficiency"
+        required_skills:
+          - skill: dbt-advanced
+            min_level: intermediate
+          - skill: quality-frameworks
+            min_level: beginner
+          - skill: deployment
+            min_level: beginner
+
+  senior_data_engineer:
+    name: "Senior Data Engineer"
+    description: "Path to senior data engineer competency"
+    milestones:
+      - level: 1
+        name: "Foundation"
+        required_skills:
+          - skill: basic-sql
+            min_level: advanced
+          - skill: dbt-basics
+            min_level: intermediate
+          - skill: python-basics
+            min_level: intermediate
+
+      - level: 2
+        name: "Advanced Skills"
+        required_skills:
+          - skill: dbt-advanced
+            min_level: advanced
+          - skill: quality-frameworks
+            min_level: intermediate
+          - skill: performance-tuning
+            min_level: intermediate
+
+      - level: 3
+        name: "Expertise"
+        required_skills:
+          - skill: incident-response
+            min_level: advanced
+          - skill: deployment
+            min_level: advanced
+          - skill: monitoring-alerting
+            min_level: intermediate
+
+  analytics_engineer:
+    name: "Analytics Engineer"
+    description: "Specialization in analytics transformations"
+    milestones:
+      - level: 1
+        name: "Foundation"
+        required_skills:
+          - skill: basic-sql
+            min_level: intermediate
+          - skill: dbt-basics
+            min_level: intermediate
+
+      - level: 2
+        name: "Analytics Focus"
+        required_skills:
+          - skill: advanced-sql
+            min_level: advanced
+          - skill: dbt-advanced
+            min_level: intermediate
+          - skill: performance-tuning
+            min_level: intermediate
+
+      - level: 3
+        name: "Mastery"
+        required_skills:
+          - skill: dbt-advanced
+            min_level: advanced
+          - skill: testing-strategies
+            min_level: advanced
+
+# Skill badges
+badges:
+  - id: sql-expert
+    name: "SQL Expert"
+    description: "Mastered SQL skills"
+    criteria:
+      - skill: basic-sql
+        min_level: expert
+      - skill: advanced-sql
+        min_level: advanced
+
+  - id: dbt-master
+    name: "dbt Master"
+    description: "dbt expertise across all areas"
+    criteria:
+      - skill: dbt-basics
+        min_level: expert
+      - skill: dbt-testing
+        min_level: advanced
+      - skill: dbt-advanced
+        min_level: advanced
+
+  - id: quality-champion
+    name: "Quality Champion"
+    description: "Data quality expert"
+    criteria:
+      - skill: testing-strategies
+        min_level: advanced
+      - skill: quality-frameworks
+        min_level: advanced
+      - skill: monitoring-alerting
+        min_level: intermediate
+
+  - id: production-ready
+    name: "Production Ready"
+    description: "Can operate production systems"
+    criteria:
+      - skill: deployment
+        min_level: advanced
+      - skill: incident-response
+        min_level: advanced
+      - skill: performance-tuning
+        min_level: intermediate

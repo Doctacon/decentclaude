@@ -1,0 +1,204 @@
+---
+# DecentClaude Video Training Courses
+version: "1.0.0"
+last_updated: "2026-01-12"
+
+courses:
+  - id: decentclaude-fundamentals
+    title: "DecentClaude Fundamentals"
+    description: "Get started with DecentClaude and understand the core concepts"
+    level: beginner
+    estimated_hours: 2
+    videos:
+      - intro-decentclaude
+      - setup-environment
+    completion_criteria:
+      - watch_all_videos: true
+      - pass_quiz: "quiz-decentclaude-fundamentals"
+    certificate_awarded: "DecentClaude Fundamentals Certificate"
+
+  - id: dbt-essentials
+    title: "dbt Essentials"
+    description: "Master the fundamentals of dbt transformations"
+    level: beginner
+    estimated_hours: 3
+    prerequisites:
+      - decentclaude-fundamentals
+    videos:
+      - first-dbt-model
+      - dbt-testing-basics
+    completion_criteria:
+      - watch_all_videos: true
+      - complete_exercise: "exercise-dbt-basics"
+      - pass_quiz: "quiz-dbt-essentials"
+    certificate_awarded: "dbt Essentials Certificate"
+
+  - id: bigquery-basics
+    title: "BigQuery Basics"
+    description: "Learn SQL fundamentals and BigQuery console"
+    level: beginner
+    estimated_hours: 2
+    prerequisites:
+      - decentclaude-fundamentals
+    videos: []  # To be populated
+    completion_criteria:
+      - watch_all_videos: true
+      - pass_quiz: "quiz-bigquery-basics"
+    certificate_awarded: "BigQuery Basics Certificate"
+
+  - id: advanced-dbt-patterns
+    title: "Advanced dbt Patterns"
+    description: "Deep dive into incremental models, snapshots, and macros"
+    level: intermediate
+    estimated_hours: 4
+    prerequisites:
+      - dbt-essentials
+    videos:
+      - incremental-models
+    completion_criteria:
+      - watch_all_videos: true
+      - complete_project: "advanced-dbt-project"
+      - pass_quiz: "quiz-advanced-dbt"
+    certificate_awarded: "Advanced dbt Patterns Certificate"
+
+  - id: bigquery-optimization
+    title: "BigQuery Optimization"
+    description: "Learn to optimize BigQuery performance and reduce costs"
+    level: intermediate
+    estimated_hours: 3
+    prerequisites:
+      - dbt-essentials
+      - bigquery-basics
+    videos:
+      - bigquery-partitioning
+    completion_criteria:
+      - watch_all_videos: true
+      - complete_exercise: "exercise-optimization"
+      - pass_quiz: "quiz-bigquery-optimization"
+    certificate_awarded: "BigQuery Optimization Certificate"
+
+  - id: data-quality-engineering
+    title: "Data Quality Engineering"
+    description: "Build comprehensive data quality frameworks"
+    level: intermediate
+    estimated_hours: 3
+    prerequisites:
+      - dbt-essentials
+    videos:
+      - custom-quality-checks
+    completion_criteria:
+      - watch_all_videos: true
+      - complete_exercise: "exercise-quality-checks"
+      - pass_quiz: "quiz-data-quality"
+    certificate_awarded: "Data Quality Engineering Certificate"
+
+  - id: production-data-engineering
+    title: "Production Data Engineering"
+    description: "CI/CD, incident response, and production best practices"
+    level: advanced
+    estimated_hours: 5
+    prerequisites:
+      - advanced-dbt-patterns
+      - data-quality-engineering
+    videos:
+      - incident-response-walkthrough
+    completion_criteria:
+      - watch_all_videos: true
+      - complete_simulation: "incident-response-sim"
+      - pass_quiz: "quiz-production-engineering"
+    certificate_awarded: "Production Data Engineering Certificate"
+
+  - id: scalable-data-architecture
+    title: "Scalable Data Architecture"
+    description: "Design enterprise-scale data platforms"
+    level: advanced
+    estimated_hours: 6
+    prerequisites:
+      - production-data-engineering
+    videos: []  # To be populated
+    completion_criteria:
+      - watch_all_videos: true
+      - complete_project: "architecture-design"
+      - pass_quiz: "quiz-data-architecture"
+    certificate_awarded: "Data Architecture Certificate"
+
+learning_paths:
+  - id: junior-data-engineer
+    title: "Junior Data Engineer Path"
+    description: "Foundation for entry-level data engineers"
+    courses:
+      - decentclaude-fundamentals
+      - dbt-essentials
+      - bigquery-basics
+      - bigquery-optimization
+    estimated_total_hours: 10
+    target_role: "Junior Data Engineer"
+
+  - id: senior-data-engineer
+    title: "Senior Data Engineer Path"
+    description: "Advanced skills for experienced engineers"
+    courses:
+      - decentclaude-fundamentals
+      - dbt-essentials
+      - advanced-dbt-patterns
+      - data-quality-engineering
+      - production-data-engineering
+    estimated_total_hours: 17
+    target_role: "Senior Data Engineer"
+
+  - id: operations-engineer
+    title: "Data Operations Engineer Path"
+    description: "Focus on operations and incident management"
+    courses:
+      - decentclaude-fundamentals
+      - dbt-essentials
+      - data-quality-engineering
+      - production-data-engineering
+    estimated_total_hours: 13
+    target_role: "Data Operations Engineer"
+
+  - id: analytics-engineer
+    title: "Analytics Engineer Path"
+    description: "Specialization in analytics transformations"
+    courses:
+      - decentclaude-fundamentals
+      - dbt-essentials
+      - bigquery-basics
+      - advanced-dbt-patterns
+      - bigquery-optimization
+    estimated_total_hours: 14
+    target_role: "Analytics Engineer"
+
+playlists:
+  - id: new-hire-onboarding
+    title: "New Hire Onboarding"
+    description: "Essential videos for new team members"
+    videos:
+      - intro-decentclaude
+      - setup-environment
+      - first-dbt-model
+    duration_minutes: 45
+
+  - id: dbt-certification-prep
+    title: "dbt Certification Preparation"
+    description: "Prepare for dbt certification exam"
+    videos:
+      - first-dbt-model
+      - dbt-testing-basics
+      - incremental-models
+    duration_minutes: 63
+
+  - id: bigquery-cost-optimization
+    title: "BigQuery Cost Optimization"
+    description: "Learn to reduce BigQuery costs"
+    videos:
+      - bigquery-partitioning
+    duration_minutes: 22
+
+  - id: incident-response-training
+    title: "Incident Response Training"
+    description: "Be prepared for production incidents"
+    videos:
+      - custom-quality-checks
+      - incident-response-walkthrough
+    duration_minutes: 50

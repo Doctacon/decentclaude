@@ -6,6 +6,30 @@ Claude Code hooks for world-class data engineering workflows with automated vali
 
 This repository provides a comprehensive set of Claude Code hooks designed specifically for data engineering workflows. These hooks automate validation and quality checks for SQL, dbt, SQLMesh, and other data tools.
 
+## 🎓 New to DecentClaude?
+
+We've built a comprehensive onboarding system to help you get productive quickly:
+
+- **Interactive Tutorials**: Step-by-step learning modules
+- **Guided Setup**: Automated environment configuration
+- **Video Training**: Structured course library
+- **Certifications**: Validate your skills
+- **Progress Tracking**: Monitor your learning journey
+
+**Get started in minutes**:
+```bash
+# Run the setup wizard
+bash onboarding/setup-wizard.sh
+
+# Start learning
+cat tutorials/getting-started/README.md
+
+# Track your progress
+python progress-tracking/analytics/view_progress.py
+```
+
+📖 **Full onboarding guide**: [ONBOARDING.md](ONBOARDING.md)
+
 ## Features
 
 ### CLI Data Utilities
@@ -338,21 +362,48 @@ chmod +x .git/hooks/pre-commit
 ```
 .
 ├── .claude/
-│   ├── settings.json           # Hook configurations
-│   └── HOOKS.md               # Hook documentation
+│   ├── settings.json              # Hook configurations
+│   └── HOOKS.md                  # Hook documentation
 ├── bin/
-│   ├── data-utils/            # CLI utilities for BigQuery
-│   │   ├── bq-schema-diff     # Compare table schemas
-│   │   ├── bq-query-cost      # Estimate query costs
-│   │   ├── bq-partition-info  # Analyze partitions
-│   │   └── bq-lineage         # Explore table lineage
-│   └── worktree-utils/        # Git worktree utilities
+│   ├── data-utils/               # CLI utilities for BigQuery
+│   │   ├── bq-schema-diff        # Compare table schemas
+│   │   ├── bq-query-cost         # Estimate query costs
+│   │   ├── bq-partition-info     # Analyze partitions
+│   │   └── bq-lineage            # Explore table lineage
+│   └── worktree-utils/           # Git worktree utilities
+├── onboarding/                   # 🆕 Onboarding system
+│   ├── setup-wizard.sh           # Interactive setup
+│   ├── checklist.md              # Onboarding checklist
+│   └── validation-scripts/       # Environment validation
+├── tutorials/                    # 🆕 Interactive learning
+│   ├── getting-started/          # Foundation tutorial
+│   ├── dbt-basics/               # dbt learning path
+│   ├── bigquery-optimization/    # Performance tuning
+│   └── incident-response/        # Operations training
+├── walkthroughs/                 # 🆕 Task guides
+│   ├── 01-create-dbt-model.md    # Common tasks
+│   ├── 11-incident-response.md   # Operations procedures
+│   └── ...                       # More walkthroughs
+├── training/                     # 🆕 Video training library
+│   ├── manifest.json             # Video index
+│   ├── courses.yaml              # Course definitions
+│   └── transcripts/              # Video transcripts
+├── assessments/                  # 🆕 Quizzes & certifications
+│   ├── quizzes/                  # Knowledge checks
+│   ├── certifications/           # Certification programs
+│   └── scoring/                  # Scoring rubrics
+├── progress-tracking/            # 🆕 Learning analytics
+│   ├── skill-map.yaml            # Skill taxonomy
+│   └── analytics/                # Progress tracking tools
 ├── scripts/
-│   └── data_quality.py        # Data quality check framework
-├── docs/                      # Documentation
-├── examples/                  # Example SQL and configs
+│   └── data_quality.py           # Data quality check framework
+├── docs/                         # Documentation templates
+├── examples/                     # Example SQL and configs
 ├── data-engineering-patterns.md  # Best practices guide
-└── README.md                  # This file
+├── data-testing-patterns.md      # Testing patterns
+├── playbooks.md                  # Operational playbooks
+├── ONBOARDING.md                 # 🆕 Onboarding guide
+└── README.md                     # This file
 ```
 
 ## Requirements
