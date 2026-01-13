@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+"""
+sqlmesh-visualize - Generate SQLMesh model lineage visualization
+
+Usage:
+  sqlmesh-visualize [model] [options]
+
+Arguments:
+  model              Model name to visualize (optional, shows all if omitted)
+
+Options:
+  --direction=<dir>  Direction to trace: upstream, downstream, both (default: both)
+  --depth=<n>        Maximum depth to traverse (default: unlimited)
+  --format=<format>  Output format: mermaid, json, text (default: mermaid)
+  --help, -h         Show this help message
+
+Examples:
+  sqlmesh-visualize
+  sqlmesh-visualize analytics.user_metrics
+  sqlmesh-visualize analytics.user_metrics --direction=upstream
+  sqlmesh-visualize analytics.user_metrics --depth=2 --format=json
+
+Description:
+  Generates visualization of SQLMesh model dependencies:
+  - Upstream: Shows models this model depends on
+  - Downstream: Shows models that depend on this model
+  - Both: Shows complete lineage graph
+  - Mermaid format can be rendered in GitHub, GitLab, or mermaid.live
+"""
+
+import sys
+import json
+import argparse
+import os
+from typing import Dict, List, Set, Any, Optional
+from collections import defaultdict, deque
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def get_sqlmesh_context(path: str = "."):
+    """
+    Get SQLMesh context for the project.
+
+    Args:
+        path: Path to SQLMesh project (default: current directory)
+
+    Returns:
+        SQLMesh Context object
+    """
+    try:
+        from sqlmesh import Context
+        return Context(paths=path)
+    except ImportError:
+        print(f"{Colors.RED}Error: SQLMesh is not installed. Install with: pip install sqlmesh{Colors.RESET}",
+              file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"{Colors.RED}Error initializing SQLMesh context: {str(e)}{Colors.RESET}", file=sys.stderr)
+        print(f"{Colors.YELLOW}Hint: Make sure you're in a SQLMesh project directory{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def get_model_lineage(context, model_name: Optional[str] = None, direction: str = "both",
+                     depth: Optional[int] = None) -> Dict[str, Any]:
+    """
+    Get lineage information for SQLMesh models.
+
+    Args:
+        context: SQLMesh Context object
+        model_name: Specific model to analyze (None for all models)
+        direction: Direction to trace (upstream, downstream, both)
+        depth: Maximum depth to traverse
+
+    Returns:
+        Dictionary containing lineage information
+    """
+    try:
+        # Get all models from context
+        models = context.models
+
+        # Build dependency graph
+        dependencies = defaultdict(set)  # model -> set of upstream dependencies
+        dependents = defaultdict(set)    # model -> set of downstream dependents
+
+        for model_fqn, model in models.items():
+            model_name_str = str(model_fqn)
+
+            # Get upstream dependencies
+            if hasattr(model, 'depends_on'):
+                for dep in model.depends_on:
+                    dep_str = str(dep)
+                    dependencies[model_name_str].add(dep_str)
+                    dependents[dep_str].add(model_name_str)
+
+        # If specific model requested, filter the graph
+        if model_name:
+            filtered_deps, filtered_dependents = filter_lineage(
+                model_name, dependencies, dependents, direction, depth
+            )
+        else:
+            filtered_deps = dependencies
+            filtered_dependents = dependents
+
+        return {
+            "dependencies": {k: list(v) for k, v in filtered_deps.items()},
+            "dependents": {k: list(v) for k, v in filtered_dependents.items()},
+            "models": list(set(list(filtered_deps.keys()) + list(filtered_dependents.keys()))),
+            "metadata": {
+                "model": model_name,
+                "direction": direction,
+                "depth": depth,
+                "total_models": len(models)
+            }
+        }
+
+    except Exception as e:
+        print(f"{Colors.RED}Error analyzing lineage: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def filter_lineage(model_name: str, dependencies: Dict[str, Set[str]],
+                  dependents: Dict[str, Set[str]], direction: str,
+                  depth: Optional[int]) -> tuple:
+    """
+    Filter lineage graph based on model, direction, and depth.
+
+    Args:
+        model_name: Model to start from
+        dependencies: Full dependency graph
+        dependents: Full dependents graph
+        direction: Direction to traverse
+        depth: Maximum depth
+
+    Returns:
+        Tuple of (filtered_dependencies, filtered_dependents)
+    """
+    filtered_deps = defaultdict(set)
+    filtered_dependents = defaultdict(set)
+
+    # BFS to find upstream dependencies
+    if direction in ["upstream", "both"]:
+        visited = set()
+        queue = deque([(model_name, 0)])
+
+        while queue:
+            current, current_depth = queue.popleft()
+
+            if current in visited:
+                continue
+            if depth is not None and current_depth > depth:
+                continue
+
+            visited.add(current)
+
+            if current in dependencies:
+                filtered_deps[current] = dependencies[current]
+                for dep in dependencies[current]:
+                    filtered_dependents[dep].add(current)
+                    if depth is None or current_depth < depth:
+                        queue.append((dep, current_depth + 1))
+
+    # BFS to find downstream dependents
+    if direction in ["downstream", "both"]:
+        visited = set()
+        queue = deque([(model_name, 0)])
+
+        while queue:
+            current, current_depth = queue.popleft()
+
+            if current in visited:
+                continue
+            if depth is not None and current_depth > depth:
+                continue
+
+            visited.add(current)
+
+            if current in dependents:
+                filtered_dependents[current] = dependents[current]
+                for dep in dependents[current]:
+                    filtered_deps[dep].add(current)
+                    if depth is None or current_depth < depth:
+                        queue.append((dep, current_depth + 1))
+
+    return filtered_deps, filtered_dependents
+
+
+def generate_mermaid_diagram(lineage: Dict[str, Any]) -> str:
+    """
+    Generate Mermaid diagram from lineage data.
+
+    Args:
+        lineage: Lineage dictionary
+
+    Returns:
+        Mermaid diagram as string
+    """
+    lines = ["graph TD"]
+
+    # Add node definitions with styling
+    model_name = lineage["metadata"]["model"]
+    for model in sorted(lineage["models"]):
+        node_id = model.replace(".", "_").replace("-", "_")
+        if model == model_name:
+            # Highlight the target model
+            lines.append(f"    {node_id}[{model}]:::highlight")
+        else:
+            lines.append(f"    {node_id}[{model}]")
+
+    # Add edges
+    edges_added = set()
+    for model, deps in sorted(lineage["dependencies"].items()):
+        from_id = model.replace(".", "_").replace("-", "_")
+        for dep in sorted(deps):
+            to_id = dep.replace(".", "_").replace("-", "_")
+            edge = (to_id, from_id)
+            if edge not in edges_added:
+                lines.append(f"    {to_id} --> {from_id}")
+                edges_added.add(edge)
+
+    # Add styling
+    lines.append("")
+    lines.append("    classDef highlight fill:#f9f,stroke:#333,stroke-width:4px")
+
+    return "\n".join(lines)
+
+
+def print_text_report(lineage: Dict[str, Any]):
+    """Print a formatted text report of model lineage"""
+
+    metadata = lineage["metadata"]
+
+    print(f"\n{Colors.CYAN}{Colors.BOLD}SQLMesh Model Lineage{Colors.RESET}")
+    if metadata.get("model"):
+        print(f"{Colors.BLUE}Model:{Colors.RESET} {metadata['model']}")
+    print(f"{Colors.BLUE}Direction:{Colors.RESET} {metadata['direction']}")
+    if metadata.get("depth"):
+        print(f"{Colors.BLUE}Max Depth:{Colors.RESET} {metadata['depth']}")
+    print(f"{Colors.BLUE}Total Models in Project:{Colors.RESET} {metadata['total_models']}")
+    print("=" * 80)
+
+    # Show dependencies (upstream)
+    if lineage["dependencies"]:
+        print(f"\n{Colors.YELLOW}{Colors.BOLD}Dependencies (Upstream){Colors.RESET}")
+        for model, deps in sorted(lineage["dependencies"].items()):
+            if deps:
+                print(f"\n{Colors.CYAN}{model}{Colors.RESET}")
+                for dep in sorted(deps):
+                    print(f"  {Colors.YELLOW}←{Colors.RESET} {dep}")
+
+    # Show dependents (downstream)
+    if lineage["dependents"]:
+        print(f"\n{Colors.GREEN}{Colors.BOLD}Dependents (Downstream){Colors.RESET}")
+        for model, deps in sorted(lineage["dependents"].items()):
+            if deps:
+                print(f"\n{Colors.CYAN}{model}{Colors.RESET}")
+                for dep in sorted(deps):
+                    print(f"  {Colors.GREEN}→{Colors.RESET} {dep}")
+
+    # Summary
+    print(f"\n{Colors.CYAN}{Colors.BOLD}Summary{Colors.RESET}")
+    print(f"  Models in view: {len(lineage['models'])}")
+    print(f"  Total dependencies: {sum(len(v) for v in lineage['dependencies'].values())}")
+    print(f"  Total dependents: {sum(len(v) for v in lineage['dependents'].values())}")
+    print("=" * 80)
+
+
+def print_json_report(lineage: Dict[str, Any]):
+    """Print a JSON report of model lineage"""
+    print(json.dumps(lineage, indent=2))
+
+
+def print_mermaid_report(lineage: Dict[str, Any]):
+    """Print a Mermaid diagram of model lineage"""
+    diagram = generate_mermaid_diagram(lineage)
+    print(diagram)
+    print()
+    print(f"{Colors.CYAN}Render this diagram at: https://mermaid.live{Colors.RESET}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate SQLMesh model lineage visualization",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("model", nargs="?", default=None,
+                       help="Model name to visualize (optional)")
+    parser.add_argument("--direction", choices=["upstream", "downstream", "both"],
+                       default="both", help="Direction to trace (default: both)")
+    parser.add_argument("--depth", type=int, default=None,
+                       help="Maximum depth to traverse (default: unlimited)")
+    parser.add_argument("--format", choices=["mermaid", "json", "text"],
+                       default="mermaid", help="Output format (default: mermaid)")
+
+    args = parser.parse_args()
+
+    # Set PYTHONPATH to current directory for SQLMesh
+    if 'PYTHONPATH' not in os.environ:
+        os.environ['PYTHONPATH'] = '.'
+
+    # Get SQLMesh context
+    context = get_sqlmesh_context()
+
+    # Get model lineage
+    lineage = get_model_lineage(context, args.model, args.direction, args.depth)
+
+    # Print report
+    if args.format == "json":
+        print_json_report(lineage)
+    elif args.format == "text":
+        print_text_report(lineage)
+    else:  # mermaid
+        print_mermaid_report(lineage)
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
