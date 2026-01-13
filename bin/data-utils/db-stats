@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+"""
+db-stats - Display Delta table statistics and metadata
+
+Shows comprehensive information about a Delta table including size, partitions,
+file statistics, and recent operations from the transaction log.
+
+Usage:
+  db-stats <table_name> [options]
+
+Arguments:
+  table_name   Fully-qualified table name (catalog.schema.table)
+
+Options:
+  --format=<fmt>        Output format: text or json (default: text)
+  --workspace=<url>     Databricks workspace URL (default: env DATABRICKS_HOST)
+  --token=<token>       Databricks access token (default: env DATABRICKS_TOKEN)
+  --history=<n>         Number of recent operations to show (default: 5)
+  --help, -h            Show this help message
+
+Examples:
+  db-stats main.analytics.sales
+  db-stats main.analytics.sales --history=10
+  db-stats main.analytics.sales --format=json
+
+Environment Variables:
+  DATABRICKS_HOST       Databricks workspace URL
+  DATABRICKS_TOKEN      Personal access token or service principal token
+
+About:
+  Provides comprehensive statistics about a Delta table including:
+  - Table location and format
+  - Number of files and total size
+  - Partitioning information
+  - Table properties and configuration
+  - Recent operations from transaction log
+
+  This operation requires SELECT permissions on the table.
+"""
+
+import argparse
+import json
+import os
+import sys
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+
+try:
+    from databricks import sql
+except ImportError:
+    print("Error: databricks-sql-connector not installed", file=sys.stderr)
+    print("Install with: pip install databricks-sql-connector", file=sys.stderr)
+    sys.exit(1)
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def format_bytes(bytes_val: int) -> str:
+    """Format bytes into human-readable format"""
+    if bytes_val is None:
+        return "N/A"
+
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB', 'PB']:
+        if abs(bytes_val) < 1024.0:
+            return f"{bytes_val:.2f} {unit}"
+        bytes_val /= 1024.0
+    return f"{bytes_val:.2f} EB"
+
+
+def get_table_stats(
+    table_name: str,
+    workspace_url: str,
+    token: str,
+    history_limit: int = 5
+) -> Dict[str, Any]:
+    """
+    Get statistics and metadata for a Delta table.
+
+    Args:
+        table_name: Fully-qualified table name (catalog.schema.table)
+        workspace_url: Databricks workspace URL
+        token: Access token
+        history_limit: Number of recent operations to fetch
+
+    Returns:
+        Dictionary with table statistics
+    """
+    result = {
+        'table': table_name,
+        'success': False,
+        'error': None,
+        'details': {},
+        'history': []
+    }
+
+    try:
+        # Extract hostname from workspace URL
+        hostname = workspace_url.replace('https://', '').replace('http://', '')
+
+        with sql.connect(
+            server_hostname=hostname,
+            http_path='/sql/1.0/warehouses/default',  # User should configure this
+            access_token=token
+        ) as connection:
+            with connection.cursor() as cursor:
+                # Get table details
+                cursor.execute(f"DESCRIBE DETAIL {table_name}")
+                detail_rows = cursor.fetchall()
+
+                if detail_rows:
+                    columns = [desc[0] for desc in cursor.description]
+                    detail_data = dict(zip(columns, detail_rows[0]))
+                    result['details'] = detail_data
+
+                # Get table history
+                cursor.execute(f"DESCRIBE HISTORY {table_name} LIMIT {history_limit}")
+                history_rows = cursor.fetchall()
+
+                if history_rows:
+                    columns = [desc[0] for desc in cursor.description]
+                    for row in history_rows:
+                        history_entry = dict(zip(columns, row))
+                        result['history'].append(history_entry)
+
+                result['success'] = True
+
+    except Exception as e:
+        result['error'] = str(e)
+        result['success'] = False
+
+    return result
+
+
+def print_text_report(result: Dict[str, Any]) -> None:
+    """Print table statistics in human-readable format"""
+    c = Colors
+
+    print(f"\n{c.BOLD}Delta Table Statistics{c.RESET}")
+    print(f"{c.CYAN}{'=' * 70}{c.RESET}\n")
+
+    if not result['success']:
+        print(f"{c.RED}✗ Failed to retrieve statistics{c.RESET}")
+        print(f"\n{c.RED}Error:{c.RESET} {result['error']}")
+        return
+
+    details = result['details']
+
+    # Basic Information
+    print(f"{c.BOLD}Table Information{c.RESET}")
+    print(f"  Name: {result['table']}")
+    if 'location' in details:
+        print(f"  Location: {details['location']}")
+    if 'format' in details:
+        print(f"  Format: {details['format']}")
+    if 'createdAt' in details:
+        print(f"  Created: {details['createdAt']}")
+    if 'lastModified' in details:
+        print(f"  Last Modified: {details['lastModified']}")
+
+    # Size Information
+    print(f"\n{c.BOLD}Size & Files{c.RESET}")
+    if 'numFiles' in details:
+        print(f"  Number of Files: {details['numFiles']:,}")
+    if 'sizeInBytes' in details:
+        size_bytes = details['sizeInBytes']
+        print(f"  Total Size: {format_bytes(size_bytes)} ({size_bytes:,} bytes)")
+    if 'minReaderVersion' in details:
+        print(f"  Min Reader Version: {details['minReaderVersion']}")
+    if 'minWriterVersion' in details:
+        print(f"  Min Writer Version: {details['minWriterVersion']}")
+
+    # Partitioning
+    if 'partitionColumns' in details and details['partitionColumns']:
+        print(f"\n{c.BOLD}Partitioning{c.RESET}")
+        part_cols = details['partitionColumns']
+        if isinstance(part_cols, list):
+            print(f"  Partition Columns: {', '.join(part_cols)}")
+        else:
+            print(f"  Partition Columns: {part_cols}")
+
+    # Properties
+    if 'properties' in details and details['properties']:
+        print(f"\n{c.BOLD}Table Properties{c.RESET}")
+        props = details['properties']
+        if isinstance(props, dict):
+            for key, value in sorted(props.items()):
+                print(f"  {key}: {value}")
+        else:
+            print(f"  {props}")
+
+    # History
+    if result['history']:
+        print(f"\n{c.BOLD}Recent Operations{c.RESET}")
+        for i, op in enumerate(result['history'], 1):
+            print(f"\n  {c.CYAN}[{i}]{c.RESET} {op.get('operation', 'UNKNOWN')}")
+            if 'timestamp' in op:
+                print(f"      Timestamp: {op['timestamp']}")
+            if 'version' in op:
+                print(f"      Version: {op['version']}")
+            if 'userName' in op:
+                print(f"      User: {op['userName']}")
+            if 'operationMetrics' in op and op['operationMetrics']:
+                metrics = op['operationMetrics']
+                if isinstance(metrics, dict):
+                    print(f"      Metrics: {json.dumps(metrics, indent=10)}")
+
+
+def print_json_report(result: Dict[str, Any]) -> None:
+    """Print table statistics in JSON format"""
+    print(json.dumps(result, indent=2, default=str))
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+
+    parser.add_argument('table_name', help='Fully-qualified table name (catalog.schema.table)')
+    parser.add_argument('--history', type=int, default=5,
+                        help='Number of recent operations to show (default: 5)')
+    parser.add_argument('--format', choices=['text', 'json'], default='text',
+                        help='Output format (default: text)')
+    parser.add_argument('--workspace', help='Databricks workspace URL (default: env DATABRICKS_HOST)')
+    parser.add_argument('--token', help='Databricks access token (default: env DATABRICKS_TOKEN)')
+
+    args = parser.parse_args()
+
+    # Get workspace URL and token
+    workspace_url = args.workspace or os.environ.get('DATABRICKS_HOST')
+    token = args.token or os.environ.get('DATABRICKS_TOKEN')
+
+    if not workspace_url:
+        print(f"{Colors.RED}Error: Workspace URL not provided{Colors.RESET}", file=sys.stderr)
+        print("Set DATABRICKS_HOST environment variable or use --workspace", file=sys.stderr)
+        sys.exit(1)
+
+    if not token:
+        print(f"{Colors.RED}Error: Access token not provided{Colors.RESET}", file=sys.stderr)
+        print("Set DATABRICKS_TOKEN environment variable or use --token", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate history limit
+    if args.history < 0:
+        print(f"{Colors.RED}Error: History limit must be non-negative{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    # Get statistics
+    result = get_table_stats(
+        args.table_name,
+        workspace_url,
+        token,
+        args.history
+    )
+
+    # Print results
+    if args.format == 'json':
+        print_json_report(result)
+    else:
+        print_text_report(result)
+
+    # Exit with appropriate code
+    sys.exit(0 if result['success'] else 1)
+
+
+if __name__ == '__main__':
+    main()

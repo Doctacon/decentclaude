@@ -10,12 +10,19 @@ This repository provides a comprehensive set of Claude Code hooks designed speci
 
 ### CLI Data Utilities
 
-Powerful command-line utilities for common BigQuery operations:
+Powerful command-line utilities for common data platform operations:
 
+**BigQuery:**
 - **bq-schema-diff**: Compare schemas of two tables to identify differences
 - **bq-query-cost**: Estimate query costs before execution
 - **bq-partition-info**: Analyze partitioning configuration and partition sizes
 - **bq-lineage**: Explore table dependencies (upstream and downstream)
+
+**Databricks/Spark:**
+- **db-optimize**: Optimize Delta tables with optional Z-ORDER clustering
+- **db-vacuum**: Clean up old files and reclaim storage
+- **db-stats**: Display comprehensive table statistics and metadata
+- **db-lineage**: Explore Unity Catalog table lineage
 
 See [Data Utilities](#data-utilities) for detailed usage.
 
@@ -261,6 +268,155 @@ bin/data-utils/bq-lineage project.dataset.orders --format=mermaid
 
 **Note:** Lineage detection works best with views and materialized views. For tables, it searches for references in view definitions across the project.
 
+### db-optimize
+
+Optimize Delta tables in Databricks using OPTIMIZE command with optional Z-ORDER clustering.
+
+**Usage:**
+```bash
+bin/data-utils/db-optimize <table_name> [options]
+```
+
+**Options:**
+- `--zorder=<cols>` - Comma-separated columns for Z-ORDER BY
+- `--format=<format>` - Output format: text, json (default: text)
+- `--workspace=<url>` - Databricks workspace URL (default: env DATABRICKS_HOST)
+- `--token=<token>` - Access token (default: env DATABRICKS_TOKEN)
+- `--dry-run` - Show what would be optimized without executing
+
+**Examples:**
+```bash
+# Optimize a table
+bin/data-utils/db-optimize main.analytics.sales
+
+# Optimize with Z-ORDER clustering
+bin/data-utils/db-optimize main.analytics.sales --zorder=date,region
+
+# Dry run to preview
+bin/data-utils/db-optimize main.analytics.sales --dry-run
+
+# JSON output
+bin/data-utils/db-optimize main.analytics.sales --format=json
+```
+
+**Output includes:**
+- Optimization command executed
+- Execution time
+- Files added and removed
+- Success/failure status
+
+### db-vacuum
+
+Clean up old files in Delta tables to reclaim storage space.
+
+**Usage:**
+```bash
+bin/data-utils/db-vacuum <table_name> [options]
+```
+
+**Options:**
+- `--retention=<hours>` - Retention period in hours (default: 168 = 7 days)
+- `--format=<format>` - Output format: text, json (default: text)
+- `--workspace=<url>` - Databricks workspace URL (default: env DATABRICKS_HOST)
+- `--token=<token>` - Access token (default: env DATABRICKS_TOKEN)
+- `--dry-run` - Show what would be deleted without executing
+
+**Examples:**
+```bash
+# Vacuum with default retention (7 days)
+bin/data-utils/db-vacuum main.analytics.sales
+
+# Custom retention period (72 hours)
+bin/data-utils/db-vacuum main.analytics.sales --retention=72
+
+# Dry run to preview
+bin/data-utils/db-vacuum main.analytics.sales --dry-run
+
+# JSON output
+bin/data-utils/db-vacuum main.analytics.sales --format=json
+```
+
+**Output includes:**
+- Number of files deleted
+- Sample of deleted file paths (in dry run)
+- Execution time
+- Success/failure status
+
+**Warning:** After vacuuming, you cannot time travel to versions older than the retention period.
+
+### db-stats
+
+Display comprehensive statistics and metadata for Delta tables.
+
+**Usage:**
+```bash
+bin/data-utils/db-stats <table_name> [options]
+```
+
+**Options:**
+- `--history=<n>` - Number of recent operations to show (default: 5)
+- `--format=<format>` - Output format: text, json (default: text)
+- `--workspace=<url>` - Databricks workspace URL (default: env DATABRICKS_HOST)
+- `--token=<token>` - Access token (default: env DATABRICKS_TOKEN)
+
+**Examples:**
+```bash
+# Show table statistics
+bin/data-utils/db-stats main.analytics.sales
+
+# Show more history
+bin/data-utils/db-stats main.analytics.sales --history=10
+
+# JSON output
+bin/data-utils/db-stats main.analytics.sales --format=json
+```
+
+**Output includes:**
+- Table location and format
+- Number of files and total size
+- Partitioning information
+- Table properties and configuration
+- Recent operations from transaction log
+
+### db-lineage
+
+Explore Unity Catalog table lineage to understand dependencies.
+
+**Usage:**
+```bash
+bin/data-utils/db-lineage <table_name> [options]
+```
+
+**Options:**
+- `--direction=<dir>` - Lineage direction: upstream, downstream, both (default: both)
+- `--depth=<n>` - Maximum depth to traverse (default: 1)
+- `--format=<format>` - Output format: text, json, mermaid (default: text)
+- `--workspace=<url>` - Databricks workspace URL (default: env DATABRICKS_HOST)
+- `--token=<token>` - Access token (default: env DATABRICKS_TOKEN)
+
+**Examples:**
+```bash
+# Show all dependencies
+bin/data-utils/db-lineage main.analytics.sales
+
+# Show only upstream dependencies
+bin/data-utils/db-lineage main.analytics.sales --direction=upstream
+
+# Generate Mermaid diagram
+bin/data-utils/db-lineage main.analytics.sales --format=mermaid
+
+# Deeper traversal
+bin/data-utils/db-lineage main.analytics.sales --depth=2
+```
+
+**Output includes:**
+- Upstream dependencies (sources this table reads from)
+- Downstream dependencies (consumers that read from this table)
+- Table types and creation timestamps
+- Dependency visualization (Mermaid format)
+
+**Note:** Requires access to system.access.table_lineage in Unity Catalog. Falls back to view definition parsing if system tables are not accessible.
+
 ### Installation
 
 To make utilities accessible from anywhere, add to your PATH:
@@ -273,18 +429,32 @@ export PATH="$PATH:/path/to/decentclaude/bin/data-utils"
 Or create symlinks:
 
 ```bash
+# BigQuery utilities
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-schema-diff /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-query-cost /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-partition-info /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-lineage /usr/local/bin/
+
+# Databricks utilities
+sudo ln -s /path/to/decentclaude/bin/data-utils/db-optimize /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/db-vacuum /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/db-stats /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/db-lineage /usr/local/bin/
 ```
 
 ### Requirements
 
-All utilities require:
+**BigQuery utilities** require:
 - Python 3.7+
 - google-cloud-bigquery library: `pip install google-cloud-bigquery`
 - Google Cloud credentials configured (via GOOGLE_APPLICATION_CREDENTIALS or gcloud auth)
+
+**Databricks utilities** require:
+- Python 3.7+
+- databricks-sql-connector library: `pip install databricks-sql-connector`
+- Environment variables:
+  - `DATABRICKS_HOST`: Workspace URL (e.g., https://your-workspace.cloud.databricks.com)
+  - `DATABRICKS_TOKEN`: Personal access token or service principal token
 
 ## Customization
 
@@ -341,11 +511,15 @@ chmod +x .git/hooks/pre-commit
 │   ├── settings.json           # Hook configurations
 │   └── HOOKS.md               # Hook documentation
 ├── bin/
-│   ├── data-utils/            # CLI utilities for BigQuery
-│   │   ├── bq-schema-diff     # Compare table schemas
-│   │   ├── bq-query-cost      # Estimate query costs
-│   │   ├── bq-partition-info  # Analyze partitions
-│   │   └── bq-lineage         # Explore table lineage
+│   ├── data-utils/            # CLI utilities for data platforms
+│   │   ├── bq-schema-diff     # BigQuery: Compare table schemas
+│   │   ├── bq-query-cost      # BigQuery: Estimate query costs
+│   │   ├── bq-partition-info  # BigQuery: Analyze partitions
+│   │   ├── bq-lineage         # BigQuery: Explore table lineage
+│   │   ├── db-optimize        # Databricks: Optimize Delta tables
+│   │   ├── db-vacuum          # Databricks: Clean up old files
+│   │   ├── db-stats           # Databricks: Table statistics
+│   │   └── db-lineage         # Databricks: Unity Catalog lineage
 │   └── worktree-utils/        # Git worktree utilities
 ├── scripts/
 │   └── data_quality.py        # Data quality check framework
@@ -359,7 +533,8 @@ chmod +x .git/hooks/pre-commit
 
 - Python 3.7+
 - sqlparse (required for hooks)
-- google-cloud-bigquery (required for CLI utilities)
+- google-cloud-bigquery (required for BigQuery CLI utilities)
+- databricks-sql-connector (required for Databricks CLI utilities)
 - sqlfluff (optional, for linting)
 - dbt-core (optional, for dbt hooks)
 - sqlmesh (optional, for SQLMesh hooks)

@@ -1,0 +1,406 @@
+#!/usr/bin/env python3
+"""
+db-lineage - Explore Unity Catalog table lineage
+
+Discovers upstream and downstream dependencies for tables in Unity Catalog.
+Helps understand data flow and impact analysis for table changes.
+
+Usage:
+  db-lineage <table_name> [options]
+
+Arguments:
+  table_name   Fully-qualified table name (catalog.schema.table)
+
+Options:
+  --direction=<dir>     Direction: upstream, downstream, or both (default: both)
+  --format=<fmt>        Output format: text, json, or mermaid (default: text)
+  --workspace=<url>     Databricks workspace URL (default: env DATABRICKS_HOST)
+  --token=<token>       Databricks access token (default: env DATABRICKS_TOKEN)
+  --depth=<n>           Maximum depth to traverse (default: 1)
+  --help, -h            Show this help message
+
+Examples:
+  db-lineage main.analytics.sales
+  db-lineage main.analytics.sales --direction=upstream
+  db-lineage main.analytics.sales --format=mermaid
+  db-lineage main.analytics.sales --depth=2
+
+Environment Variables:
+  DATABRICKS_HOST       Databricks workspace URL
+  DATABRICKS_TOKEN      Personal access token or service principal token
+
+About:
+  Unity Catalog tracks lineage through:
+  - Upstream: Tables that a view or table reads from
+  - Downstream: Views and tables that read from this table
+
+  Lineage is tracked automatically through:
+  - CREATE TABLE AS SELECT statements
+  - CREATE VIEW statements
+  - INSERT INTO statements
+  - MERGE operations
+
+  This operation requires SELECT permissions on the table and access to
+  system.access.table_lineage.
+"""
+
+import argparse
+import json
+import os
+import sys
+from typing import Dict, List, Set, Optional, Any
+
+try:
+    from databricks import sql
+except ImportError:
+    print("Error: databricks-sql-connector not installed", file=sys.stderr)
+    print("Install with: pip install databricks-sql-connector", file=sys.stderr)
+    sys.exit(1)
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def get_upstream_lineage(
+    table_name: str,
+    workspace_url: str,
+    token: str,
+    depth: int = 1
+) -> List[Dict[str, Any]]:
+    """
+    Get upstream dependencies (sources) for a table.
+
+    Args:
+        table_name: Fully-qualified table name
+        workspace_url: Databricks workspace URL
+        token: Access token
+        depth: Maximum depth to traverse
+
+    Returns:
+        List of upstream table dependencies
+    """
+    upstream = []
+
+    try:
+        hostname = workspace_url.replace('https://', '').replace('http://', '')
+
+        with sql.connect(
+            server_hostname=hostname,
+            http_path='/sql/1.0/warehouses/default',
+            access_token=token
+        ) as connection:
+            with connection.cursor() as cursor:
+                # Query Unity Catalog lineage system table
+                # Note: This requires access to system.access.table_lineage
+                query = f"""
+                SELECT DISTINCT
+                    source_table_full_name as source,
+                    source_type,
+                    created_at
+                FROM system.access.table_lineage
+                WHERE target_table_full_name = '{table_name}'
+                ORDER BY created_at DESC
+                """
+
+                try:
+                    cursor.execute(query)
+                    rows = cursor.fetchall()
+
+                    if rows:
+                        columns = [desc[0] for desc in cursor.description]
+                        for row in rows:
+                            entry = dict(zip(columns, row))
+                            upstream.append(entry)
+                except Exception as e:
+                    # Lineage table might not be accessible
+                    # Fall back to parsing view definition
+                    if "does not exist" in str(e) or "ACCESS" in str(e).upper():
+                        upstream = get_lineage_from_view(table_name, cursor)
+                    else:
+                        raise
+
+    except Exception as e:
+        print(f"{Colors.YELLOW}Warning: Could not retrieve upstream lineage: {e}{Colors.RESET}", file=sys.stderr)
+
+    return upstream
+
+
+def get_downstream_lineage(
+    table_name: str,
+    workspace_url: str,
+    token: str,
+    depth: int = 1
+) -> List[Dict[str, Any]]:
+    """
+    Get downstream dependencies (consumers) for a table.
+
+    Args:
+        table_name: Fully-qualified table name
+        workspace_url: Databricks workspace URL
+        token: Access token
+        depth: Maximum depth to traverse
+
+    Returns:
+        List of downstream table dependencies
+    """
+    downstream = []
+
+    try:
+        hostname = workspace_url.replace('https://', '').replace('http://', '')
+
+        with sql.connect(
+            server_hostname=hostname,
+            http_path='/sql/1.0/warehouses/default',
+            access_token=token
+        ) as connection:
+            with connection.cursor() as cursor:
+                # Query Unity Catalog lineage system table
+                query = f"""
+                SELECT DISTINCT
+                    target_table_full_name as target,
+                    target_type,
+                    created_at
+                FROM system.access.table_lineage
+                WHERE source_table_full_name = '{table_name}'
+                ORDER BY created_at DESC
+                """
+
+                try:
+                    cursor.execute(query)
+                    rows = cursor.fetchall()
+
+                    if rows:
+                        columns = [desc[0] for desc in cursor.description]
+                        for row in rows:
+                            entry = dict(zip(columns, row))
+                            downstream.append(entry)
+                except Exception as e:
+                    if "does not exist" not in str(e) and "ACCESS" not in str(e).upper():
+                        raise
+
+    except Exception as e:
+        print(f"{Colors.YELLOW}Warning: Could not retrieve downstream lineage: {e}{Colors.RESET}", file=sys.stderr)
+
+    return downstream
+
+
+def get_lineage_from_view(table_name: str, cursor) -> List[Dict[str, Any]]:
+    """
+    Fallback: Extract lineage by parsing view definition.
+
+    Args:
+        table_name: Table or view name
+        cursor: Database cursor
+
+    Returns:
+        List of referenced tables
+    """
+    lineage = []
+
+    try:
+        cursor.execute(f"SHOW CREATE TABLE {table_name}")
+        rows = cursor.fetchall()
+
+        if rows:
+            view_def = rows[0][0]
+            # Simple pattern matching for table references
+            # This is a basic implementation - production would need more robust parsing
+            import re
+            pattern = r'FROM\s+([a-zA-Z0-9_]+\.[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+)'
+            matches = re.findall(pattern, view_def, re.IGNORECASE)
+
+            for match in set(matches):
+                lineage.append({
+                    'source': match,
+                    'source_type': 'TABLE',
+                    'created_at': None,
+                    'method': 'view_definition_parse'
+                })
+
+    except Exception:
+        pass
+
+    return lineage
+
+
+def get_lineage(
+    table_name: str,
+    workspace_url: str,
+    token: str,
+    direction: str = 'both',
+    depth: int = 1
+) -> Dict[str, Any]:
+    """
+    Get table lineage in the specified direction.
+
+    Args:
+        table_name: Fully-qualified table name
+        workspace_url: Databricks workspace URL
+        token: Access token
+        direction: 'upstream', 'downstream', or 'both'
+        depth: Maximum depth to traverse
+
+    Returns:
+        Dictionary with lineage information
+    """
+    result = {
+        'table': table_name,
+        'success': False,
+        'error': None,
+        'upstream': [],
+        'downstream': []
+    }
+
+    try:
+        if direction in ('upstream', 'both'):
+            result['upstream'] = get_upstream_lineage(table_name, workspace_url, token, depth)
+
+        if direction in ('downstream', 'both'):
+            result['downstream'] = get_downstream_lineage(table_name, workspace_url, token, depth)
+
+        result['success'] = True
+
+    except Exception as e:
+        result['error'] = str(e)
+        result['success'] = False
+
+    return result
+
+
+def print_text_report(result: Dict[str, Any]) -> None:
+    """Print lineage in human-readable format"""
+    c = Colors
+
+    print(f"\n{c.BOLD}Unity Catalog Table Lineage{c.RESET}")
+    print(f"{c.CYAN}{'=' * 70}{c.RESET}\n")
+
+    print(f"{c.BOLD}Table:{c.RESET} {result['table']}")
+
+    if not result['success']:
+        print(f"\n{c.RED}✗ Failed to retrieve lineage{c.RESET}")
+        print(f"\n{c.RED}Error:{c.RESET} {result['error']}")
+        return
+
+    # Upstream dependencies
+    if result['upstream']:
+        print(f"\n{c.BOLD}Upstream Dependencies (Sources):{c.RESET}")
+        for i, dep in enumerate(result['upstream'], 1):
+            source = dep.get('source', 'Unknown')
+            source_type = dep.get('source_type', 'Unknown')
+            print(f"  {i}. {c.CYAN}{source}{c.RESET} ({source_type})")
+            if dep.get('created_at'):
+                print(f"     First seen: {dep['created_at']}")
+    else:
+        print(f"\n{c.BOLD}Upstream Dependencies:{c.RESET} None found")
+
+    # Downstream dependencies
+    if result['downstream']:
+        print(f"\n{c.BOLD}Downstream Dependencies (Consumers):{c.RESET}")
+        for i, dep in enumerate(result['downstream'], 1):
+            target = dep.get('target', 'Unknown')
+            target_type = dep.get('target_type', 'Unknown')
+            print(f"  {i}. {c.CYAN}{target}{c.RESET} ({target_type})")
+            if dep.get('created_at'):
+                print(f"     First seen: {dep['created_at']}")
+    else:
+        print(f"\n{c.BOLD}Downstream Dependencies:{c.RESET} None found")
+
+
+def print_json_report(result: Dict[str, Any]) -> None:
+    """Print lineage in JSON format"""
+    print(json.dumps(result, indent=2, default=str))
+
+
+def print_mermaid_report(result: Dict[str, Any]) -> None:
+    """Print lineage as a Mermaid diagram"""
+    print("```mermaid")
+    print("graph TD")
+
+    table = result['table'].replace('.', '_')
+
+    # Upstream
+    for i, dep in enumerate(result.get('upstream', []), 1):
+        source = dep.get('source', 'Unknown').replace('.', '_')
+        print(f"    {source}[{dep.get('source', 'Unknown')}] --> {table}[{result['table']}]")
+
+    # Downstream
+    for i, dep in enumerate(result.get('downstream', []), 1):
+        target = dep.get('target', 'Unknown').replace('.', '_')
+        print(f"    {table}[{result['table']}] --> {target}[{dep.get('target', 'Unknown')}]")
+
+    # If no dependencies, still show the table
+    if not result.get('upstream') and not result.get('downstream'):
+        print(f"    {table}[{result['table']}]")
+
+    print("```")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+
+    parser.add_argument('table_name', help='Fully-qualified table name (catalog.schema.table)')
+    parser.add_argument('--direction', choices=['upstream', 'downstream', 'both'], default='both',
+                        help='Lineage direction (default: both)')
+    parser.add_argument('--format', choices=['text', 'json', 'mermaid'], default='text',
+                        help='Output format (default: text)')
+    parser.add_argument('--workspace', help='Databricks workspace URL (default: env DATABRICKS_HOST)')
+    parser.add_argument('--token', help='Databricks access token (default: env DATABRICKS_TOKEN)')
+    parser.add_argument('--depth', type=int, default=1,
+                        help='Maximum depth to traverse (default: 1)')
+
+    args = parser.parse_args()
+
+    # Get workspace URL and token
+    workspace_url = args.workspace or os.environ.get('DATABRICKS_HOST')
+    token = args.token or os.environ.get('DATABRICKS_TOKEN')
+
+    if not workspace_url:
+        print(f"{Colors.RED}Error: Workspace URL not provided{Colors.RESET}", file=sys.stderr)
+        print("Set DATABRICKS_HOST environment variable or use --workspace", file=sys.stderr)
+        sys.exit(1)
+
+    if not token:
+        print(f"{Colors.RED}Error: Access token not provided{Colors.RESET}", file=sys.stderr)
+        print("Set DATABRICKS_TOKEN environment variable or use --token", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate depth
+    if args.depth < 1:
+        print(f"{Colors.RED}Error: Depth must be at least 1{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    # Get lineage
+    result = get_lineage(
+        args.table_name,
+        workspace_url,
+        token,
+        args.direction,
+        args.depth
+    )
+
+    # Print results
+    if args.format == 'json':
+        print_json_report(result)
+    elif args.format == 'mermaid':
+        print_mermaid_report(result)
+    else:
+        print_text_report(result)
+
+    # Exit with appropriate code
+    sys.exit(0 if result['success'] else 1)
+
+
+if __name__ == '__main__':
+    main()

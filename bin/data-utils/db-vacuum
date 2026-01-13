@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""
+db-vacuum - Clean up old files in Delta tables
+
+Removes old data files that are no longer referenced by the Delta table log.
+This reclaims storage space but prevents time travel beyond the retention period.
+
+Usage:
+  db-vacuum <table_name> [options]
+
+Arguments:
+  table_name   Fully-qualified table name (catalog.schema.table)
+
+Options:
+  --retention=<hours>   Retention period in hours (default: 168 = 7 days)
+  --format=<fmt>        Output format: text or json (default: text)
+  --workspace=<url>     Databricks workspace URL (default: env DATABRICKS_HOST)
+  --token=<token>       Databricks access token (default: env DATABRICKS_TOKEN)
+  --dry-run             Show what would be deleted without executing
+  --help, -h            Show this help message
+
+Examples:
+  db-vacuum main.analytics.sales
+  db-vacuum main.analytics.sales --retention=72
+  db-vacuum main.analytics.sales --dry-run
+  db-vacuum main.analytics.sales --format=json
+
+Environment Variables:
+  DATABRICKS_HOST       Databricks workspace URL
+  DATABRICKS_TOKEN      Personal access token or service principal token
+
+About:
+  VACUUM removes data files that are no longer in the latest table state and
+  are older than the retention threshold. This is important for:
+  - Reducing storage costs by removing unused files
+  - Maintaining data hygiene in Delta tables
+  - Compliance with data retention policies
+
+  WARNING: After vacuuming, you cannot time travel to versions older than
+  the retention period. The default retention is 7 days (168 hours).
+
+  This operation requires MODIFY permissions on the table.
+"""
+
+import argparse
+import json
+import os
+import sys
+from datetime import datetime
+from typing import Dict, Optional, Any
+
+try:
+    from databricks import sql
+except ImportError:
+    print("Error: databricks-sql-connector not installed", file=sys.stderr)
+    print("Install with: pip install databricks-sql-connector", file=sys.stderr)
+    sys.exit(1)
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def vacuum_table(
+    table_name: str,
+    workspace_url: str,
+    token: str,
+    retention_hours: int = 168,
+    dry_run: bool = False
+) -> Dict[str, Any]:
+    """
+    Vacuum a Delta table to remove old unused files.
+
+    Args:
+        table_name: Fully-qualified table name (catalog.schema.table)
+        workspace_url: Databricks workspace URL
+        token: Access token
+        retention_hours: Number of hours to retain old files
+        dry_run: If True, don't execute, just show what would happen
+
+    Returns:
+        Dictionary with vacuum results
+    """
+    result = {
+        'table': table_name,
+        'success': False,
+        'error': None,
+        'retention_hours': retention_hours,
+        'dry_run': dry_run,
+        'files_deleted': None
+    }
+
+    # Build VACUUM command
+    vacuum_cmd = f"VACUUM {table_name} RETAIN {retention_hours} HOURS"
+    if dry_run:
+        vacuum_cmd += " DRY RUN"
+
+    result['command'] = vacuum_cmd
+
+    try:
+        # Extract hostname from workspace URL
+        hostname = workspace_url.replace('https://', '').replace('http://', '')
+
+        with sql.connect(
+            server_hostname=hostname,
+            http_path='/sql/1.0/warehouses/default',  # User should configure this
+            access_token=token
+        ) as connection:
+            with connection.cursor() as cursor:
+                start_time = datetime.now()
+                cursor.execute(vacuum_cmd)
+
+                # Fetch results
+                rows = cursor.fetchall()
+                end_time = datetime.now()
+
+                result['success'] = True
+                result['execution_time_seconds'] = (end_time - start_time).total_seconds()
+
+                # Parse VACUUM output
+                # VACUUM returns a list of files that were deleted (or would be in dry run)
+                if rows:
+                    result['files_deleted'] = len(rows)
+                    if dry_run:
+                        result['files_to_delete'] = [row[0] for row in rows[:10]]  # Sample first 10
+                        result['message'] = f"Would delete {len(rows)} files"
+                    else:
+                        result['message'] = f"Deleted {len(rows)} files"
+                else:
+                    result['files_deleted'] = 0
+                    result['message'] = "No files to delete"
+
+    except Exception as e:
+        result['error'] = str(e)
+        result['success'] = False
+
+    return result
+
+
+def format_retention(hours: int) -> str:
+    """Format retention hours in a human-readable way"""
+    if hours < 24:
+        return f"{hours} hours"
+    days = hours // 24
+    remaining_hours = hours % 24
+    if remaining_hours == 0:
+        return f"{days} days"
+    return f"{days} days, {remaining_hours} hours"
+
+
+def print_text_report(result: Dict[str, Any]) -> None:
+    """Print vacuum results in human-readable format"""
+    c = Colors
+
+    print(f"\n{c.BOLD}Delta Table Vacuum{c.RESET}")
+    print(f"{c.CYAN}{'=' * 70}{c.RESET}\n")
+
+    print(f"{c.BOLD}Table:{c.RESET} {result['table']}")
+    print(f"{c.BOLD}Retention:{c.RESET} {format_retention(result['retention_hours'])}")
+    print(f"{c.BOLD}Command:{c.RESET} {result['command']}")
+
+    print()
+
+    if result['success']:
+        if result['dry_run']:
+            print(f"{c.YELLOW}DRY RUN - Files not deleted{c.RESET}")
+            print(f"\n{result['message']}")
+
+            if result.get('files_to_delete'):
+                print(f"\n{c.BOLD}Sample files to delete (first 10):{c.RESET}")
+                for filepath in result['files_to_delete']:
+                    print(f"  {filepath}")
+        else:
+            print(f"{c.GREEN}✓ Vacuum completed successfully{c.RESET}")
+            print(f"\n{result['message']}")
+
+        if 'execution_time_seconds' in result:
+            print(f"\n{c.BOLD}Execution Time:{c.RESET} {result['execution_time_seconds']:.2f} seconds")
+    else:
+        print(f"{c.RED}✗ Vacuum failed{c.RESET}")
+        print(f"\n{c.RED}Error:{c.RESET} {result['error']}")
+
+
+def print_json_report(result: Dict[str, Any]) -> None:
+    """Print vacuum results in JSON format"""
+    print(json.dumps(result, indent=2, default=str))
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+
+    parser.add_argument('table_name', help='Fully-qualified table name (catalog.schema.table)')
+    parser.add_argument('--retention', type=int, default=168,
+                        help='Retention period in hours (default: 168 = 7 days)')
+    parser.add_argument('--format', choices=['text', 'json'], default='text',
+                        help='Output format (default: text)')
+    parser.add_argument('--workspace', help='Databricks workspace URL (default: env DATABRICKS_HOST)')
+    parser.add_argument('--token', help='Databricks access token (default: env DATABRICKS_TOKEN)')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='Show what would be deleted without executing')
+
+    args = parser.parse_args()
+
+    # Get workspace URL and token
+    workspace_url = args.workspace or os.environ.get('DATABRICKS_HOST')
+    token = args.token or os.environ.get('DATABRICKS_TOKEN')
+
+    if not workspace_url:
+        print(f"{Colors.RED}Error: Workspace URL not provided{Colors.RESET}", file=sys.stderr)
+        print("Set DATABRICKS_HOST environment variable or use --workspace", file=sys.stderr)
+        sys.exit(1)
+
+    if not token:
+        print(f"{Colors.RED}Error: Access token not provided{Colors.RESET}", file=sys.stderr)
+        print("Set DATABRICKS_TOKEN environment variable or use --token", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate retention
+    if args.retention < 0:
+        print(f"{Colors.RED}Error: Retention must be non-negative{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    # Run vacuum
+    result = vacuum_table(
+        args.table_name,
+        workspace_url,
+        token,
+        args.retention,
+        args.dry_run
+    )
+
+    # Print results
+    if args.format == 'json':
+        print_json_report(result)
+    else:
+        print_text_report(result)
+
+    # Exit with appropriate code
+    sys.exit(0 if result['success'] else 1)
+
+
+if __name__ == '__main__':
+    main()

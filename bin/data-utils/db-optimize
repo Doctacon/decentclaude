@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""
+db-optimize - Optimize Delta tables in Databricks
+
+Runs the OPTIMIZE command on Delta tables to compact small files and improve
+query performance. Can also apply Z-ORDER clustering for better data skipping.
+
+Usage:
+  db-optimize <table_name> [options]
+
+Arguments:
+  table_name   Fully-qualified table name (catalog.schema.table)
+
+Options:
+  --zorder=<cols>       Comma-separated columns for Z-ORDER BY
+  --format=<fmt>        Output format: text or json (default: text)
+  --workspace=<url>     Databricks workspace URL (default: env DATABRICKS_HOST)
+  --token=<token>       Databricks access token (default: env DATABRICKS_TOKEN)
+  --dry-run             Show what would be optimized without executing
+  --help, -h            Show this help message
+
+Examples:
+  db-optimize main.analytics.sales
+  db-optimize main.analytics.sales --zorder=date,region
+  db-optimize main.analytics.sales --dry-run
+  db-optimize main.analytics.sales --format=json
+
+Environment Variables:
+  DATABRICKS_HOST       Databricks workspace URL
+  DATABRICKS_TOKEN      Personal access token or service principal token
+
+About:
+  OPTIMIZE compacts small files into larger ones, reducing the number of
+  files that must be read during queries. Z-ORDER clustering co-locates
+  related data in the same set of files for better data skipping.
+
+  This operation requires MODIFY permissions on the table.
+"""
+
+import argparse
+import json
+import os
+import sys
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+
+try:
+    from databricks import sql
+except ImportError:
+    print("Error: databricks-sql-connector not installed", file=sys.stderr)
+    print("Install with: pip install databricks-sql-connector", file=sys.stderr)
+    sys.exit(1)
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def optimize_table(
+    table_name: str,
+    workspace_url: str,
+    token: str,
+    zorder_cols: Optional[List[str]] = None,
+    dry_run: bool = False
+) -> Dict[str, Any]:
+    """
+    Optimize a Delta table using OPTIMIZE command.
+
+    Args:
+        table_name: Fully-qualified table name (catalog.schema.table)
+        workspace_url: Databricks workspace URL
+        token: Access token
+        zorder_cols: Optional list of columns for Z-ORDER BY
+        dry_run: If True, don't execute, just show what would happen
+
+    Returns:
+        Dictionary with optimization results
+    """
+    result = {
+        'table': table_name,
+        'success': False,
+        'error': None,
+        'metrics': {},
+        'dry_run': dry_run
+    }
+
+    # Build OPTIMIZE command
+    optimize_cmd = f"OPTIMIZE {table_name}"
+    if zorder_cols:
+        zorder_clause = ", ".join(zorder_cols)
+        optimize_cmd += f" ZORDER BY ({zorder_clause})"
+
+    result['command'] = optimize_cmd
+
+    if dry_run:
+        result['success'] = True
+        result['message'] = "Dry run - command not executed"
+        return result
+
+    try:
+        # Extract hostname from workspace URL
+        hostname = workspace_url.replace('https://', '').replace('http://', '')
+
+        with sql.connect(
+            server_hostname=hostname,
+            http_path='/sql/1.0/warehouses/default',  # User should configure this
+            access_token=token
+        ) as connection:
+            with connection.cursor() as cursor:
+                start_time = datetime.now()
+                cursor.execute(optimize_cmd)
+
+                # Fetch results
+                rows = cursor.fetchall()
+                end_time = datetime.now()
+
+                result['success'] = True
+                result['execution_time_seconds'] = (end_time - start_time).total_seconds()
+
+                # Parse OPTIMIZE output
+                if rows:
+                    # OPTIMIZE returns metrics like files added, removed, etc.
+                    columns = [desc[0] for desc in cursor.description]
+                    row_data = dict(zip(columns, rows[0]))
+                    result['metrics'] = row_data
+
+    except Exception as e:
+        result['error'] = str(e)
+        result['success'] = False
+
+    return result
+
+
+def print_text_report(result: Dict[str, Any]) -> None:
+    """Print optimization results in human-readable format"""
+    c = Colors
+
+    print(f"\n{c.BOLD}Delta Table Optimization{c.RESET}")
+    print(f"{c.CYAN}{'=' * 70}{c.RESET}\n")
+
+    print(f"{c.BOLD}Table:{c.RESET} {result['table']}")
+    print(f"{c.BOLD}Command:{c.RESET} {result['command']}")
+
+    if result['dry_run']:
+        print(f"\n{c.YELLOW}DRY RUN - Command not executed{c.RESET}")
+        return
+
+    print()
+
+    if result['success']:
+        print(f"{c.GREEN}✓ Optimization completed successfully{c.RESET}")
+
+        if 'execution_time_seconds' in result:
+            print(f"\n{c.BOLD}Execution Time:{c.RESET} {result['execution_time_seconds']:.2f} seconds")
+
+        if result['metrics']:
+            print(f"\n{c.BOLD}Metrics:{c.RESET}")
+            for key, value in result['metrics'].items():
+                print(f"  {key}: {value}")
+    else:
+        print(f"{c.RED}✗ Optimization failed{c.RESET}")
+        print(f"\n{c.RED}Error:{c.RESET} {result['error']}")
+
+
+def print_json_report(result: Dict[str, Any]) -> None:
+    """Print optimization results in JSON format"""
+    print(json.dumps(result, indent=2, default=str))
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+
+    parser.add_argument('table_name', help='Fully-qualified table name (catalog.schema.table)')
+    parser.add_argument('--zorder', help='Comma-separated columns for Z-ORDER BY')
+    parser.add_argument('--format', choices=['text', 'json'], default='text',
+                        help='Output format (default: text)')
+    parser.add_argument('--workspace', help='Databricks workspace URL (default: env DATABRICKS_HOST)')
+    parser.add_argument('--token', help='Databricks access token (default: env DATABRICKS_TOKEN)')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='Show what would be optimized without executing')
+
+    args = parser.parse_args()
+
+    # Get workspace URL and token
+    workspace_url = args.workspace or os.environ.get('DATABRICKS_HOST')
+    token = args.token or os.environ.get('DATABRICKS_TOKEN')
+
+    if not workspace_url:
+        print(f"{Colors.RED}Error: Workspace URL not provided{Colors.RESET}", file=sys.stderr)
+        print("Set DATABRICKS_HOST environment variable or use --workspace", file=sys.stderr)
+        sys.exit(1)
+
+    if not token and not args.dry_run:
+        print(f"{Colors.RED}Error: Access token not provided{Colors.RESET}", file=sys.stderr)
+        print("Set DATABRICKS_TOKEN environment variable or use --token", file=sys.stderr)
+        sys.exit(1)
+
+    # Parse zorder columns
+    zorder_cols = None
+    if args.zorder:
+        zorder_cols = [col.strip() for col in args.zorder.split(',')]
+
+    # Run optimization
+    result = optimize_table(
+        args.table_name,
+        workspace_url,
+        token or '',
+        zorder_cols,
+        args.dry_run
+    )
+
+    # Print results
+    if args.format == 'json':
+        print_json_report(result)
+    else:
+        print_text_report(result)
+
+    # Exit with appropriate code
+    sys.exit(0 if result['success'] else 1)
+
+
+if __name__ == '__main__':
+    main()
