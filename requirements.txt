@@ -1,0 +1,18 @@
+# Core dependencies for hooks
+sqlparse>=0.4.0
+
+# BigQuery utilities (bq-* tools)
+google-cloud-bigquery>=3.0.0
+
+# AI generation utility (ai-generate)
+anthropic>=0.39.0
+
+# Optional: SQL linting
+# sqlfluff>=2.0.0
+
+# Optional: dbt integration
+# dbt-core>=1.5.0
+# dbt-bigquery>=1.5.0
+
+# Optional: SQLMesh integration
+# sqlmesh>=0.25.0

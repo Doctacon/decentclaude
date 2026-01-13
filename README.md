@@ -16,6 +16,7 @@ Powerful command-line utilities for common BigQuery operations:
 - **bq-query-cost**: Estimate query costs before execution
 - **bq-partition-info**: Analyze partitioning configuration and partition sizes
 - **bq-lineage**: Explore table dependencies (upstream and downstream)
+- **ai-generate**: AI-powered code generation for dbt models, SQLMesh models, tests, transformations, and migrations
 
 See [Data Utilities](#data-utilities) for detailed usage.
 
@@ -44,8 +45,11 @@ See [Data Utilities](#data-utilities) for detailed usage.
 ### 1. Install Dependencies
 
 ```bash
-# Core dependencies
-pip install sqlparse
+# Install all required dependencies
+pip install -r requirements.txt
+
+# Or install individually
+pip install sqlparse google-cloud-bigquery anthropic
 
 # Optional tools
 pip install sqlfluff dbt-core dbt-bigquery sqlmesh
@@ -261,6 +265,56 @@ bin/data-utils/bq-lineage project.dataset.orders --format=mermaid
 
 **Note:** Lineage detection works best with views and materialized views. For tables, it searches for references in view definitions across the project.
 
+### ai-generate
+
+AI-powered code generation for data engineering tasks using Claude.
+
+**Usage:**
+```bash
+bin/data-utils/ai-generate <type> <requirements> [options]
+```
+
+**Arguments:**
+- `type` - Generation type: dbt-model, sqlmesh-model, test, transform, migration
+- `requirements` - Requirements description or path to requirements file
+
+**Options:**
+- `--output=<path>` - Output file path (default: stdout)
+- `--format=<format>` - Output format: text, json (default: text)
+- `--context=<file>` - Additional context file (schema, existing models, etc.)
+- `--model=<model>` - Claude model to use (default: claude-sonnet-4-5-20250929)
+
+**Examples:**
+```bash
+# Generate dbt model from natural language
+bin/data-utils/ai-generate dbt-model "daily user engagement metrics" --output=models/staging/stg_analytics__user_engagement.sql
+
+# Generate SQLMesh model from spec file
+bin/data-utils/ai-generate sqlmesh-model requirements.txt --output=models/user_engagement_daily.sql
+
+# Generate data quality tests
+bin/data-utils/ai-generate test "validate user_id is unique per day in user_engagement" --output=tests/assert_unique_users.sql
+
+# Generate transformation logic
+bin/data-utils/ai-generate transform "calculate 7-day rolling average of user activity" --output=macros/rolling_avg.sql
+
+# Generate migration script
+bin/data-utils/ai-generate migration "add partitioning to events table by event_date" --output=migrations/001_partition_events.sql
+
+# Use additional context from schema file
+bin/data-utils/ai-generate dbt-model "staging layer for orders" --context=schema.json --output=models/staging/stg_orders.sql
+```
+
+**Output includes:**
+- Generated code ready to save to file
+- Model and token usage information
+- Success/failure status
+
+**Requirements:**
+- Python 3.7+
+- anthropic library: `pip install anthropic`
+- ANTHROPIC_API_KEY environment variable set
+
 ### Installation
 
 To make utilities accessible from anywhere, add to your PATH:
@@ -277,14 +331,20 @@ sudo ln -s /path/to/decentclaude/bin/data-utils/bq-schema-diff /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-query-cost /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-partition-info /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-lineage /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/ai-generate /usr/local/bin/
 ```
 
 ### Requirements
 
-All utilities require:
+BigQuery utilities (bq-*) require:
 - Python 3.7+
 - google-cloud-bigquery library: `pip install google-cloud-bigquery`
 - Google Cloud credentials configured (via GOOGLE_APPLICATION_CREDENTIALS or gcloud auth)
+
+AI generation utility (ai-generate) requires:
+- Python 3.7+
+- anthropic library: `pip install anthropic`
+- ANTHROPIC_API_KEY environment variable set
 
 ## Customization
 
@@ -341,11 +401,12 @@ chmod +x .git/hooks/pre-commit
 │   ├── settings.json           # Hook configurations
 │   └── HOOKS.md               # Hook documentation
 ├── bin/
-│   ├── data-utils/            # CLI utilities for BigQuery
+│   ├── data-utils/            # CLI utilities for BigQuery and AI generation
 │   │   ├── bq-schema-diff     # Compare table schemas
 │   │   ├── bq-query-cost      # Estimate query costs
 │   │   ├── bq-partition-info  # Analyze partitions
-│   │   └── bq-lineage         # Explore table lineage
+│   │   ├── bq-lineage         # Explore table lineage
+│   │   └── ai-generate        # AI-powered code generation
 │   └── worktree-utils/        # Git worktree utilities
 ├── scripts/
 │   └── data_quality.py        # Data quality check framework
@@ -359,7 +420,8 @@ chmod +x .git/hooks/pre-commit
 
 - Python 3.7+
 - sqlparse (required for hooks)
-- google-cloud-bigquery (required for CLI utilities)
+- google-cloud-bigquery (required for BigQuery CLI utilities)
+- anthropic (required for ai-generate utility)
 - sqlfluff (optional, for linting)
 - dbt-core (optional, for dbt hooks)
 - sqlmesh (optional, for SQLMesh hooks)
