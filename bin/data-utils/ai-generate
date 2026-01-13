@@ -1,0 +1,384 @@
+#!/usr/bin/env python3
+"""
+ai-generate - AI-powered code generation for data engineering
+
+Usage:
+  ai-generate <type> <requirements> [options]
+
+Arguments:
+  type           Generation type: dbt-model, sqlmesh-model, test, transform, migration
+  requirements   Requirements description or path to requirements file
+
+Options:
+  --output=<path>        Output file path (default: stdout)
+  --format=<format>      Output format: text, json (default: text)
+  --context=<file>       Additional context file (schema, existing models, etc.)
+  --model=<model>        Claude model to use (default: claude-sonnet-4-5-20250929)
+  --help, -h             Show help
+
+Examples:
+  # Generate dbt model from natural language
+  ai-generate dbt-model "daily user engagement metrics" --output=models/staging/stg_analytics__user_engagement.sql
+
+  # Generate SQLMesh model from spec file
+  ai-generate sqlmesh-model requirements.txt --output=models/user_engagement_daily.sql
+
+  # Generate data quality tests
+  ai-generate test "validate user_id is unique per day in user_engagement" --output=tests/assert_unique_users.sql
+
+  # Generate transformation logic
+  ai-generate transform "calculate 7-day rolling average of user activity" --output=macros/rolling_avg.sql
+
+  # Generate migration script
+  ai-generate migration "add partitioning to events table by event_date" --output=migrations/001_partition_events.sql
+"""
+
+import sys
+import json
+import argparse
+import os
+from pathlib import Path
+from typing import Dict, Any, Optional
+from anthropic import Anthropic
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[0;33m'
+    BLUE = '\033[0;34m'
+    MAGENTA = '\033[0;35m'
+    CYAN = '\033[0;36m'
+    WHITE = '\033[0;37m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+class AIGenerator:
+    """AI-powered code generator for data engineering tasks"""
+
+    GENERATION_TYPES = {
+        'dbt-model': 'dbt model SQL file',
+        'sqlmesh-model': 'SQLMesh model SQL file',
+        'test': 'data quality test',
+        'transform': 'transformation logic',
+        'migration': 'migration script'
+    }
+
+    def __init__(self, model: str = "claude-sonnet-4-5-20250929"):
+        """Initialize the AI generator with specified model"""
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY environment variable not set")
+
+        self.client = Anthropic(api_key=api_key)
+        self.model = model
+
+    def load_context(self, context_file: Optional[str] = None) -> str:
+        """Load additional context from file if provided"""
+        if not context_file:
+            return ""
+
+        try:
+            with open(context_file, 'r') as f:
+                return f.read()
+        except Exception as e:
+            print(f"{Colors.YELLOW}Warning: Could not load context file: {e}{Colors.RESET}", file=sys.stderr)
+            return ""
+
+    def load_requirements(self, requirements: str) -> str:
+        """Load requirements from string or file"""
+        if os.path.isfile(requirements):
+            with open(requirements, 'r') as f:
+                return f.read()
+        return requirements
+
+    def get_system_prompt(self, gen_type: str) -> str:
+        """Get system prompt based on generation type"""
+        base_prompt = """You are an expert data engineer specializing in SQL, dbt, and SQLMesh.
+Your task is to generate high-quality, production-ready code following best practices.
+
+Key principles:
+- Write clean, readable, well-documented SQL
+- Follow naming conventions (stg_, int_, fct_, dim_ prefixes)
+- Use CTEs for clarity and modularity
+- Include appropriate partitioning and clustering
+- Add helpful comments explaining business logic
+- Follow DRY principles
+- Implement proper error handling where applicable
+"""
+
+        type_specific = {
+            'dbt-model': """
+Generate a dbt model SQL file with:
+- Jinja config block with materialization, partitioning, clustering
+- Source references using {{ source() }} or {{ ref() }}
+- Clear CTE structure (raw → cleaned → transformed → final)
+- Column-level documentation in comments
+- Appropriate WHERE clauses for incremental models
+- Standard naming: stg_ (staging), int_ (intermediate), fct_ (fact), dim_ (dimension)
+
+Example structure:
+{{
+  config(
+    materialized='table',
+    partition_by={"field": "date_column", "data_type": "date"},
+    cluster_by=["key_column"]
+  )
+}}
+
+WITH source_data AS (
+  SELECT * FROM {{ source('schema', 'table') }}
+),
+cleaned AS (
+  SELECT ... FROM source_data
+),
+final AS (
+  SELECT ... FROM cleaned
+)
+SELECT * FROM final
+""",
+            'sqlmesh-model': """
+Generate a SQLMesh model SQL file with:
+- MODEL block with name, kind, start date, cron schedule, grain
+- Use INCREMENTAL_BY_TIME_RANGE for incremental models
+- Proper time column references with @start_date and @end_date
+- Clear CTE structure
+- Appropriate grain definition
+- Standard naming conventions
+
+Example structure:
+MODEL (
+  name schema.table_name,
+  kind INCREMENTAL_BY_TIME_RANGE (
+    time_column date_column
+  ),
+  start '2024-01-01',
+  cron '@daily',
+  grain (key_columns)
+);
+
+WITH source_data AS (
+  SELECT ... WHERE date_column BETWEEN @start_date AND @end_date
+),
+transformed AS (
+  SELECT ... FROM source_data
+)
+SELECT * FROM transformed;
+""",
+            'test': """
+Generate a data quality test SQL file with:
+- Test that returns rows where the assertion FAILS
+- Clear, descriptive column names in output
+- Comments explaining what the test validates
+- Use dbt ref() for model references if applicable
+
+Example structure:
+-- Test: [Description of what this validates]
+-- Fails if: [Condition that indicates a problem]
+
+SELECT
+  column1,
+  column2,
+  count(*) as violation_count
+FROM {{ ref('model_name') }}
+WHERE [condition that should NOT be true]
+GROUP BY column1, column2
+HAVING count(*) > 0
+""",
+            'transform': """
+Generate transformation logic (macro, function, or reusable SQL) with:
+- Clear input and output definitions
+- Parameterized where appropriate
+- Documentation of parameters
+- Example usage in comments
+- Error handling where applicable
+
+For dbt macros:
+{% macro macro_name(param1, param2) %}
+  -- Logic here
+{% endmacro %}
+
+For SQL functions:
+CREATE TEMP FUNCTION function_name(param TYPE) AS (
+  -- Logic here
+);
+""",
+            'migration': """
+Generate a migration script with:
+- Clear description of what changes
+- Idempotent operations where possible (IF NOT EXISTS, etc.)
+- Rollback instructions in comments
+- Transaction boundaries if applicable
+- Testing recommendations
+
+Example structure:
+-- Migration: [Description]
+-- Date: [Current date]
+-- Rollback: [How to undo these changes]
+
+BEGIN;
+
+-- Forward migration
+ALTER TABLE ... ;
+
+-- Validation query (run this to verify)
+-- SELECT ... ;
+
+COMMIT;
+"""
+        }
+
+        return base_prompt + type_specific.get(gen_type, "")
+
+    def generate(
+        self,
+        gen_type: str,
+        requirements: str,
+        context: str = ""
+    ) -> Dict[str, Any]:
+        """Generate code using Claude API"""
+
+        if gen_type not in self.GENERATION_TYPES:
+            raise ValueError(f"Invalid generation type: {gen_type}. Must be one of: {', '.join(self.GENERATION_TYPES.keys())}")
+
+        system_prompt = self.get_system_prompt(gen_type)
+
+        user_prompt = f"""Generate a {self.GENERATION_TYPES[gen_type]} based on the following requirements:
+
+{requirements}"""
+
+        if context:
+            user_prompt += f"\n\nAdditional context:\n{context}"
+
+        user_prompt += "\n\nGenerate ONLY the code - no explanations or markdown formatting. The output should be ready to save directly to a file."
+
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=4096,
+                system=system_prompt,
+                messages=[{
+                    "role": "user",
+                    "content": user_prompt
+                }]
+            )
+
+            generated_code = response.content[0].text
+
+            return {
+                'success': True,
+                'type': gen_type,
+                'code': generated_code,
+                'model': self.model,
+                'tokens': {
+                    'input': response.usage.input_tokens,
+                    'output': response.usage.output_tokens
+                }
+            }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e),
+                'type': gen_type
+            }
+
+
+def print_result(result: Dict[str, Any], output_file: Optional[str] = None):
+    """Print generation result in formatted text"""
+
+    if not result['success']:
+        print(f"{Colors.RED}✗ Generation failed{Colors.RESET}")
+        print(f"{Colors.RED}Error: {result['error']}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"{Colors.GREEN}✓ Generated {result['type']} successfully{Colors.RESET}")
+    print(f"{Colors.CYAN}Model: {result['model']}{Colors.RESET}")
+    print(f"{Colors.CYAN}Tokens: {result['tokens']['input']} in, {result['tokens']['output']} out{Colors.RESET}")
+
+    if output_file:
+        print(f"{Colors.CYAN}Output: {output_file}{Colors.RESET}")
+    else:
+        print(f"\n{Colors.BOLD}Generated Code:{Colors.RESET}")
+        print(f"{Colors.WHITE}{result['code']}{Colors.RESET}")
+
+
+def main():
+    """Entry point for ai-generate CLI"""
+    parser = argparse.ArgumentParser(
+        description='AI-powered code generation for data engineering',
+        usage='ai-generate <type> <requirements> [options]'
+    )
+
+    parser.add_argument(
+        'type',
+        choices=['dbt-model', 'sqlmesh-model', 'test', 'transform', 'migration'],
+        help='Type of code to generate'
+    )
+
+    parser.add_argument(
+        'requirements',
+        help='Requirements description or path to requirements file'
+    )
+
+    parser.add_argument(
+        '--output',
+        help='Output file path (default: stdout)',
+        default=None
+    )
+
+    parser.add_argument(
+        '--format',
+        choices=['text', 'json'],
+        default='text',
+        help='Output format (default: text)'
+    )
+
+    parser.add_argument(
+        '--context',
+        help='Additional context file (schema, existing models, etc.)',
+        default=None
+    )
+
+    parser.add_argument(
+        '--model',
+        default='claude-sonnet-4-5-20250929',
+        help='Claude model to use (default: claude-sonnet-4-5-20250929)'
+    )
+
+    args = parser.parse_args()
+
+    try:
+        generator = AIGenerator(model=args.model)
+
+        requirements = generator.load_requirements(args.requirements)
+        context = generator.load_context(args.context)
+
+        result = generator.generate(
+            gen_type=args.type,
+            requirements=requirements,
+            context=context
+        )
+
+        if args.format == 'json':
+            print(json.dumps(result, indent=2))
+        else:
+            print_result(result, args.output)
+
+        if result['success'] and args.output:
+            output_path = Path(args.output)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, 'w') as f:
+                f.write(result['code'])
+
+        sys.exit(0 if result['success'] else 1)
+
+    except Exception as e:
+        print(f"{Colors.RED}Error: {str(e)}{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

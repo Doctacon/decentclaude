@@ -39,6 +39,9 @@ Powerful command-line utilities for common data engineering operations:
 - **dbt-docs-serve**: Enhanced local docs server with auto-reload
 - **dbt-model-search**: Search models by name, description, or column
 
+**AI Generation:**
+- **ai-generate**: AI-powered code generation for dbt models, SQLMesh models, tests, transformations, and migrations
+
 See [Data Utilities](#data-utilities) for detailed usage.
 
 ### CLI Debug Utilities
@@ -84,8 +87,11 @@ The wizard will install dependencies, configure tools, and test your setup in 2-
 ### Manual Installation
 
 ```bash
-# Core dependencies
-pip install sqlparse
+# Install all required dependencies
+pip install -r requirements.txt
+
+# Or install individually
+pip install sqlparse google-cloud-bigquery anthropic
 
 # Knowledge base web interface
 pip install fastapi uvicorn
@@ -654,6 +660,56 @@ pytest tests/ 2>&1 | bin/debug-utils/ai-debug analyze -
 - [Quick Start Guide](docs/debug/README.md)
 - [Comprehensive Reference](docs/debug/AI_DEBUG.md)
 
+### ai-generate
+
+AI-powered code generation for data engineering tasks using Claude.
+
+**Usage:**
+```bash
+bin/data-utils/ai-generate <type> <requirements> [options]
+```
+
+**Arguments:**
+- `type` - Generation type: dbt-model, sqlmesh-model, test, transform, migration
+- `requirements` - Requirements description or path to requirements file
+
+**Options:**
+- `--output=<path>` - Output file path (default: stdout)
+- `--format=<format>` - Output format: text, json (default: text)
+- `--context=<file>` - Additional context file (schema, existing models, etc.)
+- `--model=<model>` - Claude model to use (default: claude-sonnet-4-5-20250929)
+
+**Examples:**
+```bash
+# Generate dbt model from natural language
+bin/data-utils/ai-generate dbt-model "daily user engagement metrics" --output=models/staging/stg_analytics__user_engagement.sql
+
+# Generate SQLMesh model from spec file
+bin/data-utils/ai-generate sqlmesh-model requirements.txt --output=models/user_engagement_daily.sql
+
+# Generate data quality tests
+bin/data-utils/ai-generate test "validate user_id is unique per day in user_engagement" --output=tests/assert_unique_users.sql
+
+# Generate transformation logic
+bin/data-utils/ai-generate transform "calculate 7-day rolling average of user activity" --output=macros/rolling_avg.sql
+
+# Generate migration script
+bin/data-utils/ai-generate migration "add partitioning to events table by event_date" --output=migrations/001_partition_events.sql
+
+# Use additional context from schema file
+bin/data-utils/ai-generate dbt-model "staging layer for orders" --context=schema.json --output=models/staging/stg_orders.sql
+```
+
+**Output includes:**
+- Generated code ready to save to file
+- Model and token usage information
+- Success/failure status
+
+**Requirements:**
+- Python 3.7+
+- anthropic library: `pip install anthropic`
+- ANTHROPIC_API_KEY environment variable set
+
 ### Installation
 
 To make utilities accessible from anywhere, add to your PATH:
@@ -681,21 +737,29 @@ sudo ln -s /path/to/decentclaude/bin/data-utils/dbt-test-gen /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/dbt-docs-serve /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/dbt-model-search /usr/local/bin/
 
+# AI utilities
+sudo ln -s /path/to/decentclaude/bin/data-utils/ai-generate /usr/local/bin/
+
 # Debug utilities
 sudo ln -s /path/to/decentclaude/bin/debug-utils/ai-debug /usr/local/bin/
 ```
 
 ### Requirements
 
-**BigQuery utilities require:**
+**BigQuery utilities (bq-*):**
 - Python 3.7+
 - google-cloud-bigquery library: `pip install google-cloud-bigquery`
 - Google Cloud credentials configured (via GOOGLE_APPLICATION_CREDENTIALS or gcloud auth)
 
-**dbt utilities require:**
+**dbt utilities:**
 - Python 3.7+
 - dbt project with compiled manifest.json (run `dbt compile` or `dbt run`)
 - No additional dependencies (pure Python)
+
+**AI utilities (ai-generate):**
+- Python 3.7+
+- anthropic library: `pip install anthropic`
+- ANTHROPIC_API_KEY environment variable set
 
 ## Customization
 
@@ -764,7 +828,8 @@ chmod +x .git/hooks/pre-commit
 │   │   ├── dbt-deps           # Visualize dbt model dependencies
 │   │   ├── dbt-test-gen       # Auto-generate dbt tests
 │   │   ├── dbt-docs-serve     # Enhanced dbt docs server
-│   │   └── dbt-model-search   # Search dbt models
+│   │   ├── dbt-model-search   # Search dbt models
+│   │   └── ai-generate        # AI-powered code generation
 │   ├── debug-utils/           # AI-assisted debugging utilities
 │   │   └── ai-debug           # Intelligent troubleshooting tool
 │   └── worktree-utils/        # Git worktree utilities
@@ -790,7 +855,8 @@ chmod +x .git/hooks/pre-commit
 
 - Python 3.7+
 - sqlparse (required for hooks)
-- google-cloud-bigquery (required for CLI utilities)
+- google-cloud-bigquery (required for BigQuery CLI utilities)
+- anthropic (required for ai-generate utility)
 - fastapi + uvicorn (required for knowledge base web interface)
 - sqlfluff (optional, for linting)
 - dbt-core (optional, for dbt hooks)
