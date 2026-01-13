@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""
+Health Check CLI
+
+Run health checks for all observability components and system services.
+"""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+# Add project root to path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from observability import get_config, init_observability, run_health_checks
+
+
+def main():
+    """Run health checks and output results."""
+    parser = argparse.ArgumentParser(
+        description="Run health checks for observability components"
+    )
+    parser.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text)",
+    )
+    parser.add_argument(
+        "--exit-on-failure",
+        action="store_true",
+        help="Exit with code 1 if any checks fail",
+    )
+
+    args = parser.parse_args()
+
+    # Initialize observability (with minimal logging)
+    init_observability()
+
+    # Run health checks
+    results = run_health_checks()
+
+    # Output results
+    if args.format == "json":
+        print(json.dumps(results, indent=2))
+    else:
+        # Text format with colors
+        GREEN = "\033[32m"
+        YELLOW = "\033[33m"
+        RED = "\033[31m"
+        BLUE = "\033[34m"
+        RESET = "\033[0m"
+
+        print(f"\n{BLUE}Health Check Results{RESET}")
+        print("=" * 60)
+        print(f"Timestamp: {results['timestamp']}")
+        print(f"Overall Status: ", end="")
+
+        status = results["status"]
+        if status == "healthy":
+            print(f"{GREEN}{status.upper()}{RESET}")
+        elif status == "degraded":
+            print(f"{YELLOW}{status.upper()}{RESET}")
+        else:
+            print(f"{RED}{status.upper()}{RESET}")
+
+        print(f"\nIndividual Checks:")
+        print("-" * 60)
+
+        for check_name, check_result in results["checks"].items():
+            status_str = check_result["status"]
+            if status_str == "healthy":
+                status_color = GREEN
+                symbol = "✓"
+            elif status_str == "degraded":
+                status_color = YELLOW
+                symbol = "⚠"
+            else:
+                status_color = RED
+                symbol = "✗"
+
+            print(f"{symbol} {check_name:20s} {status_color}{status_str:10s}{RESET}", end="")
+            print(f" {check_result['message']}")
+            print(
+                f"  Duration: {check_result['duration_seconds']:.3f}s"
+            )
+
+            if check_result.get("details"):
+                details = check_result["details"]
+                for key, value in details.items():
+                    print(f"  - {key}: {value}")
+
+        print("=" * 60)
+
+    # Exit with error if requested and checks failed
+    if args.exit_on_failure and results["status"] != "healthy":
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
