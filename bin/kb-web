@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""
+Knowledge Base Web Server
+
+Launch the web interface for the knowledge base.
+"""
+
+import sys
+import argparse
+from pathlib import Path
+
+# Add kb module to path
+KB_DIR = Path(__file__).parent.parent / 'kb'
+sys.path.insert(0, str(KB_DIR.parent))
+
+from kb.web import run_server
+
+
+def main():
+    """Main entry point for web server."""
+    parser = argparse.ArgumentParser(
+        description='Knowledge Base Web Server'
+    )
+
+    parser.add_argument(
+        '--host',
+        default='0.0.0.0',
+        help='Host to bind to (default: 0.0.0.0)'
+    )
+
+    parser.add_argument(
+        '--port',
+        type=int,
+        default=8000,
+        help='Port to listen on (default: 8000)'
+    )
+
+    parser.add_argument(
+        '--db',
+        help='Path to knowledge base database (default: ~/.kb/knowledge.db)',
+        default=None
+    )
+
+    args = parser.parse_args()
+
+    print(f"Starting Knowledge Base web server on http://{args.host}:{args.port}")
+    print("Press Ctrl+C to stop")
+
+    run_server(host=args.host, port=args.port, db_path=args.db)
+
+
+if __name__ == '__main__':
+    main()
