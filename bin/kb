@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+"""
+Knowledge Base CLI
+
+Manage team knowledge, common issues, solutions, and decisions.
+"""
+
+import sys
+import argparse
+import json
+import os
+from pathlib import Path
+from datetime import datetime
+
+# Add kb module to path
+KB_DIR = Path(__file__).parent.parent / 'kb'
+sys.path.insert(0, str(KB_DIR.parent))
+
+from kb.storage import KnowledgeBase
+
+
+class Colors:
+    """ANSI color codes for terminal output."""
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+    RED = '\033[31m'
+    GREEN = '\033[32m'
+    YELLOW = '\033[33m'
+    BLUE = '\033[34m'
+    MAGENTA = '\033[35m'
+    CYAN = '\033[36m'
+    GRAY = '\033[90m'
+
+
+def format_text_output(articles, show_content=False):
+    """Format articles as colored text output."""
+    if not articles:
+        print(f"{Colors.GRAY}No articles found.{Colors.RESET}")
+        return
+
+    for article in articles:
+        # Header
+        print(f"{Colors.BOLD}{Colors.CYAN}#{article['id']}: {article['title']}{Colors.RESET}")
+
+        # Metadata line
+        meta_parts = [
+            f"{Colors.GRAY}Type: {Colors.RESET}{article['article_type']}",
+            f"{Colors.GRAY}Updated: {Colors.RESET}{article['updated_at'][:10]}"
+        ]
+        if article.get('author'):
+            meta_parts.append(f"{Colors.GRAY}By: {Colors.RESET}{article['author']}")
+        print("  " + " | ".join(meta_parts))
+
+        # Tags
+        if article.get('tags'):
+            tags_str = ', '.join([f"{Colors.YELLOW}{tag}{Colors.RESET}" for tag in article['tags']])
+            print(f"  {Colors.GRAY}Tags:{Colors.RESET} {tags_str}")
+
+        # Content preview or full content
+        if show_content:
+            print(f"\n{article['content']}\n")
+        else:
+            preview = article['content'][:200].replace('\n', ' ')
+            if len(article['content']) > 200:
+                preview += '...'
+            print(f"  {Colors.DIM}{preview}{Colors.RESET}")
+
+        # Links
+        if article.get('links'):
+            print(f"  {Colors.GRAY}Links:{Colors.RESET}")
+            for link in article['links']:
+                desc = f" - {link['description']}" if link.get('description') else ""
+                print(f"    {Colors.BLUE}{link['url']}{Colors.RESET} ({link['type']}){desc}")
+
+        print()
+
+
+def cmd_add(args):
+    """Add a new article to the knowledge base."""
+    kb = KnowledgeBase(args.db)
+
+    # Get content from file or stdin
+    if args.file:
+        with open(args.file, 'r') as f:
+            content = f.read()
+    elif args.content:
+        content = args.content
+    else:
+        print(f"{Colors.YELLOW}Enter content (Ctrl+D to finish):{Colors.RESET}")
+        content = sys.stdin.read()
+
+    # Parse links
+    links = []
+    if args.links:
+        for link_str in args.links:
+            parts = link_str.split(',', 2)
+            link = {
+                'url': parts[0],
+                'type': parts[1] if len(parts) > 1 else 'reference',
+                'description': parts[2] if len(parts) > 2 else None
+            }
+            links.append(link)
+
+    # Add article
+    article_id = kb.add_article(
+        title=args.title,
+        content=content,
+        article_type=args.type,
+        author=args.author or os.environ.get('USER'),
+        tags=args.tags.split(',') if args.tags else None,
+        links=links if links else None
+    )
+
+    if args.format == 'json':
+        print(json.dumps({'id': article_id, 'status': 'created'}, indent=2))
+    else:
+        print(f"{Colors.GREEN}✓{Colors.RESET} Article #{article_id} created: {Colors.BOLD}{args.title}{Colors.RESET}")
+
+
+def cmd_get(args):
+    """Get an article by ID."""
+    kb = KnowledgeBase(args.db)
+    article = kb.get_article(args.id)
+
+    if not article:
+        print(f"{Colors.RED}Error: Article #{args.id} not found{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.format == 'json':
+        print(json.dumps(article, indent=2))
+    elif args.format == 'markdown':
+        print(f"# {article['title']}\n")
+        print(f"**Type:** {article['article_type']}  ")
+        print(f"**Created:** {article['created_at']}  ")
+        print(f"**Updated:** {article['updated_at']}  ")
+        if article.get('author'):
+            print(f"**Author:** {article['author']}  ")
+        if article['tags']:
+            print(f"**Tags:** {', '.join(article['tags'])}  ")
+        print()
+        print(article['content'])
+        if article['links']:
+            print("\n## Links\n")
+            for link in article['links']:
+                desc = f" - {link['description']}" if link.get('description') else ""
+                print(f"- [{link['url']}]({link['url']}) ({link['type']}){desc}")
+    else:
+        format_text_output([article], show_content=True)
+
+
+def cmd_update(args):
+    """Update an article."""
+    kb = KnowledgeBase(args.db)
+
+    # Get content if provided
+    content = None
+    if args.file:
+        with open(args.file, 'r') as f:
+            content = f.read()
+    elif args.content:
+        content = args.content
+
+    # Parse links
+    links = None
+    if args.links:
+        links = []
+        for link_str in args.links:
+            parts = link_str.split(',', 2)
+            link = {
+                'url': parts[0],
+                'type': parts[1] if len(parts) > 1 else 'reference',
+                'description': parts[2] if len(parts) > 2 else None
+            }
+            links.append(link)
+
+    # Update article
+    success = kb.update_article(
+        article_id=args.id,
+        title=args.title,
+        content=content,
+        tags=args.tags.split(',') if args.tags else None,
+        links=links
+    )
+
+    if not success:
+        print(f"{Colors.RED}Error: Article #{args.id} not found{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.format == 'json':
+        print(json.dumps({'id': args.id, 'status': 'updated'}, indent=2))
+    else:
+        print(f"{Colors.GREEN}✓{Colors.RESET} Article #{args.id} updated")
+
+
+def cmd_delete(args):
+    """Delete an article."""
+    kb = KnowledgeBase(args.db)
+
+    if not args.yes:
+        article = kb.get_article(args.id)
+        if article:
+            print(f"{Colors.YELLOW}Delete article #{args.id}: {article['title']}?{Colors.RESET}")
+            response = input("Type 'yes' to confirm: ")
+            if response.lower() != 'yes':
+                print("Cancelled")
+                return
+
+    success = kb.delete_article(args.id)
+
+    if not success:
+        print(f"{Colors.RED}Error: Article #{args.id} not found{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.format == 'json':
+        print(json.dumps({'id': args.id, 'status': 'deleted'}, indent=2))
+    else:
+        print(f"{Colors.GREEN}✓{Colors.RESET} Article #{args.id} deleted")
+
+
+def cmd_search(args):
+    """Search articles."""
+    kb = KnowledgeBase(args.db)
+
+    results = kb.search(
+        query=args.query,
+        article_type=args.type,
+        tags=args.tags.split(',') if args.tags else None,
+        limit=args.limit
+    )
+
+    if args.format == 'json':
+        print(json.dumps(results, indent=2))
+    else:
+        print(f"{Colors.BOLD}Found {len(results)} article(s){Colors.RESET}\n")
+        format_text_output(results, show_content=args.full)
+
+
+def cmd_list(args):
+    """List articles."""
+    kb = KnowledgeBase(args.db)
+
+    articles, total = kb.list_articles(
+        article_type=args.type,
+        tags=args.tags.split(',') if args.tags else None,
+        limit=args.limit,
+        offset=args.offset
+    )
+
+    if args.format == 'json':
+        print(json.dumps({
+            'articles': articles,
+            'total': total,
+            'limit': args.limit,
+            'offset': args.offset
+        }, indent=2))
+    else:
+        print(f"{Colors.BOLD}Showing {len(articles)} of {total} article(s){Colors.RESET}\n")
+        format_text_output(articles, show_content=args.full)
+
+
+def cmd_tags(args):
+    """List all tags."""
+    kb = KnowledgeBase(args.db)
+    tags = kb.get_all_tags()
+
+    if args.format == 'json':
+        print(json.dumps(tags, indent=2))
+    else:
+        print(f"{Colors.BOLD}Tags ({len(tags)}){Colors.RESET}\n")
+        for tag in tags:
+            print(f"  {Colors.YELLOW}{tag}{Colors.RESET}")
+
+
+def cmd_stats(args):
+    """Show knowledge base statistics."""
+    kb = KnowledgeBase(args.db)
+    stats = kb.get_stats()
+
+    if args.format == 'json':
+        print(json.dumps(stats, indent=2))
+    else:
+        print(f"{Colors.BOLD}Knowledge Base Statistics{Colors.RESET}\n")
+        print(f"  Total Articles: {Colors.CYAN}{stats['total_articles']}{Colors.RESET}")
+        print(f"  Total Tags:     {Colors.YELLOW}{stats['total_tags']}{Colors.RESET}")
+        print(f"  Total Links:    {Colors.BLUE}{stats['total_links']}{Colors.RESET}")
+        print(f"\n{Colors.BOLD}By Type:{Colors.RESET}")
+        for article_type, count in stats['by_type'].items():
+            print(f"  {article_type}: {count}")
+
+
+def main():
+    """Main CLI entry point."""
+    parser = argparse.ArgumentParser(
+        description='Knowledge Base CLI - Manage team knowledge, issues, and solutions',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    parser.add_argument(
+        '--db',
+        help='Path to knowledge base database (default: ~/.kb/knowledge.db)',
+        default=None
+    )
+
+    parser.add_argument(
+        '--format',
+        choices=['text', 'json', 'markdown'],
+        default='text',
+        help='Output format (default: text)'
+    )
+
+    subparsers = parser.add_subparsers(dest='command', help='Commands')
+
+    # Add command
+    add_parser = subparsers.add_parser('add', help='Add a new article')
+    add_parser.add_argument('title', help='Article title')
+    add_parser.add_argument('--content', help='Article content')
+    add_parser.add_argument('--file', help='Read content from file')
+    add_parser.add_argument('--type', default='knowledge',
+                           choices=['knowledge', 'issue', 'solution', 'decision'],
+                           help='Article type (default: knowledge)')
+    add_parser.add_argument('--author', help='Author name (default: $USER)')
+    add_parser.add_argument('--tags', help='Comma-separated tags')
+    add_parser.add_argument('--links', nargs='+', help='Links in format: url[,type[,description]]')
+
+    # Get command
+    get_parser = subparsers.add_parser('get', help='Get an article by ID')
+    get_parser.add_argument('id', type=int, help='Article ID')
+
+    # Update command
+    update_parser = subparsers.add_parser('update', help='Update an article')
+    update_parser.add_argument('id', type=int, help='Article ID')
+    update_parser.add_argument('--title', help='New title')
+    update_parser.add_argument('--content', help='New content')
+    update_parser.add_argument('--file', help='Read content from file')
+    update_parser.add_argument('--tags', help='New comma-separated tags')
+    update_parser.add_argument('--links', nargs='+', help='New links in format: url[,type[,description]]')
+
+    # Delete command
+    delete_parser = subparsers.add_parser('delete', help='Delete an article')
+    delete_parser.add_argument('id', type=int, help='Article ID')
+    delete_parser.add_argument('-y', '--yes', action='store_true', help='Skip confirmation')
+
+    # Search command
+    search_parser = subparsers.add_parser('search', help='Search articles')
+    search_parser.add_argument('query', help='Search query')
+    search_parser.add_argument('--type', choices=['knowledge', 'issue', 'solution', 'decision'],
+                              help='Filter by article type')
+    search_parser.add_argument('--tags', help='Filter by comma-separated tags')
+    search_parser.add_argument('--limit', type=int, default=50, help='Maximum results (default: 50)')
+    search_parser.add_argument('--full', action='store_true', help='Show full content')
+
+    # List command
+    list_parser = subparsers.add_parser('list', help='List articles')
+    list_parser.add_argument('--type', choices=['knowledge', 'issue', 'solution', 'decision'],
+                            help='Filter by article type')
+    list_parser.add_argument('--tags', help='Filter by comma-separated tags')
+    list_parser.add_argument('--limit', type=int, default=50, help='Maximum results (default: 50)')
+    list_parser.add_argument('--offset', type=int, default=0, help='Offset for pagination')
+    list_parser.add_argument('--full', action='store_true', help='Show full content')
+
+    # Tags command
+    tags_parser = subparsers.add_parser('tags', help='List all tags')
+
+    # Stats command
+    stats_parser = subparsers.add_parser('stats', help='Show statistics')
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    # Route to command handler
+    commands = {
+        'add': cmd_add,
+        'get': cmd_get,
+        'update': cmd_update,
+        'delete': cmd_delete,
+        'search': cmd_search,
+        'list': cmd_list,
+        'tags': cmd_tags,
+        'stats': cmd_stats
+    }
+
+    commands[args.command](args)
+
+
+if __name__ == '__main__':
+    main()

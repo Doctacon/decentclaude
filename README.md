@@ -8,6 +8,19 @@ This repository provides a comprehensive set of Claude Code hooks designed speci
 
 ## Features
 
+### Knowledge Base System
+
+Searchable knowledge base for capturing tribal knowledge, issues, solutions, and decisions:
+
+- **Capture Team Knowledge**: Document expertise, best practices, and decisions
+- **Track Issues**: Record common problems and their context
+- **Store Solutions**: Save workarounds and fixes for future reference
+- **Full-Text Search**: Search across all content using SQLite FTS5
+- **CLI + Web Interface**: Command-line tools and web UI for browsing
+- **Link to Code/Docs**: Connect knowledge to relevant resources
+
+See [Knowledge Base Documentation](docs/knowledge-base.md) for detailed usage.
+
 ### CLI Data Utilities
 
 Powerful command-line utilities for common data engineering operations:
@@ -74,8 +87,24 @@ The wizard will install dependencies, configure tools, and test your setup in 2-
 # Core dependencies
 pip install sqlparse
 
+# Knowledge base web interface
+pip install fastapi uvicorn
+
 # Optional tools
 pip install sqlfluff dbt-core dbt-bigquery sqlmesh
+```
+
+### 1a. Knowledge Base Quick Start
+
+```bash
+# Add knowledge
+kb add "How to deploy" --content "Deployment guide..." --tags "deployment"
+
+# Search knowledge base
+kb search "deployment"
+
+# Start web interface (http://localhost:8000)
+kb-web
 ```
 
 ### 2. Configure dbt (if using)
@@ -723,6 +752,8 @@ chmod +x .git/hooks/pre-commit
 │   ├── settings.json           # Hook configurations
 │   └── HOOKS.md               # Hook documentation
 ├── bin/
+│   ├── kb                     # Knowledge base CLI
+│   ├── kb-web                 # Knowledge base web server
 │   ├── data-utils/            # CLI utilities for data engineering
 │   │   ├── bq-profile         # Generate data profiles
 │   │   ├── bq-schema-diff     # Compare table schemas
@@ -737,11 +768,19 @@ chmod +x .git/hooks/pre-commit
 │   ├── debug-utils/           # AI-assisted debugging utilities
 │   │   └── ai-debug           # Intelligent troubleshooting tool
 │   └── worktree-utils/        # Git worktree utilities
+├── kb/
+│   ├── storage.py             # Knowledge base storage backend
+│   ├── web.py                 # Knowledge base web interface
+│   └── README.md              # Knowledge base docs
 ├── scripts/
 │   └── data_quality.py        # Data quality check framework
 ├── docs/
 │   ├── debug/                 # Debug utilities documentation
+│   ├── knowledge-base.md      # Knowledge base documentation
+│   ├── templates/             # Project templates
 │   └── worktrees/             # Worktree utilities documentation
+├── tests/
+│   └── test_kb_storage.py     # Knowledge base tests
 ├── examples/                  # Example SQL and configs
 ├── data-engineering-patterns.md  # Best practices guide
 └── README.md                  # This file
@@ -752,9 +791,11 @@ chmod +x .git/hooks/pre-commit
 - Python 3.7+
 - sqlparse (required for hooks)
 - google-cloud-bigquery (required for CLI utilities)
+- fastapi + uvicorn (required for knowledge base web interface)
 - sqlfluff (optional, for linting)
 - dbt-core (optional, for dbt hooks)
 - sqlmesh (optional, for SQLMesh hooks)
+- pytest (optional, for running tests)
 
 ## Contributing
 
