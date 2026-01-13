@@ -31,6 +31,7 @@ Powerful command-line utilities for common data engineering operations:
 - **bq-query-cost**: Estimate query costs before execution
 - **bq-partition-info**: Analyze partitioning configuration and partition sizes
 - **bq-lineage**: Explore table dependencies (upstream and downstream)
+<<<<<<< HEAD
 - **bq-table-compare**: Comprehensive table comparison with row counts, schema drift, statistics, and sample data
 
 **dbt Utilities:**
@@ -42,6 +43,7 @@ Powerful command-line utilities for common data engineering operations:
 **AI Generation:**
 - **ai-generate**: AI-powered code generation for dbt models, SQLMesh models, tests, transformations, and migrations
 - **ai-query**: Natural language to SQL query builder powered by Claude
+- **ai-review**: AI-powered code reviewer for SQL/dbt/SQLMesh files
 
 See [Data Utilities](#data-utilities) for detailed usage.
 
@@ -772,6 +774,88 @@ In interactive mode, you can:
 - Use `context: <tables>` to set table context
 - Type `quit` to exit
 
+### ai-review
+
+AI-powered code reviewer that analyzes SQL, dbt, and SQLMesh files for anti-patterns, security issues, performance problems, and best practice violations.
+
+**Usage:**
+```bash
+bin/data-utils/ai-review [files...] [options]
+```
+
+**Options:**
+- `--staged` - Review only staged files (for pre-commit hooks)
+- `--pr` - Review files changed in current PR
+- `--severity=<level>` - Minimum severity to report: info, warning, error (default: info)
+- `--format=<format>` - Output format: text, json (default: text)
+- `--check-only` - Exit with error code if issues found (for CI)
+
+**Examples:**
+```bash
+# Review a specific file
+bin/data-utils/ai-review models/staging/stg_orders.sql
+
+# Review all staged files (pre-commit)
+bin/data-utils/ai-review --staged
+
+# Review PR changes
+bin/data-utils/ai-review --pr --severity=warning
+
+# Review entire directory
+bin/data-utils/ai-review models/
+
+# JSON output for CI integration
+bin/data-utils/ai-review --staged --format=json --check-only
+```
+
+**Review Categories:**
+
+1. **Anti-patterns**
+   - SELECT * usage
+   - DELETE/UPDATE without WHERE clause
+   - CROSS JOIN without proper justification
+   - DISTINCT without explanation
+
+2. **Security Issues**
+   - Hardcoded credentials (passwords, API keys, tokens)
+   - SQL injection vulnerabilities
+   - String concatenation in WHERE clauses
+
+3. **Performance**
+   - Missing partition filters
+   - Queries that may scan entire tables
+   - Expensive operations without comments
+
+4. **Best Practices**
+   - dbt naming conventions (stg_, int_, fct_, dim_)
+   - Missing config blocks in dbt models
+   - Incremental models without unique_key
+   - Missing audit columns
+   - Schema qualification for tables
+   - Model and column documentation
+   - Required tests on key columns
+
+**Pre-commit Integration:**
+
+Add to your `.git/hooks/pre-commit`:
+```bash
+#!/bin/bash
+bin/data-utils/ai-review --staged --check-only
+if [ $? -ne 0 ]; then
+  echo "Code review failed. Fix issues or use --no-verify to bypass."
+  exit 1
+fi
+```
+
+**CI/CD Integration:**
+
+GitHub Actions example:
+```yaml
+- name: AI Code Review
+  run: |
+    bin/data-utils/ai-review --pr --format=json --check-only
+```
+
 ### Installation
 
 To make utilities accessible from anywhere, add to your PATH:
@@ -791,6 +875,7 @@ sudo ln -s /path/to/decentclaude/bin/data-utils/bq-schema-diff /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-query-cost /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-partition-info /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-lineage /usr/local/bin/
+<<<<<<< HEAD
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-table-compare /usr/local/bin/
 
 # dbt utilities
@@ -801,6 +886,8 @@ sudo ln -s /path/to/decentclaude/bin/data-utils/dbt-model-search /usr/local/bin/
 
 # AI utilities
 sudo ln -s /path/to/decentclaude/bin/data-utils/ai-generate /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/ai-query /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/ai-review /usr/local/bin/
 
 # Debug utilities
 sudo ln -s /path/to/decentclaude/bin/debug-utils/ai-debug /usr/local/bin/

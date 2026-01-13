@@ -1,0 +1,713 @@
+#!/usr/bin/env python3
+"""
+ai-review - AI-powered code reviewer for SQL/dbt/SQLMesh
+
+Usage:
+  ai-review [files...] [options]
+  ai-review --staged [options]
+  ai-review --pr [options]
+
+Arguments:
+  files      List of files to review (supports .sql, .yml, .yaml, .py)
+
+Options:
+  --staged              Review only staged files (for pre-commit)
+  --pr                  Review changed files in current PR
+  --severity=<level>    Minimum severity to report: info, warning, error (default: info)
+  --format=<format>     Output format: text, json (default: text)
+  --fix                 Automatically fix issues where possible
+  --check-only          Exit with error code if issues found (for CI)
+  --help, -h            Show this help message
+
+Review Categories:
+  - Anti-patterns: Common SQL/dbt anti-patterns
+  - Optimizations: Performance improvement suggestions
+  - Security: SQL injection, credential exposure
+  - Best Practices: Naming, structure, documentation
+
+Examples:
+  ai-review models/staging/stg_orders.sql
+  ai-review --staged
+  ai-review --pr --severity=warning
+  ai-review models/ --format=json
+"""
+
+import sys
+import os
+import json
+import argparse
+import subprocess
+import re
+from pathlib import Path
+from typing import List, Dict, Optional, Set
+from dataclasses import dataclass, asdict
+from enum import Enum
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+class Severity(Enum):
+    """Issue severity levels"""
+    INFO = 1
+    WARNING = 2
+    ERROR = 3
+
+
+@dataclass
+class ReviewIssue:
+    """Represents a code review issue"""
+    file_path: str
+    line_number: Optional[int]
+    severity: Severity
+    category: str
+    message: str
+    suggestion: Optional[str] = None
+    auto_fixable: bool = False
+
+    def to_dict(self):
+        """Convert to dictionary for JSON output"""
+        return {
+            "file_path": self.file_path,
+            "line_number": self.line_number,
+            "severity": self.severity.name,
+            "category": self.category,
+            "message": self.message,
+            "suggestion": self.suggestion,
+            "auto_fixable": self.auto_fixable
+        }
+
+
+class SQLReviewer:
+    """Reviews SQL files for anti-patterns and best practices"""
+
+    def __init__(self):
+        self.issues: List[ReviewIssue] = []
+
+    def review_file(self, file_path: Path) -> List[ReviewIssue]:
+        """Review a SQL file"""
+        try:
+            with open(file_path, 'r') as f:
+                content = f.read()
+                lines = content.split('\n')
+
+            self.issues = []
+            self._check_select_star(file_path, lines)
+            self._check_hardcoded_secrets(file_path, content)
+            self._check_sql_injection(file_path, content)
+            self._check_no_where_clause(file_path, content)
+            self._check_missing_partition_filter(file_path, content)
+            self._check_cross_join(file_path, lines)
+            self._check_distinct_without_explanation(file_path, lines)
+            self._check_temp_table_cleanup(file_path, content)
+            self._check_schema_qualified_tables(file_path, lines)
+
+            return self.issues
+
+        except Exception as e:
+            self.issues.append(ReviewIssue(
+                file_path=str(file_path),
+                line_number=None,
+                severity=Severity.ERROR,
+                category="File Error",
+                message=f"Failed to read file: {str(e)}"
+            ))
+            return self.issues
+
+    def _check_select_star(self, file_path: Path, lines: List[str]):
+        """Check for SELECT * anti-pattern"""
+        for i, line in enumerate(lines, 1):
+            line_lower = line.strip().lower()
+            # Check for SELECT * but allow CTEs with SELECT * from final
+            if re.search(r'\bselect\s+\*', line_lower):
+                # Allow in CTEs, but warn in final queries
+                if 'from final' not in line_lower and 'with ' not in lines[max(0, i-5):i][-1].lower():
+                    self.issues.append(ReviewIssue(
+                        file_path=str(file_path),
+                        line_number=i,
+                        severity=Severity.WARNING,
+                        category="Anti-pattern",
+                        message="Avoid SELECT * - explicitly list columns for better performance and maintainability",
+                        suggestion="Replace SELECT * with explicit column names"
+                    ))
+
+    def _check_hardcoded_secrets(self, file_path: Path, content: str):
+        """Check for hardcoded secrets"""
+        secret_patterns = [
+            (r'password\s*=\s*[\'"][^\'"]+[\'"]', 'password'),
+            (r'api[_-]?key\s*=\s*[\'"][^\'"]+[\'"]', 'API key'),
+            (r'secret\s*=\s*[\'"][^\'"]+[\'"]', 'secret'),
+            (r'token\s*=\s*[\'"][^\'"]+[\'"]', 'token'),
+        ]
+
+        for pattern, secret_type in secret_patterns:
+            if re.search(pattern, content, re.IGNORECASE):
+                self.issues.append(ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=None,
+                    severity=Severity.ERROR,
+                    category="Security",
+                    message=f"Potential hardcoded {secret_type} detected",
+                    suggestion=f"Use environment variables or secret management for {secret_type}"
+                ))
+
+    def _check_sql_injection(self, file_path: Path, content: str):
+        """Check for SQL injection vulnerabilities"""
+        # Check for string concatenation in WHERE clauses
+        if re.search(r"where.*\+.*['\"]", content, re.IGNORECASE):
+            self.issues.append(ReviewIssue(
+                file_path=str(file_path),
+                line_number=None,
+                severity=Severity.ERROR,
+                category="Security",
+                message="Potential SQL injection vulnerability - string concatenation in WHERE clause",
+                suggestion="Use parameterized queries or prepared statements"
+            ))
+
+    def _check_no_where_clause(self, file_path: Path, content: str):
+        """Check for DELETE/UPDATE without WHERE clause"""
+        patterns = [
+            (r'\bdelete\s+from\s+\w+\s*(?:;|$)', 'DELETE'),
+            (r'\bupdate\s+\w+\s+set\s+.*?(?:;|$)', 'UPDATE'),
+        ]
+
+        for pattern, operation in patterns:
+            matches = re.finditer(pattern, content, re.IGNORECASE | re.DOTALL)
+            for match in matches:
+                if 'where' not in match.group(0).lower():
+                    self.issues.append(ReviewIssue(
+                        file_path=str(file_path),
+                        line_number=None,
+                        severity=Severity.ERROR,
+                        category="Anti-pattern",
+                        message=f"{operation} statement without WHERE clause - could affect all rows",
+                        suggestion=f"Add WHERE clause to {operation} statement"
+                    ))
+
+    def _check_missing_partition_filter(self, file_path: Path, content: str):
+        """Check for queries on partitioned tables without partition filter"""
+        # Look for common partition column patterns
+        partition_patterns = ['date', 'timestamp', 'created_at', 'updated_at', 'event_date']
+
+        if re.search(r'\bfrom\s+`?[\w.-]+\.[\w.-]+\.[\w.-]+`?', content, re.IGNORECASE):
+            has_partition_filter = any(
+                re.search(rf'\bwhere\b.*\b{col}\b', content, re.IGNORECASE)
+                for col in partition_patterns
+            )
+
+            if not has_partition_filter:
+                self.issues.append(ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=None,
+                    severity=Severity.WARNING,
+                    category="Performance",
+                    message="Query may be missing partition filter - could scan entire table",
+                    suggestion="Add WHERE clause on partition column (date, timestamp, etc.)"
+                ))
+
+    def _check_cross_join(self, file_path: Path, lines: List[str]):
+        """Check for CROSS JOIN which can be expensive"""
+        for i, line in enumerate(lines, 1):
+            if re.search(r'\bcross\s+join\b', line, re.IGNORECASE):
+                self.issues.append(ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=i,
+                    severity=Severity.WARNING,
+                    category="Performance",
+                    message="CROSS JOIN detected - verify this is intentional as it can be very expensive",
+                    suggestion="Consider if INNER JOIN or LEFT JOIN with proper conditions would work"
+                ))
+
+    def _check_distinct_without_explanation(self, file_path: Path, lines: List[str]):
+        """Check for DISTINCT without comment explaining why"""
+        for i, line in enumerate(lines, 1):
+            if re.search(r'\bselect\s+distinct\b', line, re.IGNORECASE):
+                # Check if there's a comment in the previous 2 lines
+                has_comment = any(
+                    '--' in lines[max(0, i-3):i-1][j]
+                    for j in range(len(lines[max(0, i-3):i-1]))
+                )
+                if not has_comment:
+                    self.issues.append(ReviewIssue(
+                        file_path=str(file_path),
+                        line_number=i,
+                        severity=Severity.INFO,
+                        category="Best Practice",
+                        message="DISTINCT usage should be documented - why are there duplicates?",
+                        suggestion="Add comment explaining why DISTINCT is needed"
+                    ))
+
+    def _check_temp_table_cleanup(self, file_path: Path, content: str):
+        """Check for temp table creation without cleanup"""
+        if re.search(r'\bcreate\s+(temp|temporary)\s+table\b', content, re.IGNORECASE):
+            if not re.search(r'\bdrop\s+table\b', content, re.IGNORECASE):
+                self.issues.append(ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=None,
+                    severity=Severity.INFO,
+                    category="Best Practice",
+                    message="Temporary table created but no DROP statement found",
+                    suggestion="Add DROP TABLE statement to clean up temp tables"
+                ))
+
+    def _check_schema_qualified_tables(self, file_path: Path, lines: List[str]):
+        """Check that table references are fully qualified"""
+        for i, line in enumerate(lines, 1):
+            # Look for FROM or JOIN followed by table name
+            matches = re.finditer(r'\b(?:from|join)\s+([a-zA-Z_]\w*)\b', line, re.IGNORECASE)
+            for match in matches:
+                table_name = match.group(1).lower()
+                # Skip if it's a CTE reference or already qualified
+                if '.' not in table_name and table_name not in ['final', 'source']:
+                    # Check if it might be a table reference (not a CTE defined earlier)
+                    self.issues.append(ReviewIssue(
+                        file_path=str(file_path),
+                        line_number=i,
+                        severity=Severity.INFO,
+                        category="Best Practice",
+                        message=f"Table '{table_name}' may not be fully qualified",
+                        suggestion="Use project.dataset.table format for clarity"
+                    ))
+
+
+class DBTReviewer:
+    """Reviews dbt model files for best practices"""
+
+    def __init__(self):
+        self.issues: List[ReviewIssue] = []
+
+    def review_file(self, file_path: Path) -> List[ReviewIssue]:
+        """Review a dbt model file"""
+        try:
+            with open(file_path, 'r') as f:
+                content = f.read()
+                lines = content.split('\n')
+
+            self.issues = []
+            self._check_config_block(file_path, lines)
+            self._check_naming_convention(file_path)
+            self._check_incremental_logic(file_path, content)
+            self._check_audit_columns(file_path, content)
+            self._check_cte_usage(file_path, lines)
+
+            return self.issues
+
+        except Exception as e:
+            self.issues.append(ReviewIssue(
+                file_path=str(file_path),
+                line_number=None,
+                severity=Severity.ERROR,
+                category="File Error",
+                message=f"Failed to read file: {str(e)}"
+            ))
+            return self.issues
+
+    def _check_config_block(self, file_path: Path, lines: List[str]):
+        """Check for proper config block in dbt models"""
+        has_config = any('config(' in line for line in lines[:20])
+
+        if not has_config:
+            self.issues.append(ReviewIssue(
+                file_path=str(file_path),
+                line_number=1,
+                severity=Severity.WARNING,
+                category="Best Practice",
+                message="dbt model missing config block",
+                suggestion="Add {{ config(materialized='view') }} or appropriate materialization"
+            ))
+
+    def _check_naming_convention(self, file_path: Path):
+        """Check dbt naming conventions"""
+        file_name = file_path.stem
+        valid_prefixes = ['stg_', 'int_', 'fct_', 'dim_', 'rpt_']
+
+        if not any(file_name.startswith(prefix) for prefix in valid_prefixes):
+            self.issues.append(ReviewIssue(
+                file_path=str(file_path),
+                line_number=None,
+                severity=Severity.INFO,
+                category="Best Practice",
+                message=f"Model name '{file_name}' doesn't follow naming convention",
+                suggestion=f"Use prefixes: {', '.join(valid_prefixes)}"
+            ))
+
+    def _check_incremental_logic(self, file_path: Path, content: str):
+        """Check incremental model configuration"""
+        is_incremental = (
+            "materialized='incremental'" in content or
+            'materialized="incremental"' in content or
+            re.search(r"materialized\s*=\s*['\"]incremental['\"]", content)
+        )
+
+        if is_incremental:
+            has_unique_key = 'unique_key' in content
+            has_incremental_check = 'is_incremental()' in content
+
+            if not has_unique_key:
+                self.issues.append(ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=None,
+                    severity=Severity.ERROR,
+                    category="Best Practice",
+                    message="Incremental model missing unique_key configuration",
+                    suggestion="Add unique_key to config block"
+                ))
+
+            if not has_incremental_check:
+                self.issues.append(ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=None,
+                    severity=Severity.ERROR,
+                    category="Best Practice",
+                    message="Incremental model missing {% if is_incremental() %} logic",
+                    suggestion="Add incremental filter using is_incremental() macro"
+                ))
+
+    def _check_audit_columns(self, file_path: Path, content: str):
+        """Check for audit columns in models"""
+        audit_columns = ['created_at', 'updated_at', '_loaded_at']
+        has_audit_column = any(col in content.lower() for col in audit_columns)
+
+        if not has_audit_column and 'stg_' not in file_path.stem:
+            self.issues.append(ReviewIssue(
+                file_path=str(file_path),
+                line_number=None,
+                severity=Severity.INFO,
+                category="Best Practice",
+                message="Model may be missing audit columns",
+                suggestion=f"Consider adding: {', '.join(audit_columns)}"
+            ))
+
+    def _check_cte_usage(self, file_path: Path, lines: List[str]):
+        """Check for proper CTE usage"""
+        has_with = any(re.match(r'^\s*with\s+', line, re.IGNORECASE) for line in lines)
+        has_final = any(re.search(r'\bfinal\s+as\s*\(', line, re.IGNORECASE) for line in lines)
+
+        if has_with and not has_final:
+            self.issues.append(ReviewIssue(
+                file_path=str(file_path),
+                line_number=None,
+                severity=Severity.INFO,
+                category="Best Practice",
+                message="Model uses CTEs but missing 'final' CTE",
+                suggestion="Use final CTE pattern: 'final as (...)' and 'select * from final'"
+            ))
+
+
+class YAMLReviewer:
+    """Reviews dbt YAML schema files"""
+
+    def __init__(self):
+        self.issues: List[ReviewIssue] = []
+
+    def review_file(self, file_path: Path) -> List[ReviewIssue]:
+        """Review a YAML schema file"""
+        try:
+            import yaml
+            with open(file_path, 'r') as f:
+                content = yaml.safe_load(f)
+
+            self.issues = []
+
+            if content and 'models' in content:
+                self._check_model_documentation(file_path, content['models'])
+                self._check_column_tests(file_path, content['models'])
+
+            return self.issues
+
+        except ImportError:
+            self.issues.append(ReviewIssue(
+                file_path=str(file_path),
+                line_number=None,
+                severity=Severity.INFO,
+                category="Tool Missing",
+                message="PyYAML not installed - skipping YAML validation"
+            ))
+            return self.issues
+        except Exception as e:
+            self.issues.append(ReviewIssue(
+                file_path=str(file_path),
+                line_number=None,
+                severity=Severity.ERROR,
+                category="File Error",
+                message=f"Failed to parse YAML: {str(e)}"
+            ))
+            return self.issues
+
+    def _check_model_documentation(self, file_path: Path, models: List[Dict]):
+        """Check that models have descriptions"""
+        for model in models:
+            model_name = model.get('name', 'unknown')
+            if not model.get('description'):
+                self.issues.append(ReviewIssue(
+                    file_path=str(file_path),
+                    line_number=None,
+                    severity=Severity.INFO,
+                    category="Documentation",
+                    message=f"Model '{model_name}' missing description",
+                    suggestion="Add description field to document the model"
+                ))
+
+    def _check_column_tests(self, file_path: Path, models: List[Dict]):
+        """Check that key columns have tests"""
+        for model in models:
+            model_name = model.get('name', 'unknown')
+            columns = model.get('columns', [])
+
+            # Check if primary key columns have unique and not_null tests
+            for column in columns:
+                col_name = column.get('name', '').lower()
+                tests = column.get('tests', [])
+
+                # ID columns should have unique and not_null
+                if '_id' in col_name or col_name == 'id':
+                    has_unique = any('unique' in str(test) for test in tests)
+                    has_not_null = any('not_null' in str(test) for test in tests)
+
+                    if not has_unique:
+                        self.issues.append(ReviewIssue(
+                            file_path=str(file_path),
+                            line_number=None,
+                            severity=Severity.WARNING,
+                            category="Testing",
+                            message=f"Column '{col_name}' in model '{model_name}' should have unique test",
+                            suggestion="Add 'unique' test to ensure data quality"
+                        ))
+
+                    if not has_not_null:
+                        self.issues.append(ReviewIssue(
+                            file_path=str(file_path),
+                            line_number=None,
+                            severity=Severity.WARNING,
+                            category="Testing",
+                            message=f"Column '{col_name}' in model '{model_name}' should have not_null test",
+                            suggestion="Add 'not_null' test to ensure data quality"
+                        ))
+
+
+def get_git_staged_files() -> List[Path]:
+    """Get list of staged files"""
+    try:
+        result = subprocess.run(
+            ['git', 'diff', '--cached', '--name-only'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        files = [Path(f) for f in result.stdout.strip().split('\n') if f]
+        return [f for f in files if f.suffix in ['.sql', '.yml', '.yaml', '.py']]
+    except subprocess.CalledProcessError:
+        return []
+
+
+def get_pr_changed_files() -> List[Path]:
+    """Get list of files changed in current PR"""
+    try:
+        # Get diff against main branch
+        result = subprocess.run(
+            ['git', 'diff', '--name-only', 'origin/main...HEAD'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        files = [Path(f) for f in result.stdout.strip().split('\n') if f]
+        return [f for f in files if f.suffix in ['.sql', '.yml', '.yaml', '.py']]
+    except subprocess.CalledProcessError:
+        return []
+
+
+def discover_files(paths: List[Path]) -> List[Path]:
+    """Discover files to review from paths"""
+    files = []
+    for path in paths:
+        if path.is_file():
+            if path.suffix in ['.sql', '.yml', '.yaml', '.py']:
+                files.append(path)
+        elif path.is_dir():
+            files.extend(path.rglob('*.sql'))
+            files.extend(path.rglob('*.yml'))
+            files.extend(path.rglob('*.yaml'))
+    return files
+
+
+def review_files(files: List[Path]) -> List[ReviewIssue]:
+    """Review all files and collect issues"""
+    all_issues = []
+
+    for file_path in files:
+        if not file_path.exists():
+            continue
+
+        if file_path.suffix == '.sql':
+            # Determine if it's a dbt model
+            try:
+                with open(file_path, 'r') as f:
+                    content = f.read()
+                    is_dbt = '{{' in content or '{%' in content
+
+                if is_dbt:
+                    reviewer = DBTReviewer()
+                else:
+                    reviewer = SQLReviewer()
+
+                all_issues.extend(reviewer.review_file(file_path))
+            except:
+                reviewer = SQLReviewer()
+                all_issues.extend(reviewer.review_file(file_path))
+
+        elif file_path.suffix in ['.yml', '.yaml']:
+            reviewer = YAMLReviewer()
+            all_issues.extend(reviewer.review_file(file_path))
+
+    return all_issues
+
+
+def filter_by_severity(issues: List[ReviewIssue], min_severity: Severity) -> List[ReviewIssue]:
+    """Filter issues by minimum severity"""
+    return [issue for issue in issues if issue.severity.value >= min_severity.value]
+
+
+def print_text_report(issues: List[ReviewIssue]):
+    """Print issues in text format"""
+    if not issues:
+        print(f"\n{Colors.GREEN}{Colors.BOLD}✓ No issues found{Colors.RESET}")
+        print(f"{Colors.GREEN}Code review passed!{Colors.RESET}\n")
+        return
+
+    print(f"\n{Colors.CYAN}{Colors.BOLD}AI Code Review Report{Colors.RESET}")
+    print("=" * 80)
+
+    # Group by file
+    by_file: Dict[str, List[ReviewIssue]] = {}
+    for issue in issues:
+        if issue.file_path not in by_file:
+            by_file[issue.file_path] = []
+        by_file[issue.file_path].append(issue)
+
+    # Print issues by file
+    for file_path, file_issues in sorted(by_file.items()):
+        print(f"\n{Colors.BOLD}{file_path}{Colors.RESET}")
+        print("-" * 80)
+
+        for issue in file_issues:
+            # Severity color
+            if issue.severity == Severity.ERROR:
+                severity_color = Colors.RED
+                severity_icon = "✗"
+            elif issue.severity == Severity.WARNING:
+                severity_color = Colors.YELLOW
+                severity_icon = "⚠"
+            else:
+                severity_color = Colors.BLUE
+                severity_icon = "ℹ"
+
+            line_info = f":{issue.line_number}" if issue.line_number else ""
+            print(f"{severity_color}{severity_icon} {issue.severity.name}{Colors.RESET}{line_info} [{issue.category}]")
+            print(f"  {issue.message}")
+            if issue.suggestion:
+                print(f"  {Colors.CYAN}→ {issue.suggestion}{Colors.RESET}")
+            print()
+
+    # Summary
+    print("=" * 80)
+    print(f"{Colors.BOLD}Summary{Colors.RESET}")
+    error_count = sum(1 for i in issues if i.severity == Severity.ERROR)
+    warning_count = sum(1 for i in issues if i.severity == Severity.WARNING)
+    info_count = sum(1 for i in issues if i.severity == Severity.INFO)
+
+    print(f"  {Colors.RED}Errors:{Colors.RESET}   {error_count}")
+    print(f"  {Colors.YELLOW}Warnings:{Colors.RESET} {warning_count}")
+    print(f"  {Colors.BLUE}Info:{Colors.RESET}     {info_count}")
+    print(f"  {Colors.BOLD}Total:{Colors.RESET}    {len(issues)}")
+    print("=" * 80)
+
+
+def print_json_report(issues: List[ReviewIssue]):
+    """Print issues in JSON format"""
+    output = {
+        "issues": [issue.to_dict() for issue in issues],
+        "summary": {
+            "total": len(issues),
+            "errors": sum(1 for i in issues if i.severity == Severity.ERROR),
+            "warnings": sum(1 for i in issues if i.severity == Severity.WARNING),
+            "info": sum(1 for i in issues if i.severity == Severity.INFO)
+        }
+    }
+    print(json.dumps(output, indent=2))
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="AI-powered code reviewer for SQL/dbt/SQLMesh",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("files", nargs="*", help="Files or directories to review")
+    parser.add_argument("--staged", action="store_true",
+                       help="Review only staged files")
+    parser.add_argument("--pr", action="store_true",
+                       help="Review files changed in current PR")
+    parser.add_argument("--severity", choices=["info", "warning", "error"], default="info",
+                       help="Minimum severity to report (default: info)")
+    parser.add_argument("--format", choices=["text", "json"], default="text",
+                       help="Output format (default: text)")
+    parser.add_argument("--fix", action="store_true",
+                       help="Automatically fix issues where possible")
+    parser.add_argument("--check-only", action="store_true",
+                       help="Exit with error code if issues found")
+
+    args = parser.parse_args()
+
+    # Determine files to review
+    if args.staged:
+        files = get_git_staged_files()
+        if not files:
+            print(f"{Colors.YELLOW}No staged files to review{Colors.RESET}")
+            sys.exit(0)
+    elif args.pr:
+        files = get_pr_changed_files()
+        if not files:
+            print(f"{Colors.YELLOW}No files changed in PR{Colors.RESET}")
+            sys.exit(0)
+    elif args.files:
+        files = discover_files([Path(f) for f in args.files])
+    else:
+        # Default to current directory
+        files = discover_files([Path.cwd()])
+
+    if not files:
+        print(f"{Colors.YELLOW}No files found to review{Colors.RESET}")
+        sys.exit(0)
+
+    # Review files
+    issues = review_files(files)
+
+    # Filter by severity
+    min_severity = Severity[args.severity.upper()]
+    issues = filter_by_severity(issues, min_severity)
+
+    # Print report
+    if args.format == "json":
+        print_json_report(issues)
+    else:
+        print_text_report(issues)
+
+    # Exit code
+    if args.check_only and issues:
+        has_errors = any(i.severity == Severity.ERROR for i in issues)
+        sys.exit(1 if has_errors else 0)
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
