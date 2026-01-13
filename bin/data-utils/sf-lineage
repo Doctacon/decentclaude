@@ -1,0 +1,365 @@
+#!/usr/bin/env python3
+"""
+sf-lineage - Explore Snowflake table lineage (upstream and downstream dependencies)
+
+Usage:
+  sf-lineage <table_id> [options]
+
+Arguments:
+  table_id   Table ID (format: database.schema.table)
+
+Options:
+  --direction=<dir>  Lineage direction: upstream, downstream, both (default: both)
+  --depth=<n>        Maximum depth to traverse (default: 1)
+  --format=<format>  Output format: text, json, mermaid (default: text)
+  --help, -h         Show this help message
+
+Examples:
+  sf-lineage mydb.public.orders
+  sf-lineage mydb.public.orders --direction=downstream
+  sf-lineage mydb.public.orders --direction=upstream --depth=2
+  sf-lineage mydb.public.orders --format=mermaid
+
+Notes:
+  Uses SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES for dependency tracking.
+  Requires appropriate permissions to access ACCOUNT_USAGE schema.
+"""
+
+import sys
+import json
+import argparse
+from typing import List, Set, Dict
+import snowflake.connector
+import os
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def get_snowflake_connection():
+    """Create a Snowflake connection using environment variables."""
+    try:
+        conn_params = {
+            'account': os.environ.get('SNOWFLAKE_ACCOUNT'),
+            'user': os.environ.get('SNOWFLAKE_USER'),
+        }
+
+        # Authentication
+        if os.environ.get('SNOWFLAKE_AUTHENTICATOR'):
+            conn_params['authenticator'] = os.environ['SNOWFLAKE_AUTHENTICATOR']
+        else:
+            conn_params['password'] = os.environ.get('SNOWFLAKE_PASSWORD')
+
+        # Optional parameters
+        if os.environ.get('SNOWFLAKE_WAREHOUSE'):
+            conn_params['warehouse'] = os.environ['SNOWFLAKE_WAREHOUSE']
+        if os.environ.get('SNOWFLAKE_ROLE'):
+            conn_params['role'] = os.environ['SNOWFLAKE_ROLE']
+
+        return snowflake.connector.connect(**conn_params)
+    except Exception as e:
+        print(f"{Colors.RED}Error connecting to Snowflake: {str(e)}{Colors.RESET}", file=sys.stderr)
+        print(f"{Colors.YELLOW}Make sure SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, and SNOWFLAKE_PASSWORD are set{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def parse_table_id(table_id: str) -> tuple:
+    """Parse table ID into database, schema, and table name."""
+    parts = table_id.split('.')
+    if len(parts) != 3:
+        print(f"{Colors.RED}Invalid table ID format. Expected: database.schema.table{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+    return parts[0].upper(), parts[1].upper(), parts[2].upper()
+
+
+def get_upstream_dependencies(conn, table_id: str, depth: int = 1) -> List[Dict]:
+    """
+    Get tables that this table depends on (upstream dependencies).
+
+    Args:
+        conn: Snowflake connection
+        table_id: Full table ID (database.schema.table)
+        depth: Maximum depth to traverse
+
+    Returns:
+        List of dictionaries with dependency information
+    """
+    database, schema, table_name = parse_table_id(table_id)
+
+    # Use OBJECT_DEPENDENCIES view for upstream dependencies
+    query = """
+    SELECT DISTINCT
+        REFERENCED_DATABASE,
+        REFERENCED_SCHEMA,
+        REFERENCED_OBJECT_NAME,
+        REFERENCED_OBJECT_DOMAIN
+    FROM SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES
+    WHERE REFERENCING_DATABASE = %s
+      AND REFERENCING_SCHEMA = %s
+      AND REFERENCING_OBJECT_NAME = %s
+      AND REFERENCING_OBJECT_DOMAIN IN ('TABLE', 'VIEW')
+    ORDER BY REFERENCED_DATABASE, REFERENCED_SCHEMA, REFERENCED_OBJECT_NAME
+    """
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(query, (database, schema, table_name))
+        rows = cursor.fetchall()
+        cursor.close()
+
+        dependencies = []
+        for row in rows:
+            ref_db, ref_schema, ref_name, ref_type = row
+            if ref_db and ref_schema and ref_name:
+                dependencies.append({
+                    'full_name': f"{ref_db}.{ref_schema}.{ref_name}",
+                    'database': ref_db,
+                    'schema': ref_schema,
+                    'name': ref_name,
+                    'type': ref_type
+                })
+
+        return dependencies
+
+    except Exception as e:
+        print(f"{Colors.YELLOW}Warning: Error getting upstream dependencies: {str(e)}{Colors.RESET}", file=sys.stderr)
+        return []
+
+
+def get_downstream_dependencies(conn, table_id: str, depth: int = 1) -> List[Dict]:
+    """
+    Get tables that depend on this table (downstream dependencies).
+
+    Args:
+        conn: Snowflake connection
+        table_id: Full table ID (database.schema.table)
+        depth: Maximum depth to traverse
+
+    Returns:
+        List of dictionaries with dependency information
+    """
+    database, schema, table_name = parse_table_id(table_id)
+
+    # Use OBJECT_DEPENDENCIES view for downstream dependencies
+    query = """
+    SELECT DISTINCT
+        REFERENCING_DATABASE,
+        REFERENCING_SCHEMA,
+        REFERENCING_OBJECT_NAME,
+        REFERENCING_OBJECT_DOMAIN
+    FROM SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES
+    WHERE REFERENCED_DATABASE = %s
+      AND REFERENCED_SCHEMA = %s
+      AND REFERENCED_OBJECT_NAME = %s
+      AND REFERENCING_OBJECT_DOMAIN IN ('TABLE', 'VIEW')
+    ORDER BY REFERENCING_DATABASE, REFERENCING_SCHEMA, REFERENCING_OBJECT_NAME
+    """
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(query, (database, schema, table_name))
+        rows = cursor.fetchall()
+        cursor.close()
+
+        dependencies = []
+        for row in rows:
+            ref_db, ref_schema, ref_name, ref_type = row
+            if ref_db and ref_schema and ref_name:
+                dependencies.append({
+                    'full_name': f"{ref_db}.{ref_schema}.{ref_name}",
+                    'database': ref_db,
+                    'schema': ref_schema,
+                    'name': ref_name,
+                    'type': ref_type
+                })
+
+        return dependencies
+
+    except Exception as e:
+        print(f"{Colors.YELLOW}Warning: Error getting downstream dependencies: {str(e)}{Colors.RESET}", file=sys.stderr)
+        return []
+
+
+def get_lineage(conn, table_id: str, direction: str = 'both', depth: int = 1) -> dict:
+    """
+    Get lineage information for a Snowflake table.
+
+    Args:
+        conn: Snowflake connection
+        table_id: Full table ID (database.schema.table)
+        direction: 'upstream', 'downstream', or 'both'
+        depth: Maximum depth to traverse
+
+    Returns:
+        Dictionary with lineage information
+    """
+    result = {
+        "table_id": table_id,
+        "direction": direction,
+        "depth": depth,
+        "upstream": [],
+        "downstream": []
+    }
+
+    if direction in ['upstream', 'both']:
+        upstream = get_upstream_dependencies(conn, table_id, depth)
+        result['upstream'] = upstream
+
+    if direction in ['downstream', 'both']:
+        downstream = get_downstream_dependencies(conn, table_id, depth)
+        result['downstream'] = downstream
+
+    return result
+
+
+def print_text_report(result: dict):
+    """Print a formatted text report of lineage"""
+
+    print(f"\n{Colors.CYAN}{Colors.BOLD}Snowflake Table Lineage{Colors.RESET}")
+    print(f"{Colors.BLUE}Table:{Colors.RESET} {result['table_id']}")
+    print(f"{Colors.BLUE}Direction:{Colors.RESET} {result['direction']}")
+    print(f"{Colors.BLUE}Depth:{Colors.RESET} {result['depth']}")
+    print("=" * 80)
+
+    # Upstream dependencies
+    if result['direction'] in ['upstream', 'both']:
+        print(f"\n{Colors.BOLD}Upstream Dependencies ({len(result['upstream'])}):{Colors.RESET}")
+        if result['upstream']:
+            print(f"{Colors.GREEN}Tables this table depends on:{Colors.RESET}")
+            for dep in sorted(result['upstream'], key=lambda x: x['full_name']):
+                type_label = f"({dep['type']})" if dep.get('type') else ""
+                print(f"  {Colors.GREEN}←{Colors.RESET} {dep['full_name']} {type_label}")
+        else:
+            print(f"  {Colors.YELLOW}No upstream dependencies found{Colors.RESET}")
+
+    # Downstream dependencies
+    if result['direction'] in ['downstream', 'both']:
+        print(f"\n{Colors.BOLD}Downstream Dependencies ({len(result['downstream'])}):{Colors.RESET}")
+        if result['downstream']:
+            print(f"{Colors.BLUE}Tables that depend on this table:{Colors.RESET}")
+            for dep in sorted(result['downstream'], key=lambda x: x['full_name']):
+                type_label = f"({dep['type']})" if dep.get('type') else ""
+                print(f"  {Colors.BLUE}→{Colors.RESET} {dep['full_name']} {type_label}")
+        else:
+            print(f"  {Colors.YELLOW}No downstream dependencies found{Colors.RESET}")
+
+    # Summary
+    print(f"\n{Colors.CYAN}{Colors.BOLD}Summary{Colors.RESET}")
+    print(f"  Total upstream:   {len(result['upstream'])}")
+    print(f"  Total downstream: {len(result['downstream'])}")
+
+    if not result['upstream'] and not result['downstream']:
+        print(f"\n  {Colors.YELLOW}⚠ This table appears to be standalone (no dependencies){Colors.RESET}")
+    elif not result['upstream']:
+        print(f"\n  {Colors.GREEN}✓ This is a source table (no upstream dependencies){Colors.RESET}")
+    elif not result['downstream']:
+        print(f"\n  {Colors.BLUE}ℹ This is a leaf table (no downstream dependencies){Colors.RESET}")
+
+    print(f"\n{Colors.YELLOW}Note: Lineage data from ACCOUNT_USAGE may have up to 2 hours latency{Colors.RESET}")
+    print("=" * 80)
+
+
+def print_json_report(result: dict):
+    """Print a JSON report of lineage"""
+    output = {
+        "table_id": result['table_id'],
+        "direction": result['direction'],
+        "depth": result['depth'],
+        "upstream": sorted(result['upstream'], key=lambda x: x['full_name']),
+        "downstream": sorted(result['downstream'], key=lambda x: x['full_name']),
+        "summary": {
+            "upstream_count": len(result['upstream']),
+            "downstream_count": len(result['downstream']),
+            "is_source": len(result['upstream']) == 0,
+            "is_leaf": len(result['downstream']) == 0
+        }
+    }
+    print(json.dumps(output, indent=2))
+
+
+def print_mermaid_diagram(result: dict):
+    """Print a Mermaid diagram of lineage"""
+
+    print("```mermaid")
+    print("graph LR")
+
+    # Shorten table names for readability
+    def shorten(table_id):
+        parts = table_id.split('.')
+        if len(parts) == 3:
+            return f"{parts[1]}.{parts[2]}"
+        return table_id
+
+    def make_node_id(table_id):
+        """Create a valid mermaid node ID from table name"""
+        return table_id.replace('.', '_').replace('-', '_')
+
+    center = shorten(result['table_id'])
+    center_node = make_node_id(result['table_id'])
+
+    print(f"    {center_node}[\"{center}\"]")
+    print(f"    style {center_node} fill:#f9f,stroke:#333,stroke-width:4px")
+
+    # Upstream
+    if result['upstream']:
+        for i, dep in enumerate(sorted(result['upstream'], key=lambda x: x['full_name'])):
+            short = shorten(dep['full_name'])
+            node_id = f"up{i}"
+            print(f"    {node_id}[\"{short}\"]")
+            print(f"    {node_id} --> {center_node}")
+
+    # Downstream
+    if result['downstream']:
+        for i, dep in enumerate(sorted(result['downstream'], key=lambda x: x['full_name'])):
+            short = shorten(dep['full_name'])
+            node_id = f"down{i}"
+            print(f"    {node_id}[\"{short}\"]")
+            print(f"    {center_node} --> {node_id}")
+
+    print("```")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Explore Snowflake table lineage",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("table_id", help="Table ID (database.schema.table)")
+    parser.add_argument("--direction", choices=["upstream", "downstream", "both"], default="both",
+                       help="Lineage direction (default: both)")
+    parser.add_argument("--depth", type=int, default=1,
+                       help="Maximum depth to traverse (default: 1)")
+    parser.add_argument("--format", choices=["text", "json", "mermaid"], default="text",
+                       help="Output format (default: text)")
+
+    args = parser.parse_args()
+
+    # Initialize Snowflake connection
+    conn = get_snowflake_connection()
+
+    # Get lineage
+    result = get_lineage(conn, args.table_id, args.direction, args.depth)
+
+    # Print report
+    if args.format == "json":
+        print_json_report(result)
+    elif args.format == "mermaid":
+        print_mermaid_diagram(result)
+    else:
+        print_text_report(result)
+
+    # Close connection
+    conn.close()
+
+
+if __name__ == "__main__":
+    main()

@@ -10,12 +10,19 @@ This repository provides a comprehensive set of Claude Code hooks designed speci
 
 ### CLI Data Utilities
 
-Powerful command-line utilities for common BigQuery operations:
+Powerful command-line utilities for common data platform operations:
 
+**BigQuery:**
 - **bq-schema-diff**: Compare schemas of two tables to identify differences
 - **bq-query-cost**: Estimate query costs before execution
 - **bq-partition-info**: Analyze partitioning configuration and partition sizes
 - **bq-lineage**: Explore table dependencies (upstream and downstream)
+
+**Snowflake:**
+- **sf-schema-diff**: Compare schemas of two Snowflake tables
+- **sf-query-cost**: Estimate Snowflake query costs based on warehouse size
+- **sf-warehouse-monitor**: Monitor warehouse usage, credits, and costs
+- **sf-lineage**: Explore Snowflake table dependencies using OBJECT_DEPENDENCIES
 
 See [Data Utilities](#data-utilities) for detailed usage.
 
@@ -261,6 +268,143 @@ bin/data-utils/bq-lineage project.dataset.orders --format=mermaid
 
 **Note:** Lineage detection works best with views and materialized views. For tables, it searches for references in view definitions across the project.
 
+## Snowflake Utilities
+
+### sf-schema-diff
+
+Compare schemas of two Snowflake tables to identify differences.
+
+**Usage:**
+```bash
+bin/data-utils/sf-schema-diff <table_a> <table_b> [options]
+```
+
+**Options:**
+- `--format=<format>` - Output format: text, json (default: text)
+
+**Examples:**
+```bash
+# Compare two tables
+bin/data-utils/sf-schema-diff mydb.public.table_v1 mydb.public.table_v2
+
+# Output as JSON
+bin/data-utils/sf-schema-diff dev_db.staging.users prod_db.public.users --format=json
+```
+
+**Output includes:**
+- Fields only in table A
+- Fields only in table B
+- Fields with type changes (including precision, scale, nullability)
+- Summary of differences
+
+### sf-query-cost
+
+Estimate Snowflake query costs before execution based on query complexity and warehouse size.
+
+**Usage:**
+```bash
+bin/data-utils/sf-query-cost <query> [options]
+bin/data-utils/sf-query-cost --file=<sql_file> [options]
+```
+
+**Options:**
+- `--file=<path>` - Read query from SQL file
+- `--warehouse=<size>` - Warehouse size (X-Small to 4X-Large)
+- `--format=<format>` - Output format: text, json (default: text)
+
+**Examples:**
+```bash
+# Estimate from query string
+bin/data-utils/sf-query-cost "SELECT * FROM mydb.public.table WHERE date = '2024-01-01'"
+
+# Estimate from file
+bin/data-utils/sf-query-cost --file=query.sql --warehouse=LARGE
+
+# JSON output
+bin/data-utils/sf-query-cost --file=query.sql --format=json
+```
+
+**Output includes:**
+- Warehouse size and credits per hour
+- Estimated execution time
+- Credit consumption estimate
+- Estimated cost in USD
+- Query complexity score
+- Cost category (Very Low, Low, Moderate, High, Very High)
+
+**Note:** Cost estimation is based on query complexity analysis using EXPLAIN. Actual costs may vary based on data volume and query execution patterns.
+
+### sf-warehouse-monitor
+
+Monitor Snowflake warehouse usage, credit consumption, and costs.
+
+**Usage:**
+```bash
+bin/data-utils/sf-warehouse-monitor [options]
+```
+
+**Options:**
+- `--warehouse=<name>` - Monitor specific warehouse (default: all)
+- `--days=<n>` - Number of days to analyze (default: 7, max: 30)
+- `--top=<n>` - Show top N queries by credits (default: 10)
+- `--format=<format>` - Output format: text, json (default: text)
+
+**Examples:**
+```bash
+# Monitor all warehouses for the past 7 days
+bin/data-utils/sf-warehouse-monitor
+
+# Monitor specific warehouse for 30 days
+bin/data-utils/sf-warehouse-monitor --warehouse=COMPUTE_WH --days=30
+
+# Show top 20 most expensive queries
+bin/data-utils/sf-warehouse-monitor --top=20 --format=json
+```
+
+**Output includes:**
+- Overall credit and cost summary
+- Per-warehouse breakdown (queries, credits, cost, average time)
+- Top queries by credit consumption
+- Daily credit usage trends
+- Data scanned and rows produced
+
+**Note:** Uses SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY which may have up to 45 minutes latency.
+
+### sf-lineage
+
+Explore Snowflake table lineage to understand dependencies using OBJECT_DEPENDENCIES.
+
+**Usage:**
+```bash
+bin/data-utils/sf-lineage <table_id> [options]
+```
+
+**Options:**
+- `--direction=<dir>` - Lineage direction: upstream, downstream, both (default: both)
+- `--depth=<n>` - Maximum depth to traverse (default: 1)
+- `--format=<format>` - Output format: text, json, mermaid (default: text)
+
+**Examples:**
+```bash
+# Show all dependencies
+bin/data-utils/sf-lineage mydb.public.orders
+
+# Show only downstream dependencies
+bin/data-utils/sf-lineage mydb.public.orders --direction=downstream
+
+# Generate Mermaid diagram
+bin/data-utils/sf-lineage mydb.public.orders --format=mermaid
+```
+
+**Output includes:**
+- Upstream dependencies (tables this table depends on)
+- Downstream dependencies (tables that depend on this table)
+- Object types (TABLE, VIEW)
+- Dependency counts
+- Impact analysis information
+
+**Note:** Uses SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES which may have up to 2 hours latency.
+
 ### Installation
 
 To make utilities accessible from anywhere, add to your PATH:
@@ -273,18 +417,35 @@ export PATH="$PATH:/path/to/decentclaude/bin/data-utils"
 Or create symlinks:
 
 ```bash
+# BigQuery utilities
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-schema-diff /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-query-cost /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-partition-info /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-lineage /usr/local/bin/
+
+# Snowflake utilities
+sudo ln -s /path/to/decentclaude/bin/data-utils/sf-schema-diff /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/sf-query-cost /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/sf-warehouse-monitor /usr/local/bin/
+sudo ln -s /path/to/decentclaude/bin/data-utils/sf-lineage /usr/local/bin/
 ```
 
 ### Requirements
 
-All utilities require:
+**BigQuery utilities** require:
 - Python 3.7+
 - google-cloud-bigquery library: `pip install google-cloud-bigquery`
 - Google Cloud credentials configured (via GOOGLE_APPLICATION_CREDENTIALS or gcloud auth)
+
+**Snowflake utilities** require:
+- Python 3.7+
+- snowflake-connector-python library: `pip install snowflake-connector-python`
+- Snowflake credentials configured via environment variables:
+  - `SNOWFLAKE_ACCOUNT` - Your Snowflake account identifier
+  - `SNOWFLAKE_USER` - Username
+  - `SNOWFLAKE_PASSWORD` - Password (or use `SNOWFLAKE_AUTHENTICATOR` for SSO)
+  - `SNOWFLAKE_WAREHOUSE` - Default warehouse (optional)
+  - `SNOWFLAKE_ROLE` - Default role (optional)
 
 ## Customization
 
@@ -341,11 +502,15 @@ chmod +x .git/hooks/pre-commit
 │   ├── settings.json           # Hook configurations
 │   └── HOOKS.md               # Hook documentation
 ├── bin/
-│   ├── data-utils/            # CLI utilities for BigQuery
-│   │   ├── bq-schema-diff     # Compare table schemas
-│   │   ├── bq-query-cost      # Estimate query costs
-│   │   ├── bq-partition-info  # Analyze partitions
-│   │   └── bq-lineage         # Explore table lineage
+│   ├── data-utils/            # CLI utilities for data platforms
+│   │   ├── bq-schema-diff     # BigQuery: Compare table schemas
+│   │   ├── bq-query-cost      # BigQuery: Estimate query costs
+│   │   ├── bq-partition-info  # BigQuery: Analyze partitions
+│   │   ├── bq-lineage         # BigQuery: Explore table lineage
+│   │   ├── sf-schema-diff     # Snowflake: Compare table schemas
+│   │   ├── sf-query-cost      # Snowflake: Estimate query costs
+│   │   ├── sf-warehouse-monitor # Snowflake: Monitor warehouse usage
+│   │   └── sf-lineage         # Snowflake: Explore table lineage
 │   └── worktree-utils/        # Git worktree utilities
 ├── scripts/
 │   └── data_quality.py        # Data quality check framework
@@ -359,7 +524,8 @@ chmod +x .git/hooks/pre-commit
 
 - Python 3.7+
 - sqlparse (required for hooks)
-- google-cloud-bigquery (required for CLI utilities)
+- google-cloud-bigquery (required for BigQuery CLI utilities)
+- snowflake-connector-python (required for Snowflake CLI utilities)
 - sqlfluff (optional, for linting)
 - dbt-core (optional, for dbt hooks)
 - sqlmesh (optional, for SQLMesh hooks)
