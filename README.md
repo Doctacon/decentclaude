@@ -19,6 +19,17 @@ Powerful command-line utilities for common BigQuery operations:
 
 See [Data Utilities](#data-utilities) for detailed usage.
 
+### Orchestration Integration
+
+Auto-generate orchestration code from dbt/SQLMesh projects:
+
+- **airflow-dag-gen**: Generate Airflow DAGs from dbt manifest or SQLMesh models
+- **dagster-asset-gen**: Generate Dagster assets with dependencies and checks
+- **pipeline-health-monitor**: Monitor pipeline health and data quality
+- **sla-tracker**: Track and monitor SLA compliance
+
+See [Orchestration Integration Guide](orchestration-integration-guide.md) for detailed usage.
+
 ### Automated Validation Hooks
 
 - **SQL Syntax Validation**: Automatically validate SQL before execution or file writes
@@ -346,12 +357,26 @@ chmod +x .git/hooks/pre-commit
 │   │   ├── bq-query-cost      # Estimate query costs
 │   │   ├── bq-partition-info  # Analyze partitions
 │   │   └── bq-lineage         # Explore table lineage
+│   ├── orchestration-utils/   # Orchestration integration tools
+│   │   ├── airflow-dag-gen    # Generate Airflow DAGs
+│   │   ├── dagster-asset-gen  # Generate Dagster assets
+│   │   ├── pipeline-health-monitor  # Monitor pipeline health
+│   │   ├── sla-tracker        # Track SLA compliance
+│   │   └── README.md          # Orchestration utilities docs
 │   └── worktree-utils/        # Git worktree utilities
 ├── scripts/
 │   └── data_quality.py        # Data quality check framework
 ├── docs/                      # Documentation
-├── examples/                  # Example SQL and configs
+├── examples/
+│   ├── sql/                   # Example SQL files
+│   └── orchestration/         # Orchestration config examples
+│       ├── health-config.json
+│       ├── sla-config.json
+│       └── dbt-model-example.yml
 ├── data-engineering-patterns.md  # Best practices guide
+├── data-testing-patterns.md   # Testing patterns
+├── playbooks.md               # Operational playbooks
+├── orchestration-integration-guide.md  # Orchestration integration guide
 └── README.md                  # This file
 ```
 

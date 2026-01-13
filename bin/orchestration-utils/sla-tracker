@@ -1,0 +1,485 @@
+#!/usr/bin/env python3
+"""
+Track and monitor SLA compliance for data pipelines.
+
+This utility tracks Service Level Agreements for data pipelines:
+- Pipeline completion time SLAs
+- Data freshness SLAs
+- Data quality SLAs
+- Alert on violations
+- Generate SLA reports
+
+Usage:
+    sla-tracker --config ./sla-config.json --report
+    sla-tracker --pipeline my_pipeline --check-compliance
+    sla-tracker --monitor --interval 300  # Monitor every 5 minutes
+"""
+
+import argparse
+import json
+import sys
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+from google.cloud import bigquery
+
+
+class SLATracker:
+    """Track and monitor SLA compliance for data pipelines."""
+
+    def __init__(self, project_id: Optional[str] = None):
+        self.client = bigquery.Client(project=project_id)
+        self.violations: List[Dict] = []
+
+    def check_completion_time_sla(
+        self,
+        pipeline_name: str,
+        target_duration_minutes: int,
+        lookback_hours: int = 24,
+    ) -> Dict[str, Any]:
+        """Check if pipeline completes within target duration."""
+        # This is a placeholder - in production, integrate with your orchestrator
+        # For Airflow, query DAG run history
+        # For Dagster, query run records
+
+        query = f"""
+        SELECT
+            job_id,
+            creation_time,
+            end_time,
+            TIMESTAMP_DIFF(end_time, creation_time, MINUTE) as duration_minutes
+        FROM `region-us`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+        WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {lookback_hours} HOUR)
+            AND state = 'DONE'
+            AND error_result IS NULL
+            AND query LIKE '%{pipeline_name}%'
+        ORDER BY creation_time DESC
+        """
+
+        try:
+            runs = []
+            violations = []
+
+            for row in self.client.query(query).result():
+                duration_minutes = row["duration_minutes"] or 0
+                met_sla = duration_minutes <= target_duration_minutes
+
+                run_info = {
+                    "job_id": row["job_id"],
+                    "creation_time": str(row["creation_time"]),
+                    "duration_minutes": duration_minutes,
+                    "target_duration_minutes": target_duration_minutes,
+                    "met_sla": met_sla,
+                }
+
+                runs.append(run_info)
+
+                if not met_sla:
+                    violations.append(run_info)
+
+            compliance_rate = 0
+            if len(runs) > 0:
+                compliance_rate = ((len(runs) - len(violations)) / len(runs)) * 100
+
+            return {
+                "pipeline": pipeline_name,
+                "sla_type": "completion_time",
+                "status": "PASS" if len(violations) == 0 else "FAIL",
+                "target_duration_minutes": target_duration_minutes,
+                "runs_checked": len(runs),
+                "violations": len(violations),
+                "compliance_rate": round(compliance_rate, 1),
+                "recent_runs": runs[:5],
+            }
+        except Exception as e:
+            return {
+                "pipeline": pipeline_name,
+                "sla_type": "completion_time",
+                "status": "ERROR",
+                "error": str(e),
+            }
+
+    def check_freshness_sla(
+        self,
+        table_id: str,
+        timestamp_column: str,
+        max_age_hours: int,
+        critical: bool = False,
+    ) -> Dict[str, Any]:
+        """Check if data meets freshness SLA."""
+        query = f"""
+        SELECT
+            MAX({timestamp_column}) as latest_update,
+            TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX({timestamp_column}), HOUR) as hours_stale
+        FROM `{table_id}`
+        """
+
+        try:
+            result = list(self.client.query(query).result())[0]
+            latest_update = result["latest_update"]
+            hours_stale = result["hours_stale"] or 0
+
+            met_sla = hours_stale <= max_age_hours
+
+            return {
+                "table": table_id,
+                "sla_type": "freshness",
+                "status": "PASS" if met_sla else "FAIL",
+                "critical": critical,
+                "latest_update": str(latest_update) if latest_update else None,
+                "hours_stale": hours_stale,
+                "max_age_hours": max_age_hours,
+                "violation_hours": max(0, hours_stale - max_age_hours),
+            }
+        except Exception as e:
+            return {
+                "table": table_id,
+                "sla_type": "freshness",
+                "status": "ERROR",
+                "error": str(e),
+            }
+
+    def check_data_quality_sla(
+        self,
+        table_id: str,
+        quality_query: str,
+        max_failure_rate: float = 0.01,  # 1% default
+        critical: bool = False,
+    ) -> Dict[str, Any]:
+        """Check if data quality meets SLA."""
+        # Quality query should return (total_rows, failed_rows)
+        try:
+            result = list(self.client.query(quality_query).result())[0]
+            total_rows = result.get("total_rows", 0)
+            failed_rows = result.get("failed_rows", 0)
+
+            failure_rate = 0
+            if total_rows > 0:
+                failure_rate = failed_rows / total_rows
+
+            met_sla = failure_rate <= max_failure_rate
+
+            return {
+                "table": table_id,
+                "sla_type": "data_quality",
+                "status": "PASS" if met_sla else "FAIL",
+                "critical": critical,
+                "total_rows": total_rows,
+                "failed_rows": failed_rows,
+                "failure_rate": round(failure_rate * 100, 2),
+                "max_failure_rate": round(max_failure_rate * 100, 2),
+            }
+        except Exception as e:
+            return {
+                "table": table_id,
+                "sla_type": "data_quality",
+                "status": "ERROR",
+                "error": str(e),
+            }
+
+    def check_availability_sla(
+        self,
+        table_id: str,
+        target_availability: float = 99.9,  # 99.9% uptime
+        lookback_hours: int = 24,
+    ) -> Dict[str, Any]:
+        """Check table availability SLA."""
+        # Check for periods where table was unavailable
+        query = f"""
+        SELECT
+            COUNTIF(error_result IS NOT NULL) as failed_queries,
+            COUNT(*) as total_queries
+        FROM `region-us`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+        WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {lookback_hours} HOUR)
+            AND state = 'DONE'
+            AND query LIKE '%{table_id}%'
+        """
+
+        try:
+            result = list(self.client.query(query).result())[0]
+            total_queries = result["total_queries"] or 0
+            failed_queries = result["failed_queries"] or 0
+
+            availability = 100
+            if total_queries > 0:
+                availability = ((total_queries - failed_queries) / total_queries) * 100
+
+            met_sla = availability >= target_availability
+
+            return {
+                "table": table_id,
+                "sla_type": "availability",
+                "status": "PASS" if met_sla else "FAIL",
+                "availability_percent": round(availability, 2),
+                "target_availability_percent": target_availability,
+                "total_queries": total_queries,
+                "failed_queries": failed_queries,
+                "lookback_hours": lookback_hours,
+            }
+        except Exception as e:
+            return {
+                "table": table_id,
+                "sla_type": "availability",
+                "status": "ERROR",
+                "error": str(e),
+            }
+
+    def check_all_slas(self, config_path: str) -> Dict[str, Any]:
+        """Check all SLAs defined in configuration."""
+        with open(config_path) as f:
+            config = json.load(f)
+
+        results = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "checks": [],
+            "violations": [],
+            "critical_violations": [],
+        }
+
+        # Pipeline SLAs
+        for pipeline in config.get("pipelines", []):
+            if "completion_time_sla" in pipeline:
+                sla = pipeline["completion_time_sla"]
+                result = self.check_completion_time_sla(
+                    pipeline_name=pipeline["name"],
+                    target_duration_minutes=sla["target_duration_minutes"],
+                    lookback_hours=sla.get("lookback_hours", 24),
+                )
+                results["checks"].append(result)
+
+                if result["status"] == "FAIL":
+                    results["violations"].append(result)
+                    if pipeline.get("critical", False):
+                        results["critical_violations"].append(result)
+
+        # Table SLAs
+        for table in config.get("tables", []):
+            table_id = table["table_id"]
+
+            # Freshness SLA
+            if "freshness_sla" in table:
+                sla = table["freshness_sla"]
+                result = self.check_freshness_sla(
+                    table_id=table_id,
+                    timestamp_column=sla.get("timestamp_column", "updated_at"),
+                    max_age_hours=sla["max_age_hours"],
+                    critical=table.get("critical", False),
+                )
+                results["checks"].append(result)
+
+                if result["status"] == "FAIL":
+                    results["violations"].append(result)
+                    if result.get("critical"):
+                        results["critical_violations"].append(result)
+
+            # Data quality SLA
+            if "quality_sla" in table:
+                sla = table["quality_sla"]
+                result = self.check_data_quality_sla(
+                    table_id=table_id,
+                    quality_query=sla["query"],
+                    max_failure_rate=sla.get("max_failure_rate", 0.01),
+                    critical=table.get("critical", False),
+                )
+                results["checks"].append(result)
+
+                if result["status"] == "FAIL":
+                    results["violations"].append(result)
+                    if result.get("critical"):
+                        results["critical_violations"].append(result)
+
+            # Availability SLA
+            if "availability_sla" in table:
+                sla = table["availability_sla"]
+                result = self.check_availability_sla(
+                    table_id=table_id,
+                    target_availability=sla.get("target_availability", 99.9),
+                    lookback_hours=sla.get("lookback_hours", 24),
+                )
+                results["checks"].append(result)
+
+                if result["status"] == "FAIL":
+                    results["violations"].append(result)
+
+        # Summary
+        total_checks = len(results["checks"])
+        passed = sum(1 for c in results["checks"] if c["status"] == "PASS")
+        failed = sum(1 for c in results["checks"] if c["status"] == "FAIL")
+        errors = sum(1 for c in results["checks"] if c["status"] == "ERROR")
+
+        results["summary"] = {
+            "total_checks": total_checks,
+            "passed": passed,
+            "failed": failed,
+            "errors": errors,
+            "violations": len(results["violations"]),
+            "critical_violations": len(results["critical_violations"]),
+            "compliance_rate": round(passed / total_checks * 100, 1) if total_checks > 0 else 0,
+        }
+
+        return results
+
+    def generate_sla_report(
+        self,
+        config_path: str,
+        output_path: Optional[str] = None,
+        format: str = "json",
+    ) -> str:
+        """Generate SLA compliance report."""
+        results = self.check_all_slas(config_path)
+
+        if format == "json":
+            report = json.dumps(results, indent=2)
+        elif format == "markdown":
+            report = self._generate_markdown_report(results)
+        else:
+            raise ValueError(f"Unsupported format: {format}")
+
+        if output_path:
+            with open(output_path, "w") as f:
+                f.write(report)
+            print(f"Report written to {output_path}")
+
+        return report
+
+    def _generate_markdown_report(self, results: Dict) -> str:
+        """Generate markdown-formatted SLA report."""
+        timestamp = results["timestamp"]
+        summary = results["summary"]
+
+        md = f"""# SLA Compliance Report
+
+**Generated:** {timestamp}
+
+## Summary
+
+- **Total Checks:** {summary['total_checks']}
+- **Passed:** {summary['passed']} ✓
+- **Failed:** {summary['failed']} ✗
+- **Errors:** {summary['errors']} ⚠️
+- **Compliance Rate:** {summary['compliance_rate']}%
+
+"""
+
+        if results["critical_violations"]:
+            md += f"## Critical Violations ({len(results['critical_violations'])})\n\n"
+            for violation in results["critical_violations"]:
+                md += f"- **{violation.get('table', violation.get('pipeline'))}** - {violation['sla_type']}\n"
+                md += f"  - Status: {violation['status']}\n"
+            md += "\n"
+
+        if results["violations"]:
+            md += f"## All Violations ({len(results['violations'])})\n\n"
+            md += "| Resource | SLA Type | Status | Details |\n"
+            md += "|----------|----------|--------|----------|\n"
+
+            for violation in results["violations"]:
+                resource = violation.get("table", violation.get("pipeline", "Unknown"))
+                sla_type = violation["sla_type"]
+                status = violation["status"]
+
+                details = ""
+                if "hours_stale" in violation:
+                    details = f"{violation['hours_stale']}h stale (max: {violation['max_age_hours']}h)"
+                elif "duration_minutes" in violation:
+                    details = f"{violation.get('violations', 0)} runs exceeded {violation['target_duration_minutes']}m"
+                elif "failure_rate" in violation:
+                    details = f"{violation['failure_rate']}% failure rate (max: {violation['max_failure_rate']}%)"
+
+                md += f"| {resource} | {sla_type} | {status} | {details} |\n"
+
+            md += "\n"
+
+        md += "## All Checks\n\n"
+        md += "| Resource | SLA Type | Status | Result |\n"
+        md += "|----------|----------|--------|--------|\n"
+
+        for check in results["checks"]:
+            resource = check.get("table", check.get("pipeline", "Unknown"))
+            sla_type = check["sla_type"]
+            status = check["status"]
+
+            result = "✓" if status == "PASS" else "✗" if status == "FAIL" else "⚠️"
+
+            md += f"| {resource} | {sla_type} | {status} | {result} |\n"
+
+        return md
+
+    def monitor_slas(
+        self,
+        config_path: str,
+        interval_seconds: int = 300,
+        alert_on_violation: bool = True,
+    ):
+        """Continuously monitor SLAs and alert on violations."""
+        print(f"Starting SLA monitoring (interval: {interval_seconds}s)")
+        print("Press Ctrl+C to stop\n")
+
+        try:
+            while True:
+                print(f"[{datetime.now().isoformat()}] Checking SLAs...")
+
+                results = self.check_all_slas(config_path)
+                summary = results["summary"]
+
+                print(f"  Checks: {summary['total_checks']}")
+                print(f"  Passed: {summary['passed']}")
+                print(f"  Failed: {summary['failed']}")
+                print(f"  Compliance: {summary['compliance_rate']}%")
+
+                if results["critical_violations"]:
+                    print(f"\n  ⚠️  CRITICAL VIOLATIONS: {len(results['critical_violations'])}")
+                    for violation in results["critical_violations"]:
+                        resource = violation.get("table", violation.get("pipeline"))
+                        print(f"    - {resource}: {violation['sla_type']}")
+
+                    if alert_on_violation:
+                        # In production, send alerts here (Slack, PagerDuty, etc.)
+                        print("\n  📢 Alerts would be sent in production")
+
+                print(f"\nNext check in {interval_seconds}s...\n")
+                time.sleep(interval_seconds)
+
+        except KeyboardInterrupt:
+            print("\nStopped monitoring")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Track SLA compliance for data pipelines")
+    parser.add_argument("--config", help="Path to SLA configuration JSON")
+    parser.add_argument("--report", action="store_true", help="Generate SLA report")
+    parser.add_argument("--monitor", action="store_true", help="Monitor SLAs continuously")
+    parser.add_argument("--interval", type=int, default=300, help="Monitoring interval in seconds")
+    parser.add_argument("--output", help="Output file for report")
+    parser.add_argument(
+        "--format",
+        choices=["json", "markdown"],
+        default="json",
+        help="Report format",
+    )
+    parser.add_argument("--project", help="GCP project ID")
+
+    args = parser.parse_args()
+
+    if not args.config:
+        parser.error("--config is required")
+
+    tracker = SLATracker(project_id=args.project)
+
+    if args.monitor:
+        tracker.monitor_slas(config_path=args.config, interval_seconds=args.interval)
+    elif args.report:
+        report = tracker.generate_sla_report(
+            config_path=args.config,
+            output_path=args.output,
+            format=args.format,
+        )
+        print(report)
+    else:
+        results = tracker.check_all_slas(args.config)
+        print(json.dumps(results, indent=2))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,452 @@
+#!/usr/bin/env python3
+"""
+Generate Airflow DAGs from dbt or SQLMesh project metadata.
+
+This utility scans dbt manifest.json or SQLMesh project configuration
+and generates Airflow DAG files with:
+- Proper task dependencies based on model lineage
+- Auto-scheduled intervals from model configuration
+- SLA monitoring and alerting
+- BigQuery-optimized operators
+- Health check sensors
+
+Usage:
+    airflow-dag-gen --project-type dbt --manifest-path /path/to/manifest.json
+    airflow-dag-gen --project-type sqlmesh --project-path /path/to/sqlmesh
+    airflow-dag-gen --output-dir ./dags --schedule daily
+"""
+
+import argparse
+import json
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple
+
+
+class DAGGenerator:
+    """Generate Airflow DAGs from data transformation project metadata."""
+
+    def __init__(
+        self,
+        project_type: str,
+        project_path: Optional[str] = None,
+        manifest_path: Optional[str] = None,
+        output_dir: str = "./dags",
+        default_schedule: str = "daily",
+    ):
+        self.project_type = project_type
+        self.project_path = Path(project_path) if project_path else None
+        self.manifest_path = Path(manifest_path) if manifest_path else None
+        self.output_dir = Path(output_dir)
+        self.default_schedule = default_schedule
+        self.models: Dict[str, Dict] = {}
+        self.dependencies: Dict[str, Set[str]] = {}
+
+    def parse_dbt_manifest(self) -> None:
+        """Parse dbt manifest.json to extract models and dependencies."""
+        if not self.manifest_path or not self.manifest_path.exists():
+            raise FileNotFoundError(f"Manifest not found: {self.manifest_path}")
+
+        with open(self.manifest_path) as f:
+            manifest = json.load(f)
+
+        nodes = manifest.get("nodes", {})
+        for node_id, node in nodes.items():
+            if node.get("resource_type") != "model":
+                continue
+
+            model_name = node.get("name")
+            self.models[model_name] = {
+                "name": model_name,
+                "materialized": node.get("config", {}).get("materialized", "view"),
+                "schema": node.get("schema"),
+                "database": node.get("database"),
+                "tags": node.get("tags", []),
+                "meta": node.get("meta", {}),
+                "depends_on": node.get("depends_on", {}).get("nodes", []),
+            }
+
+            # Extract dependencies
+            deps = set()
+            for dep_id in node.get("depends_on", {}).get("nodes", []):
+                if dep_id.startswith("model."):
+                    dep_name = dep_id.split(".")[-1]
+                    deps.add(dep_name)
+            self.dependencies[model_name] = deps
+
+    def parse_sqlmesh_project(self) -> None:
+        """Parse SQLMesh project to extract models and dependencies."""
+        if not self.project_path or not self.project_path.exists():
+            raise FileNotFoundError(f"Project path not found: {self.project_path}")
+
+        # Look for SQLMesh models in models/ directory
+        models_dir = self.project_path / "models"
+        if not models_dir.exists():
+            raise FileNotFoundError(f"Models directory not found: {models_dir}")
+
+        for sql_file in models_dir.rglob("*.sql"):
+            model_name = sql_file.stem
+            self.models[model_name] = {
+                "name": model_name,
+                "path": str(sql_file),
+                "materialized": "table",  # Default for SQLMesh
+                "tags": [],
+                "meta": {},
+                "depends_on": [],
+            }
+            self.dependencies[model_name] = set()
+
+    def generate_schedule_interval(self, model: Dict) -> str:
+        """Generate Airflow schedule interval from model configuration."""
+        meta = model.get("meta", {})
+        tags = model.get("tags", [])
+
+        # Check for explicit schedule in meta
+        if "schedule" in meta:
+            schedule = meta["schedule"]
+            if schedule == "hourly":
+                return "@hourly"
+            elif schedule == "daily":
+                return "@daily"
+            elif schedule == "weekly":
+                return "@weekly"
+            elif schedule == "monthly":
+                return "@monthly"
+            return schedule
+
+        # Infer from tags
+        if "hourly" in tags:
+            return "@hourly"
+        if "daily" in tags:
+            return "@daily"
+        if "weekly" in tags:
+            return "@weekly"
+
+        # Use default
+        return "@daily" if self.default_schedule == "daily" else "@hourly"
+
+    def generate_sla_config(self, model: Dict) -> Optional[str]:
+        """Generate SLA configuration from model metadata."""
+        meta = model.get("meta", {})
+        if "sla_hours" in meta:
+            return f"timedelta(hours={meta['sla_hours']})"
+        if "sla_minutes" in meta:
+            return f"timedelta(minutes={meta['sla_minutes']})"
+        return None
+
+    def topological_sort(self) -> List[str]:
+        """Sort models in topological order based on dependencies."""
+        visited = set()
+        stack = []
+
+        def visit(node: str):
+            if node in visited:
+                return
+            visited.add(node)
+            for dep in self.dependencies.get(node, []):
+                if dep in self.models:
+                    visit(dep)
+            stack.append(node)
+
+        for model in self.models:
+            visit(model)
+
+        return stack
+
+    def generate_dag_file(self, dag_id: str, models: List[str]) -> str:
+        """Generate Python code for an Airflow DAG."""
+        sorted_models = self.topological_sort()
+        filtered_models = [m for m in sorted_models if m in models]
+
+        # Determine schedule interval (use first model's schedule)
+        first_model = self.models[filtered_models[0]] if filtered_models else {}
+        schedule_interval = self.generate_schedule_interval(first_model)
+
+        dag_code = f'''"""
+Auto-generated Airflow DAG for {dag_id}
+
+Generated by airflow-dag-gen on {datetime.now().isoformat()}
+Project type: {self.project_type}
+"""
+
+from datetime import datetime, timedelta
+from airflow import DAG
+from airflow.providers.google.cloud.operators.bigquery import (
+    BigQueryInsertJobOperator,
+    BigQueryCheckOperator,
+)
+from airflow.operators.python import PythonOperator
+from airflow.utils.trigger_rule import TriggerRule
+
+
+# Default arguments
+default_args = {{
+    'owner': 'data-engineering',
+    'depends_on_past': False,
+    'email_on_failure': True,
+    'email_on_retry': False,
+    'retries': 2,
+    'retry_delay': timedelta(minutes=5),
+    'execution_timeout': timedelta(hours=2),
+}}
+
+# DAG definition
+dag = DAG(
+    dag_id='{dag_id}',
+    default_args=default_args,
+    description='Auto-generated DAG from {self.project_type} project',
+    schedule_interval='{schedule_interval}',
+    start_date=datetime(2024, 1, 1),
+    catchup=False,
+    max_active_runs=1,
+    tags=['{self.project_type}', 'auto-generated'],
+)
+
+
+def check_pipeline_health(**context):
+    """Monitor pipeline health and track metrics."""
+    from google.cloud import bigquery
+
+    client = bigquery.Client()
+    execution_date = context['ds']
+
+    metrics = {{}}
+
+    # Track row counts and freshness for each model
+    models = {filtered_models!r}
+    for model in models:
+        # This is a placeholder - customize based on your schema
+        query = f"""
+        SELECT
+            COUNT(*) as row_count,
+            MAX(updated_at) as latest_update
+        FROM `your_project.your_dataset.{{model}}`
+        WHERE DATE(updated_at) = '{{execution_date}}'
+        """
+
+        try:
+            results = list(client.query(query).result())
+            if results:
+                metrics[model] = {{
+                    'row_count': results[0]['row_count'],
+                    'latest_update': str(results[0]['latest_update']),
+                }}
+        except Exception as e:
+            print(f"Error checking health for {{model}}: {{e}}")
+
+    # Log metrics
+    print(f"Pipeline health metrics: {{metrics}}")
+
+    # Store metrics in XCom for downstream monitoring
+    return metrics
+
+
+def check_sla_compliance(**context):
+    """Check SLA compliance for pipeline execution."""
+    from datetime import datetime
+
+    task_instance = context['task_instance']
+    dag_run = context['dag_run']
+
+    start_time = dag_run.start_date
+    current_time = datetime.utcnow()
+    duration = (current_time - start_time).total_seconds() / 3600  # hours
+
+    # Define SLA thresholds per model type
+    sla_thresholds = {{
+        'staging': 0.5,  # 30 minutes
+        'intermediate': 1.0,  # 1 hour
+        'marts': 2.0,  # 2 hours
+    }}
+
+    violations = []
+    for model_type, threshold in sla_thresholds.items():
+        if duration > threshold:
+            violations.append({{
+                'model_type': model_type,
+                'duration_hours': duration,
+                'threshold_hours': threshold,
+            }})
+
+    if violations:
+        print(f"SLA violations detected: {{violations}}")
+        # In production, send alerts here (Slack, PagerDuty, etc.)
+    else:
+        print(f"All SLAs met. Duration: {{duration:.2f}} hours")
+
+    return violations
+
+
+# Health check task
+health_check = PythonOperator(
+    task_id='check_pipeline_health',
+    python_callable=check_pipeline_health,
+    provide_context=True,
+    dag=dag,
+)
+
+# SLA compliance check
+sla_check = PythonOperator(
+    task_id='check_sla_compliance',
+    python_callable=check_sla_compliance,
+    provide_context=True,
+    trigger_rule=TriggerRule.ALL_DONE,
+    dag=dag,
+)
+
+# Model tasks
+tasks = {{}}
+
+'''
+
+        # Generate tasks for each model
+        for model_name in filtered_models:
+            model = self.models[model_name]
+            materialized = model.get("materialized", "view")
+            database = model.get("database", "your_project")
+            schema = model.get("schema", "your_dataset")
+            sla = self.generate_sla_config(model)
+
+            sla_param = f"\n    sla={sla}," if sla else ""
+
+            dag_code += f'''
+# Task: {model_name}
+tasks['{model_name}'] = BigQueryInsertJobOperator(
+    task_id='{model_name}',
+    configuration={{
+        'query': {{
+            'query': 'SELECT * FROM `{database}.{schema}.{model_name}`',  # Replace with actual query
+            'useLegacySql': False,
+            'destinationTable': {{
+                'projectId': '{database}',
+                'datasetId': '{schema}',
+                'tableId': '{model_name}',
+            }},
+            'writeDisposition': 'WRITE_TRUNCATE',
+            'createDisposition': 'CREATE_IF_NEEDED',
+        }}
+    }},{sla_param}
+    dag=dag,
+)
+
+'''
+
+        # Set up dependencies
+        dag_code += "\n# Task dependencies\n"
+        for model_name in filtered_models:
+            deps = self.dependencies.get(model_name, set())
+            valid_deps = [d for d in deps if d in filtered_models]
+
+            if valid_deps:
+                for dep in valid_deps:
+                    dag_code += f"tasks['{dep}'] >> tasks['{model_name}']\n"
+
+        # Wire up health and SLA checks
+        dag_code += "\n# Monitoring tasks\n"
+        if filtered_models:
+            dag_code += f"tasks['{filtered_models[0]}'] >> health_check\n"
+            dag_code += "health_check >> sla_check\n"
+
+        return dag_code
+
+    def generate_dags(self) -> None:
+        """Generate DAG files based on model groups."""
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Group models by schema or tag
+        model_groups = self._group_models()
+
+        for group_name, models in model_groups.items():
+            dag_id = f"{self.project_type}_{group_name}"
+            dag_code = self.generate_dag_file(dag_id, models)
+
+            output_file = self.output_dir / f"{dag_id}.py"
+            with open(output_file, "w") as f:
+                f.write(dag_code)
+
+            print(f"Generated DAG: {output_file}")
+
+    def _group_models(self) -> Dict[str, List[str]]:
+        """Group models by schema or tags for separate DAGs."""
+        groups: Dict[str, List[str]] = {}
+
+        for model_name, model in self.models.items():
+            # Group by schema (staging, intermediate, marts, etc.)
+            schema = model.get("schema", "default")
+
+            # Simplify schema name for DAG grouping
+            if "staging" in schema or model_name.startswith("stg_"):
+                group = "staging"
+            elif "intermediate" in schema or model_name.startswith("int_"):
+                group = "intermediate"
+            elif "marts" in schema or model_name.startswith(("fct_", "dim_")):
+                group = "marts"
+            else:
+                group = schema
+
+            if group not in groups:
+                groups[group] = []
+            groups[group].append(model_name)
+
+        return groups
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate Airflow DAGs from dbt or SQLMesh projects"
+    )
+    parser.add_argument(
+        "--project-type",
+        choices=["dbt", "sqlmesh"],
+        required=True,
+        help="Type of data transformation project",
+    )
+    parser.add_argument(
+        "--manifest-path",
+        help="Path to dbt manifest.json (required for dbt)",
+    )
+    parser.add_argument(
+        "--project-path",
+        help="Path to SQLMesh project root (required for sqlmesh)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="./dags",
+        help="Output directory for generated DAG files",
+    )
+    parser.add_argument(
+        "--schedule",
+        default="daily",
+        choices=["hourly", "daily", "weekly", "monthly"],
+        help="Default schedule interval",
+    )
+
+    args = parser.parse_args()
+
+    # Validate required arguments
+    if args.project_type == "dbt" and not args.manifest_path:
+        parser.error("--manifest-path is required for dbt projects")
+    if args.project_type == "sqlmesh" and not args.project_path:
+        parser.error("--project-path is required for sqlmesh projects")
+
+    # Generate DAGs
+    generator = DAGGenerator(
+        project_type=args.project_type,
+        project_path=args.project_path,
+        manifest_path=args.manifest_path,
+        output_dir=args.output_dir,
+        default_schedule=args.schedule,
+    )
+
+    if args.project_type == "dbt":
+        generator.parse_dbt_manifest()
+    else:
+        generator.parse_sqlmesh_project()
+
+    generator.generate_dags()
+    print(f"\nSuccessfully generated DAGs in {args.output_dir}")
+
+
+if __name__ == "__main__":
+    main()

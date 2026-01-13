@@ -1,0 +1,187 @@
+# Example dbt model configuration for orchestration generation
+# Place this in your dbt project's schema.yml
+
+version: 2
+
+models:
+  # Staging models - raw data ingestion
+  - name: stg_events
+    description: "Staging table for raw event data"
+    meta:
+      schedule: hourly
+      sla_hours: 1
+      freshness_hours: 1
+      owner: data-engineering@company.com
+    tags:
+      - hourly
+      - staging
+      - critical
+    config:
+      materialized: incremental
+      unique_key: event_id
+      partition_by:
+        field: event_timestamp
+        data_type: timestamp
+        granularity: hour
+      cluster_by:
+        - user_id
+        - event_type
+      incremental_strategy: insert_overwrite
+
+  - name: stg_orders
+    description: "Staging table for order data"
+    meta:
+      schedule: daily
+      sla_hours: 2
+      freshness_hours: 24
+      owner: data-engineering@company.com
+    tags:
+      - daily
+      - staging
+    config:
+      materialized: incremental
+      unique_key: order_id
+      partition_by:
+        field: order_date
+        data_type: date
+        granularity: day
+      cluster_by:
+        - customer_id
+      incremental_strategy: merge
+
+  # Intermediate models - business logic
+  - name: int_user_sessions
+    description: "Intermediate table for user session aggregations"
+    meta:
+      schedule: hourly
+      sla_hours: 1
+      owner: analytics@company.com
+    tags:
+      - hourly
+      - intermediate
+    config:
+      materialized: incremental
+      unique_key: session_id
+      partition_by:
+        field: session_start_time
+        data_type: timestamp
+        granularity: hour
+
+  - name: int_order_items
+    description: "Intermediate table joining orders and items"
+    meta:
+      schedule: daily
+      sla_hours: 2
+      owner: analytics@company.com
+    tags:
+      - daily
+      - intermediate
+    config:
+      materialized: table
+      partition_by:
+        field: order_date
+        data_type: date
+        granularity: day
+
+  # Mart models - final analytics tables
+  - name: fct_orders
+    description: "Orders fact table for analytics"
+    meta:
+      schedule: daily
+      sla_hours: 3
+      freshness_hours: 24
+      owner: analytics@company.com
+      critical: true
+    tags:
+      - daily
+      - marts
+      - critical
+    tests:
+      - dbt_utils.recency:
+          datepart: hour
+          field: created_at
+          interval: 24
+    config:
+      materialized: table
+      partition_by:
+        field: order_date
+        data_type: date
+        granularity: day
+      cluster_by:
+        - customer_id
+        - status
+    columns:
+      - name: order_id
+        description: "Unique order identifier"
+        tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: "Customer identifier"
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_customers')
+              field: customer_id
+      - name: total_amount
+        description: "Order total amount"
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+
+  - name: dim_customers
+    description: "Customer dimension table"
+    meta:
+      schedule: daily
+      sla_hours: 4
+      freshness_hours: 24
+      owner: analytics@company.com
+    tags:
+      - daily
+      - marts
+    config:
+      materialized: table
+    columns:
+      - name: customer_id
+        description: "Unique customer identifier"
+        tests:
+          - unique
+          - not_null
+      - name: email
+        description: "Customer email"
+        tests:
+          - not_null
+
+  - name: fct_revenue_daily
+    description: "Daily revenue aggregations"
+    meta:
+      schedule: daily
+      sla_hours: 2
+      freshness_hours: 24
+      owner: finance@company.com
+      critical: true
+    tags:
+      - daily
+      - marts
+      - critical
+      - revenue
+    config:
+      materialized: incremental
+      unique_key: report_date
+      partition_by:
+        field: report_date
+        data_type: date
+        granularity: day
+    columns:
+      - name: report_date
+        description: "Date of revenue reporting"
+        tests:
+          - unique
+          - not_null
+      - name: revenue
+        description: "Total revenue for the day"
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"

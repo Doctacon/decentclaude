@@ -1,0 +1,492 @@
+#!/usr/bin/env python3
+"""
+Monitor pipeline health and track data quality metrics.
+
+This utility monitors BigQuery pipelines and provides health checks:
+- Data freshness monitoring
+- Row count validation
+- Query failure detection
+- Cost monitoring
+- Partition health checks
+- Schema drift detection
+
+Usage:
+    pipeline-health-monitor --config ./health-config.json
+    pipeline-health-monitor --table project.dataset.table --check-freshness
+    pipeline-health-monitor --check-failures --hours 24
+    pipeline-health-monitor --cost-report --hours 24
+"""
+
+import argparse
+import json
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+from google.cloud import bigquery
+
+
+class PipelineHealthMonitor:
+    """Monitor pipeline health and data quality."""
+
+    def __init__(self, project_id: Optional[str] = None):
+        self.client = bigquery.Client(project=project_id)
+        self.health_results: Dict[str, Any] = {}
+
+    def check_table_freshness(
+        self,
+        table_id: str,
+        timestamp_column: str = "updated_at",
+        max_age_hours: int = 24,
+    ) -> Dict[str, Any]:
+        """Check if table data is fresh."""
+        query = f"""
+        SELECT
+            MAX({timestamp_column}) as latest_update,
+            TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX({timestamp_column}), HOUR) as hours_stale,
+            COUNT(*) as total_rows
+        FROM `{table_id}`
+        """
+
+        try:
+            result = list(self.client.query(query).result())[0]
+
+            latest_update = result["latest_update"]
+            hours_stale = result["hours_stale"] or 0
+            total_rows = result["total_rows"]
+
+            is_fresh = hours_stale <= max_age_hours
+
+            return {
+                "table": table_id,
+                "check": "freshness",
+                "status": "PASS" if is_fresh else "FAIL",
+                "latest_update": str(latest_update) if latest_update else None,
+                "hours_stale": hours_stale,
+                "max_age_hours": max_age_hours,
+                "total_rows": total_rows,
+            }
+        except Exception as e:
+            return {
+                "table": table_id,
+                "check": "freshness",
+                "status": "ERROR",
+                "error": str(e),
+            }
+
+    def check_row_count_range(
+        self,
+        table_id: str,
+        min_rows: int = 0,
+        max_rows: Optional[int] = None,
+        partition_column: Optional[str] = None,
+        lookback_days: int = 7,
+    ) -> Dict[str, Any]:
+        """Verify table has row count within expected range."""
+        if partition_column:
+            query = f"""
+            SELECT
+                DATE({partition_column}) as partition_date,
+                COUNT(*) as row_count
+            FROM `{table_id}`
+            WHERE DATE({partition_column}) >= DATE_SUB(CURRENT_DATE(), INTERVAL {lookback_days} DAY)
+            GROUP BY 1
+            ORDER BY 1 DESC
+            """
+        else:
+            query = f"""
+            SELECT
+                COUNT(*) as row_count,
+                CURRENT_DATE() as check_date
+            FROM `{table_id}`
+            """
+
+        try:
+            results = list(self.client.query(query).result())
+
+            checks = []
+            for row in results:
+                row_count = row["row_count"]
+                partition_date = row.get("partition_date") or row.get("check_date")
+
+                in_range = row_count >= min_rows
+                if max_rows:
+                    in_range = in_range and row_count <= max_rows
+
+                checks.append({
+                    "partition_date": str(partition_date),
+                    "row_count": row_count,
+                    "status": "PASS" if in_range else "FAIL",
+                })
+
+            overall_status = "PASS" if all(c["status"] == "PASS" for c in checks) else "FAIL"
+
+            return {
+                "table": table_id,
+                "check": "row_count_range",
+                "status": overall_status,
+                "min_rows": min_rows,
+                "max_rows": max_rows,
+                "checks": checks,
+            }
+        except Exception as e:
+            return {
+                "table": table_id,
+                "check": "row_count_range",
+                "status": "ERROR",
+                "error": str(e),
+            }
+
+    def check_failed_jobs(self, hours: int = 24) -> Dict[str, Any]:
+        """Check for failed BigQuery jobs in the last N hours."""
+        query = f"""
+        SELECT
+            job_id,
+            creation_time,
+            user_email,
+            error_result.message as error_message,
+            error_result.reason as error_reason,
+            total_bytes_processed,
+            total_slot_ms
+        FROM `region-us`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+        WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {hours} HOUR)
+            AND state = 'DONE'
+            AND error_result IS NOT NULL
+        ORDER BY creation_time DESC
+        LIMIT 100
+        """
+
+        try:
+            failed_jobs = []
+            for row in self.client.query(query).result():
+                failed_jobs.append({
+                    "job_id": row["job_id"],
+                    "creation_time": str(row["creation_time"]),
+                    "user_email": row["user_email"],
+                    "error_message": row["error_message"],
+                    "error_reason": row["error_reason"],
+                })
+
+            return {
+                "check": "failed_jobs",
+                "status": "PASS" if len(failed_jobs) == 0 else "FAIL",
+                "hours_checked": hours,
+                "failed_count": len(failed_jobs),
+                "failed_jobs": failed_jobs,
+            }
+        except Exception as e:
+            return {
+                "check": "failed_jobs",
+                "status": "ERROR",
+                "error": str(e),
+            }
+
+    def check_query_costs(self, hours: int = 24, threshold_usd: float = 100.0) -> Dict[str, Any]:
+        """Monitor query costs and identify expensive queries."""
+        query = f"""
+        SELECT
+            job_id,
+            creation_time,
+            user_email,
+            query,
+            total_bytes_billed / POW(10, 12) as tb_billed,
+            (total_bytes_billed / POW(10, 12)) * 6.25 as cost_usd,
+            total_slot_ms / 1000 / 3600 as slot_hours
+        FROM `region-us`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+        WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {hours} HOUR)
+            AND state = 'DONE'
+            AND job_type = 'QUERY'
+            AND total_bytes_billed > 0
+        ORDER BY total_bytes_billed DESC
+        LIMIT 50
+        """
+
+        try:
+            total_cost = 0
+            expensive_queries = []
+
+            for row in self.client.query(query).result():
+                cost_usd = row["cost_usd"] or 0
+                total_cost += cost_usd
+
+                if cost_usd >= 10:  # Flag queries over $10
+                    expensive_queries.append({
+                        "job_id": row["job_id"],
+                        "creation_time": str(row["creation_time"]),
+                        "user_email": row["user_email"],
+                        "cost_usd": round(cost_usd, 2),
+                        "tb_billed": round(row["tb_billed"] or 0, 3),
+                        "query_preview": row["query"][:200] if row["query"] else None,
+                    })
+
+            exceeds_threshold = total_cost > threshold_usd
+
+            return {
+                "check": "query_costs",
+                "status": "FAIL" if exceeds_threshold else "PASS",
+                "hours_checked": hours,
+                "total_cost_usd": round(total_cost, 2),
+                "threshold_usd": threshold_usd,
+                "expensive_queries": expensive_queries,
+            }
+        except Exception as e:
+            return {
+                "check": "query_costs",
+                "status": "ERROR",
+                "error": str(e),
+            }
+
+    def check_partition_health(self, table_id: str, lookback_days: int = 30) -> Dict[str, Any]:
+        """Check partition health and identify issues."""
+        try:
+            table = self.client.get_table(table_id)
+
+            if not table.time_partitioning and not table.range_partitioning:
+                return {
+                    "table": table_id,
+                    "check": "partition_health",
+                    "status": "SKIP",
+                    "message": "Table is not partitioned",
+                }
+
+            # Get partition sizes
+            query = f"""
+            SELECT
+                partition_id,
+                total_rows,
+                total_logical_bytes,
+                total_logical_bytes / POW(10, 9) as size_gb,
+                last_modified_time
+            FROM `{table.project}.{table.dataset_id}.INFORMATION_SCHEMA.PARTITIONS`
+            WHERE table_name = '{table.table_id}'
+                AND partition_id IS NOT NULL
+                AND partition_id != '__NULL__'
+            ORDER BY partition_id DESC
+            LIMIT {lookback_days}
+            """
+
+            partitions = []
+            total_size_gb = 0
+            empty_partitions = 0
+
+            for row in self.client.query(query).result():
+                size_gb = row["size_gb"] or 0
+                total_size_gb += size_gb
+
+                if row["total_rows"] == 0:
+                    empty_partitions += 1
+
+                partitions.append({
+                    "partition_id": row["partition_id"],
+                    "total_rows": row["total_rows"],
+                    "size_gb": round(size_gb, 3),
+                    "last_modified": str(row["last_modified_time"]),
+                })
+
+            # Check for issues
+            issues = []
+            if empty_partitions > 0:
+                issues.append(f"{empty_partitions} empty partitions found")
+
+            return {
+                "table": table_id,
+                "check": "partition_health",
+                "status": "PASS" if len(issues) == 0 else "WARN",
+                "partition_count": len(partitions),
+                "total_size_gb": round(total_size_gb, 2),
+                "empty_partitions": empty_partitions,
+                "issues": issues,
+                "partitions": partitions[:10],  # Return top 10
+            }
+        except Exception as e:
+            return {
+                "table": table_id,
+                "check": "partition_health",
+                "status": "ERROR",
+                "error": str(e),
+            }
+
+    def check_schema_drift(self, table_id: str, expected_schema: List[Dict]) -> Dict[str, Any]:
+        """Check for schema drift against expected schema."""
+        try:
+            table = self.client.get_table(table_id)
+            current_schema = [
+                {"name": field.name, "type": field.field_type, "mode": field.mode}
+                for field in table.schema
+            ]
+
+            # Compare schemas
+            expected_fields = {f["name"]: f for f in expected_schema}
+            current_fields = {f["name"]: f for f in current_schema}
+
+            missing_fields = []
+            for field_name in expected_fields:
+                if field_name not in current_fields:
+                    missing_fields.append(field_name)
+
+            extra_fields = []
+            for field_name in current_fields:
+                if field_name not in expected_fields:
+                    extra_fields.append(field_name)
+
+            type_changes = []
+            for field_name in expected_fields:
+                if field_name in current_fields:
+                    expected_type = expected_fields[field_name]["type"]
+                    current_type = current_fields[field_name]["type"]
+                    if expected_type != current_type:
+                        type_changes.append({
+                            "field": field_name,
+                            "expected": expected_type,
+                            "current": current_type,
+                        })
+
+            has_drift = len(missing_fields) > 0 or len(extra_fields) > 0 or len(type_changes) > 0
+
+            return {
+                "table": table_id,
+                "check": "schema_drift",
+                "status": "FAIL" if has_drift else "PASS",
+                "missing_fields": missing_fields,
+                "extra_fields": extra_fields,
+                "type_changes": type_changes,
+            }
+        except Exception as e:
+            return {
+                "table": table_id,
+                "check": "schema_drift",
+                "status": "ERROR",
+                "error": str(e),
+            }
+
+    def run_health_checks(self, config_path: str) -> Dict[str, List[Dict]]:
+        """Run all health checks defined in configuration."""
+        with open(config_path) as f:
+            config = json.load(f)
+
+        results = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "checks": [],
+        }
+
+        # Table-level checks
+        for table_config in config.get("tables", []):
+            table_id = table_config["table_id"]
+
+            # Freshness check
+            if "freshness" in table_config:
+                freshness_config = table_config["freshness"]
+                result = self.check_table_freshness(
+                    table_id=table_id,
+                    timestamp_column=freshness_config.get("timestamp_column", "updated_at"),
+                    max_age_hours=freshness_config.get("max_age_hours", 24),
+                )
+                results["checks"].append(result)
+
+            # Row count check
+            if "row_count" in table_config:
+                row_count_config = table_config["row_count"]
+                result = self.check_row_count_range(
+                    table_id=table_id,
+                    min_rows=row_count_config.get("min_rows", 0),
+                    max_rows=row_count_config.get("max_rows"),
+                    partition_column=row_count_config.get("partition_column"),
+                    lookback_days=row_count_config.get("lookback_days", 7),
+                )
+                results["checks"].append(result)
+
+            # Partition health
+            if table_config.get("check_partitions", False):
+                result = self.check_partition_health(
+                    table_id=table_id,
+                    lookback_days=table_config.get("partition_lookback_days", 30),
+                )
+                results["checks"].append(result)
+
+            # Schema drift
+            if "expected_schema" in table_config:
+                result = self.check_schema_drift(
+                    table_id=table_id,
+                    expected_schema=table_config["expected_schema"],
+                )
+                results["checks"].append(result)
+
+        # Project-level checks
+        if config.get("check_failures", True):
+            result = self.check_failed_jobs(hours=config.get("failure_lookback_hours", 24))
+            results["checks"].append(result)
+
+        if config.get("check_costs", True):
+            result = self.check_query_costs(
+                hours=config.get("cost_lookback_hours", 24),
+                threshold_usd=config.get("cost_threshold_usd", 100.0),
+            )
+            results["checks"].append(result)
+
+        # Summary
+        total_checks = len(results["checks"])
+        passed = sum(1 for c in results["checks"] if c["status"] == "PASS")
+        failed = sum(1 for c in results["checks"] if c["status"] == "FAIL")
+        errors = sum(1 for c in results["checks"] if c["status"] == "ERROR")
+        warnings = sum(1 for c in results["checks"] if c["status"] == "WARN")
+
+        results["summary"] = {
+            "total_checks": total_checks,
+            "passed": passed,
+            "failed": failed,
+            "errors": errors,
+            "warnings": warnings,
+            "health_score": round(passed / total_checks * 100, 1) if total_checks > 0 else 0,
+        }
+
+        return results
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Monitor pipeline health and data quality"
+    )
+    parser.add_argument("--config", help="Path to health check configuration JSON")
+    parser.add_argument("--table", help="Table ID to check (project.dataset.table)")
+    parser.add_argument("--check-freshness", action="store_true", help="Check data freshness")
+    parser.add_argument("--check-failures", action="store_true", help="Check for failed jobs")
+    parser.add_argument("--cost-report", action="store_true", help="Generate cost report")
+    parser.add_argument("--hours", type=int, default=24, help="Hours to look back")
+    parser.add_argument("--output", help="Output file for results (JSON)")
+    parser.add_argument("--project", help="GCP project ID")
+
+    args = parser.parse_args()
+
+    monitor = PipelineHealthMonitor(project_id=args.project)
+
+    if args.config:
+        # Run configured health checks
+        results = monitor.run_health_checks(args.config)
+        output = json.dumps(results, indent=2)
+        print(output)
+
+        if args.output:
+            with open(args.output, "w") as f:
+                f.write(output)
+            print(f"\nResults written to {args.output}")
+
+    elif args.table:
+        # Run individual checks
+        if args.check_freshness:
+            result = monitor.check_table_freshness(args.table)
+            print(json.dumps(result, indent=2))
+
+    elif args.check_failures:
+        result = monitor.check_failed_jobs(hours=args.hours)
+        print(json.dumps(result, indent=2))
+
+    elif args.cost_report:
+        result = monitor.check_query_costs(hours=args.hours)
+        print(json.dumps(result, indent=2))
+
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()

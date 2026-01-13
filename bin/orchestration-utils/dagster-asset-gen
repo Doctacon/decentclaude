@@ -1,0 +1,684 @@
+#!/usr/bin/env python3
+"""
+Generate Dagster assets from dbt or SQLMesh project metadata.
+
+This utility scans dbt manifest.json or SQLMesh project configuration
+and generates Dagster asset definitions with:
+- Asset dependencies based on model lineage
+- Partitioning and scheduling from model configuration
+- BigQuery I/O managers
+- Asset checks for data quality
+- Freshness policies and SLA monitoring
+
+Usage:
+    dagster-asset-gen --project-type dbt --manifest-path /path/to/manifest.json
+    dagster-asset-gen --project-type sqlmesh --project-path /path/to/sqlmesh
+    dagster-asset-gen --output-dir ./dagster_assets
+"""
+
+import argparse
+import json
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Set
+
+
+class DagsterAssetGenerator:
+    """Generate Dagster assets from data transformation project metadata."""
+
+    def __init__(
+        self,
+        project_type: str,
+        project_path: Optional[str] = None,
+        manifest_path: Optional[str] = None,
+        output_dir: str = "./dagster_assets",
+    ):
+        self.project_type = project_type
+        self.project_path = Path(project_path) if project_path else None
+        self.manifest_path = Path(manifest_path) if manifest_path else None
+        self.output_dir = Path(output_dir)
+        self.models: Dict[str, Dict] = {}
+        self.dependencies: Dict[str, Set[str]] = {}
+
+    def parse_dbt_manifest(self) -> None:
+        """Parse dbt manifest.json to extract models and dependencies."""
+        if not self.manifest_path or not self.manifest_path.exists():
+            raise FileNotFoundError(f"Manifest not found: {self.manifest_path}")
+
+        with open(self.manifest_path) as f:
+            manifest = json.load(f)
+
+        nodes = manifest.get("nodes", {})
+        for node_id, node in nodes.items():
+            if node.get("resource_type") != "model":
+                continue
+
+            model_name = node.get("name")
+            config = node.get("config", {})
+
+            self.models[model_name] = {
+                "name": model_name,
+                "materialized": config.get("materialized", "view"),
+                "schema": node.get("schema"),
+                "database": node.get("database"),
+                "tags": node.get("tags", []),
+                "meta": node.get("meta", {}),
+                "depends_on": node.get("depends_on", {}).get("nodes", []),
+                "partition_by": config.get("partition_by"),
+                "cluster_by": config.get("cluster_by", []),
+            }
+
+            deps = set()
+            for dep_id in node.get("depends_on", {}).get("nodes", []):
+                if dep_id.startswith("model."):
+                    dep_name = dep_id.split(".")[-1]
+                    deps.add(dep_name)
+            self.dependencies[model_name] = deps
+
+    def parse_sqlmesh_project(self) -> None:
+        """Parse SQLMesh project to extract models and dependencies."""
+        if not self.project_path or not self.project_path.exists():
+            raise FileNotFoundError(f"Project path not found: {self.project_path}")
+
+        models_dir = self.project_path / "models"
+        if not models_dir.exists():
+            raise FileNotFoundError(f"Models directory not found: {models_dir}")
+
+        for sql_file in models_dir.rglob("*.sql"):
+            model_name = sql_file.stem
+            self.models[model_name] = {
+                "name": model_name,
+                "path": str(sql_file),
+                "materialized": "table",
+                "tags": [],
+                "meta": {},
+                "depends_on": [],
+            }
+            self.dependencies[model_name] = set()
+
+    def generate_partition_config(self, model: Dict) -> Optional[str]:
+        """Generate Dagster partition configuration from model metadata."""
+        partition_by = model.get("partition_by")
+        if not partition_by:
+            return None
+
+        if isinstance(partition_by, dict):
+            field = partition_by.get("field")
+            granularity = partition_by.get("granularity", "day")
+
+            if granularity == "day":
+                return f'''
+    partitions_def=DailyPartitionsDefinition(
+        start_date="2024-01-01",
+        end_offset=0,
+    )'''
+            elif granularity == "hour":
+                return f'''
+    partitions_def=HourlyPartitionsDefinition(
+        start_date="2024-01-01-00:00",
+        end_offset=0,
+    )'''
+            elif granularity == "month":
+                return f'''
+    partitions_def=MonthlyPartitionsDefinition(
+        start_date="2024-01-01",
+        end_offset=0,
+    )'''
+
+        return None
+
+    def generate_freshness_policy(self, model: Dict) -> Optional[str]:
+        """Generate Dagster freshness policy from model metadata."""
+        meta = model.get("meta", {})
+
+        if "freshness_hours" in meta:
+            hours = meta["freshness_hours"]
+            return f'''
+    freshness_policy=FreshnessPolicy(
+        maximum_lag_minutes={hours * 60},
+        cron_schedule="@hourly",
+    )'''
+        elif "freshness_minutes" in meta:
+            minutes = meta["freshness_minutes"]
+            return f'''
+    freshness_policy=FreshnessPolicy(
+        maximum_lag_minutes={minutes},
+        cron_schedule="*/15 * * * *",
+    )'''
+
+        # Default freshness for different model types
+        materialized = model.get("materialized", "view")
+        if materialized == "incremental":
+            return f'''
+    freshness_policy=FreshnessPolicy(
+        maximum_lag_minutes=60,
+        cron_schedule="@hourly",
+    )'''
+
+        return None
+
+    def generate_auto_materialize_policy(self, model: Dict) -> str:
+        """Generate auto-materialization policy based on model type."""
+        materialized = model.get("materialized", "view")
+        tags = model.get("tags", [])
+
+        if "critical" in tags or materialized == "incremental":
+            return '''
+    auto_materialize_policy=AutoMaterializePolicy.eager()'''
+
+        return '''
+    auto_materialize_policy=AutoMaterializePolicy.lazy()'''
+
+    def generate_asset_checks(self, model: Dict) -> str:
+        """Generate asset checks for data quality."""
+        model_name = model["name"]
+        database = model.get("database", "your_project")
+        schema = model.get("schema", "your_dataset")
+
+        checks = f'''
+
+@asset_check(asset={model_name})
+def check_{model_name}_row_count(context):
+    """Verify {model_name} has reasonable row count."""
+    from google.cloud import bigquery
+
+    client = bigquery.Client()
+    query = f"""
+        SELECT COUNT(*) as row_count
+        FROM `{database}.{schema}.{model_name}`
+    """
+
+    result = list(client.query(query).result())[0]
+    row_count = result['row_count']
+
+    # Define expected range (customize per model)
+    min_expected = 0
+    max_expected = 1_000_000_000
+
+    passed = min_expected <= row_count <= max_expected
+
+    return AssetCheckResult(
+        passed=passed,
+        metadata={{
+            "row_count": row_count,
+            "min_expected": min_expected,
+            "max_expected": max_expected,
+        }},
+    )
+
+
+@asset_check(asset={model_name})
+def check_{model_name}_freshness(context):
+    """Verify {model_name} data is fresh."""
+    from google.cloud import bigquery
+    from datetime import datetime, timedelta
+
+    client = bigquery.Client()
+    query = f"""
+        SELECT MAX(updated_at) as latest_update
+        FROM `{database}.{schema}.{model_name}`
+    """
+
+    try:
+        result = list(client.query(query).result())[0]
+        latest_update = result['latest_update']
+
+        if latest_update:
+            age = datetime.utcnow() - latest_update
+            max_age = timedelta(hours=24)  # Customize per model
+            passed = age <= max_age
+
+            return AssetCheckResult(
+                passed=passed,
+                metadata={{
+                    "latest_update": str(latest_update),
+                    "age_hours": age.total_seconds() / 3600,
+                    "max_age_hours": max_age.total_seconds() / 3600,
+                }},
+            )
+    except Exception as e:
+        return AssetCheckResult(
+            passed=False,
+            metadata={{"error": str(e)}},
+        )
+
+    return AssetCheckResult(passed=False, metadata={{"error": "No data found"}})
+'''
+
+        return checks
+
+    def generate_assets_file(self, group_name: str, models: List[str]) -> str:
+        """Generate Python code for Dagster assets."""
+        asset_code = f'''"""
+Auto-generated Dagster assets for {group_name}
+
+Generated by dagster-asset-gen on {datetime.now().isoformat()}
+Project type: {self.project_type}
+"""
+
+from datetime import datetime, timedelta
+from typing import Optional
+
+from dagster import (
+    AssetExecutionContext,
+    AssetIn,
+    DailyPartitionsDefinition,
+    FreshnessPolicy,
+    HourlyPartitionsDefinition,
+    MonthlyPartitionsDefinition,
+    AutoMaterializePolicy,
+    asset,
+    asset_check,
+    AssetCheckResult,
+)
+
+
+# BigQuery configuration
+PROJECT_ID = "your_project"
+DATASET_ID = "your_dataset"
+
+
+def execute_bigquery_query(query: str, partition_key: Optional[str] = None) -> int:
+    """Execute a BigQuery query and return row count."""
+    from google.cloud import bigquery
+
+    client = bigquery.Client()
+
+    if partition_key:
+        query = query.replace("{{{{ partition_key }}}}", partition_key)
+
+    job = client.query(query)
+    result = job.result()
+
+    return job.total_rows if hasattr(job, 'total_rows') else 0
+
+
+'''
+
+        # Generate asset definitions
+        for model_name in models:
+            model = self.models[model_name]
+            database = model.get("database", "your_project")
+            schema = model.get("schema", "your_dataset")
+            deps = self.dependencies.get(model_name, set())
+            valid_deps = [d for d in deps if d in models]
+
+            # Build dependencies
+            deps_config = ""
+            if valid_deps:
+                deps_dict = {dep: AssetIn(dep) for dep in valid_deps}
+                deps_str = ", ".join([f'"{dep}": AssetIn("{dep}")' for dep in valid_deps])
+                deps_config = f'\n    ins={{{deps_str}}},'
+
+            # Generate partition config
+            partition_config = self.generate_partition_config(model) or ""
+
+            # Generate freshness policy
+            freshness_policy = self.generate_freshness_policy(model) or ""
+
+            # Generate auto-materialize policy
+            auto_materialize = self.generate_auto_materialize_policy(model)
+
+            asset_code += f'''
+@asset(
+    name="{model_name}",
+    group_name="{group_name}",{deps_config}{partition_config}{freshness_policy}{auto_materialize}
+)
+def {model_name}(context: AssetExecutionContext{", " + ", ".join(valid_deps) if valid_deps else ""}):
+    """
+    Asset: {model_name}
+    Materialization: {model.get("materialized", "view")}
+    Schema: {schema}
+    """
+    partition_key = None
+    if context.has_partition_key:
+        partition_key = context.partition_key
+
+    # Placeholder query - replace with actual transformation logic
+    query = f"""
+        SELECT *
+        FROM `{database}.{schema}.{model_name}_source`
+        {{{{ 'WHERE DATE(timestamp) = "' + partition_key + '"' if partition_key else '' }}}}
+    """
+
+    row_count = execute_bigquery_query(query, partition_key)
+
+    context.log.info(f"Materialized {model_name} with {{row_count}} rows")
+
+    return {{
+        "row_count": row_count,
+        "partition_key": partition_key,
+    }}
+'''
+
+            # Add asset checks
+            asset_code += self.generate_asset_checks(model)
+
+        return asset_code
+
+    def generate_sensors_file(self) -> str:
+        """Generate Dagster sensors for SLA monitoring and alerting."""
+        sensor_code = f'''"""
+Auto-generated Dagster sensors for monitoring and alerting
+
+Generated by dagster-asset-gen on {datetime.now().isoformat()}
+"""
+
+from dagster import (
+    RunRequest,
+    SensorEvaluationContext,
+    SensorResult,
+    sensor,
+    DefaultSensorStatus,
+)
+from datetime import datetime, timedelta
+
+
+@sensor(
+    name="sla_monitor",
+    default_status=DefaultSensorStatus.RUNNING,
+    minimum_interval_seconds=300,  # Check every 5 minutes
+)
+def sla_monitor_sensor(context: SensorEvaluationContext):
+    """Monitor asset materializations for SLA compliance."""
+    from dagster import DagsterInstance
+
+    instance = DagsterInstance.get()
+
+    # Get recent materializations
+    # This is a simplified example - customize based on your SLA requirements
+    sla_violations = []
+
+    # Check each asset for SLA compliance
+    # Example: Flag if asset hasn't materialized in last 24 hours
+    max_age = timedelta(hours=24)
+
+    context.log.info(f"Checking SLA compliance...")
+
+    # In production, query materialization events and compare against SLAs
+    # If violations found, trigger alerts
+
+    if sla_violations:
+        context.log.warning(f"SLA violations detected: {{sla_violations}}")
+        # Send alerts (Slack, PagerDuty, etc.)
+
+    return SensorResult(
+        run_requests=[],
+        cursor=str(datetime.utcnow().timestamp()),
+    )
+
+
+@sensor(
+    name="freshness_monitor",
+    default_status=DefaultSensorStatus.RUNNING,
+    minimum_interval_seconds=900,  # Check every 15 minutes
+)
+def freshness_monitor_sensor(context: SensorEvaluationContext):
+    """Monitor asset freshness and trigger rematerialization if needed."""
+    from dagster import DagsterInstance
+
+    instance = DagsterInstance.get()
+
+    # Check freshness policies and trigger runs for stale assets
+    stale_assets = []
+
+    context.log.info(f"Checking asset freshness...")
+
+    # In production, check freshness policies and trigger runs as needed
+
+    run_requests = []
+    for asset in stale_assets:
+        run_requests.append(
+            RunRequest(
+                asset_selection=[asset],
+                tags={{"triggered_by": "freshness_monitor"}},
+            )
+        )
+
+    return SensorResult(
+        run_requests=run_requests,
+        cursor=str(datetime.utcnow().timestamp()),
+    )
+
+
+@sensor(
+    name="health_check",
+    default_status=DefaultSensorStatus.RUNNING,
+    minimum_interval_seconds=600,  # Check every 10 minutes
+)
+def health_check_sensor(context: SensorEvaluationContext):
+    """Monitor overall pipeline health."""
+    from google.cloud import bigquery
+
+    client = bigquery.Client()
+
+    health_metrics = {{}}
+
+    # Check for failed jobs
+    failed_query = """
+        SELECT
+            job_id,
+            error_result.message as error_message,
+            creation_time
+        FROM `region-us`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+        WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR)
+            AND state = 'DONE'
+            AND error_result IS NOT NULL
+        ORDER BY creation_time DESC
+        LIMIT 10
+    """
+
+    try:
+        failed_jobs = list(client.query(failed_query).result())
+        health_metrics['failed_jobs'] = len(failed_jobs)
+
+        if failed_jobs:
+            context.log.warning(f"Found {{len(failed_jobs)}} failed jobs in last hour")
+            for job in failed_jobs:
+                context.log.error(f"Job {{job['job_id']}}: {{job['error_message']}}")
+    except Exception as e:
+        context.log.error(f"Error checking job health: {{e}}")
+
+    # Check for cost anomalies
+    cost_query = """
+        SELECT
+            SUM(total_bytes_billed) / POW(10, 12) as tb_billed,
+            COUNT(*) as query_count
+        FROM `region-us`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+        WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR)
+            AND state = 'DONE'
+    """
+
+    try:
+        cost_result = list(client.query(cost_query).result())[0]
+        tb_billed = cost_result['tb_billed'] or 0
+        cost_estimate = tb_billed * 6.25  # $6.25 per TB
+
+        health_metrics['tb_billed'] = tb_billed
+        health_metrics['cost_estimate_usd'] = cost_estimate
+
+        # Alert if cost exceeds threshold
+        if cost_estimate > 100:  # $100/hour threshold
+            context.log.warning(f"High cost detected: ${{cost_estimate:.2f}}/hour")
+    except Exception as e:
+        context.log.error(f"Error checking cost: {{e}}")
+
+    context.log.info(f"Health metrics: {{health_metrics}}")
+
+    return SensorResult(
+        run_requests=[],
+        cursor=str(datetime.utcnow().timestamp()),
+    )
+'''
+
+        return sensor_code
+
+    def generate_repository_file(self, asset_modules: List[str]) -> str:
+        """Generate Dagster repository definition."""
+        imports = "\n".join([f"from .{module} import *" for module in asset_modules])
+
+        repo_code = f'''"""
+Auto-generated Dagster repository
+
+Generated by dagster-asset-gen on {datetime.now().isoformat()}
+"""
+
+from dagster import Definitions, load_assets_from_modules
+
+{imports}
+from . import sensors
+
+
+# Load all assets
+all_assets = []
+asset_modules = [{", ".join([f"'{m}'" for m in asset_modules])}]
+
+for module_name in asset_modules:
+    module = __import__(module_name, fromlist=[''])
+    all_assets.extend(load_assets_from_modules([module]))
+
+# Define sensors
+all_sensors = [
+    sensors.sla_monitor_sensor,
+    sensors.freshness_monitor_sensor,
+    sensors.health_check_sensor,
+]
+
+# Create Definitions
+defs = Definitions(
+    assets=all_assets,
+    sensors=all_sensors,
+)
+'''
+
+        return repo_code
+
+    def _group_models(self) -> Dict[str, List[str]]:
+        """Group models for separate asset files."""
+        groups: Dict[str, List[str]] = {}
+
+        for model_name, model in self.models.items():
+            schema = model.get("schema", "default")
+
+            if "staging" in schema or model_name.startswith("stg_"):
+                group = "staging"
+            elif "intermediate" in schema or model_name.startswith("int_"):
+                group = "intermediate"
+            elif "marts" in schema or model_name.startswith(("fct_", "dim_")):
+                group = "marts"
+            else:
+                group = schema
+
+            if group not in groups:
+                groups[group] = []
+            groups[group].append(model_name)
+
+        return groups
+
+    def generate_assets(self) -> None:
+        """Generate Dagster asset files."""
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        model_groups = self._group_models()
+        asset_modules = []
+
+        # Generate asset files for each group
+        for group_name, models in model_groups.items():
+            module_name = f"{group_name}_assets"
+            asset_code = self.generate_assets_file(group_name, models)
+
+            output_file = self.output_dir / f"{module_name}.py"
+            with open(output_file, "w") as f:
+                f.write(asset_code)
+
+            asset_modules.append(module_name)
+            print(f"Generated assets: {output_file}")
+
+        # Generate sensors file
+        sensor_code = self.generate_sensors_file()
+        sensor_file = self.output_dir / "sensors.py"
+        with open(sensor_file, "w") as f:
+            f.write(sensor_code)
+        print(f"Generated sensors: {sensor_file}")
+
+        # Generate repository file
+        repo_code = self.generate_repository_file(asset_modules)
+        repo_file = self.output_dir / "__init__.py"
+        with open(repo_file, "w") as f:
+            f.write(repo_code)
+        print(f"Generated repository: {repo_file}")
+
+        # Generate pyproject.toml for Dagster project
+        pyproject_content = f'''[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "{self.project_type}-dagster-assets"
+version = "0.1.0"
+dependencies = [
+    "dagster>=1.6.0",
+    "dagster-cloud",
+    "dagster-gcp",
+    "google-cloud-bigquery>=3.0.0",
+]
+
+[tool.dagster]
+module_name = "{self.output_dir.name}"
+'''
+        pyproject_file = self.output_dir / "pyproject.toml"
+        with open(pyproject_file, "w") as f:
+            f.write(pyproject_content)
+        print(f"Generated config: {pyproject_file}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate Dagster assets from dbt or SQLMesh projects"
+    )
+    parser.add_argument(
+        "--project-type",
+        choices=["dbt", "sqlmesh"],
+        required=True,
+        help="Type of data transformation project",
+    )
+    parser.add_argument(
+        "--manifest-path",
+        help="Path to dbt manifest.json (required for dbt)",
+    )
+    parser.add_argument(
+        "--project-path",
+        help="Path to SQLMesh project root (required for sqlmesh)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="./dagster_assets",
+        help="Output directory for generated asset files",
+    )
+
+    args = parser.parse_args()
+
+    if args.project_type == "dbt" and not args.manifest_path:
+        parser.error("--manifest-path is required for dbt projects")
+    if args.project_type == "sqlmesh" and not args.project_path:
+        parser.error("--project-path is required for sqlmesh projects")
+
+    generator = DagsterAssetGenerator(
+        project_type=args.project_type,
+        project_path=args.project_path,
+        manifest_path=args.manifest_path,
+        output_dir=args.output_dir,
+    )
+
+    if args.project_type == "dbt":
+        generator.parse_dbt_manifest()
+    else:
+        generator.parse_sqlmesh_project()
+
+    generator.generate_assets()
+    print(f"\nSuccessfully generated Dagster assets in {args.output_dir}")
+
+
+if __name__ == "__main__":
+    main()

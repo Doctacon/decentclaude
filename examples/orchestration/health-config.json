@@ -1,0 +1,59 @@
+{
+  "tables": [
+    {
+      "table_id": "your_project.analytics.fct_orders",
+      "description": "Orders fact table - critical for revenue reporting",
+      "freshness": {
+        "timestamp_column": "created_at",
+        "max_age_hours": 2
+      },
+      "row_count": {
+        "min_rows": 1000,
+        "max_rows": 10000000,
+        "partition_column": "order_date",
+        "lookback_days": 7
+      },
+      "check_partitions": true,
+      "partition_lookback_days": 30,
+      "expected_schema": [
+        {"name": "order_id", "type": "STRING", "mode": "REQUIRED"},
+        {"name": "customer_id", "type": "STRING", "mode": "REQUIRED"},
+        {"name": "order_date", "type": "DATE", "mode": "REQUIRED"},
+        {"name": "created_at", "type": "TIMESTAMP", "mode": "REQUIRED"},
+        {"name": "total_amount", "type": "NUMERIC", "mode": "REQUIRED"},
+        {"name": "status", "type": "STRING", "mode": "REQUIRED"}
+      ]
+    },
+    {
+      "table_id": "your_project.analytics.dim_customers",
+      "description": "Customer dimension table",
+      "freshness": {
+        "timestamp_column": "updated_at",
+        "max_age_hours": 24
+      },
+      "row_count": {
+        "min_rows": 100,
+        "max_rows": 1000000
+      }
+    },
+    {
+      "table_id": "your_project.staging.stg_events",
+      "description": "Staging events table - high volume",
+      "freshness": {
+        "timestamp_column": "event_timestamp",
+        "max_age_hours": 1
+      },
+      "row_count": {
+        "min_rows": 10000,
+        "partition_column": "event_date",
+        "lookback_days": 7
+      },
+      "check_partitions": true
+    }
+  ],
+  "check_failures": true,
+  "failure_lookback_hours": 24,
+  "check_costs": true,
+  "cost_lookback_hours": 24,
+  "cost_threshold_usd": 100.0
+}
