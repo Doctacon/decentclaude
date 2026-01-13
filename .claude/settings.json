@@ -1,63 +1,35 @@
 {
   "hooks": {
-    "user-prompt-submit": [
+    "PreToolUse": [
       {
-        "command": "if echo \"$CLAUDE_USER_PROMPT\" | grep -q 'SELECT\\|INSERT\\|UPDATE\\|DELETE\\|CREATE\\|DROP\\|ALTER'; then echo '[SQL Query Detected] Reminder: Validate SQL before execution'; fi",
-        "description": "Detect SQL queries in user prompts and remind about validation"
+        "matcher": "mcp__bigquery__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/bigquery-validation.sh",
+            "timeout": 30
+          }
+        ]
       }
     ],
-    "before-tool-call": {
-      "mcp__bigquery__run_query": [
-        {
-          "command": "echo \"Validating SQL query...\" && if [ -n \"$TOOL_ARGS_sql\" ]; then echo \"$TOOL_ARGS_sql\" | python3 -c \"import sys, sqlparse; query = sys.stdin.read(); parsed = sqlparse.parse(query); print('✓ SQL syntax validated') if parsed else sys.exit(1)\"; fi",
-          "description": "Validate SQL syntax before executing BigQuery queries",
-          "continueOnError": true
-        }
-      ],
-      "Bash": [
-        {
-          "command": "if echo \"$TOOL_ARGS_command\" | grep -qE '(dbt run|dbt test|dbt compile)'; then echo '[dbt Command Detected] Running dbt workflow checks...'; fi",
-          "description": "Detect and log dbt commands",
-          "continueOnError": true
-        }
-      ]
-    },
-    "before-write": [
+    "PostToolUse": [
       {
-        "command": "if [[ \"$FILE_PATH\" == *.sql ]]; then echo \"Validating SQL file: $FILE_PATH\" && echo \"$FILE_CONTENT\" | python3 -c \"import sys, sqlparse; query = sys.stdin.read(); parsed = sqlparse.parse(query); print('✓ SQL file validated') if parsed else sys.exit(1)\"; fi",
-        "description": "Validate SQL files before writing",
-        "continueOnError": true
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/sql-validation.sh",
+            "timeout": 30
+          }
+        ]
       }
-    ],
-    "custom": {
-      "dbt-compile": {
-        "command": "if [ -f dbt_project.yml ]; then dbt compile --profiles-dir ~/.dbt; else echo 'No dbt project found'; exit 1; fi",
-        "description": "Compile dbt models to check for errors"
-      },
-      "dbt-test": {
-        "command": "if [ -f dbt_project.yml ]; then dbt test --profiles-dir ~/.dbt; else echo 'No dbt project found'; exit 1; fi",
-        "description": "Run dbt tests"
-      },
-      "sqlfluff-lint": {
-        "command": "if command -v sqlfluff &> /dev/null; then sqlfluff lint models/**/*.sql; else echo 'sqlfluff not installed. Install with: pip install sqlfluff'; exit 1; fi",
-        "description": "Lint SQL files with sqlfluff"
-      },
-      "data-quality-check": {
-        "command": "echo 'Running data quality checks...' && if [ -f scripts/data_quality.py ]; then python3 scripts/data_quality.py; else echo 'No data quality script found at scripts/data_quality.py'; fi",
-        "description": "Run custom data quality checks"
-      },
-      "pre-commit-data": {
-        "command": "set -e; echo '=== Pre-commit Data Workflow Checks ===' && echo 'Checking for SQL files...' && if git diff --cached --name-only | grep -q '\\.sql$'; then echo 'Validating SQL files...' && for file in $(git diff --cached --name-only | grep '\\.sql$'); do echo \"Checking $file\" && python3 -c \"import sqlparse; content = open('$file').read(); parsed = sqlparse.parse(content); exit(0 if parsed else 1)\"; done; echo '✓ SQL validation passed'; fi && if [ -f dbt_project.yml ]; then echo 'Compiling dbt models...' && dbt compile --profiles-dir ~/.dbt && echo '✓ dbt compilation passed'; fi && echo '=== All pre-commit checks passed ==='",
-        "description": "Comprehensive pre-commit data quality and validation checks"
-      },
-      "sqlmesh-plan": {
-        "command": "if [ -f config.yaml ] && command -v sqlmesh &> /dev/null; then PYTHONPATH=. sqlmesh plan --auto-apply; else echo 'sqlmesh not found or no config.yaml'; exit 1; fi",
-        "description": "Run SQLMesh plan to validate and preview changes"
-      },
-      "sqlmesh-test": {
-        "command": "if [ -f config.yaml ] && command -v sqlmesh &> /dev/null; then PYTHONPATH=. sqlmesh test; else echo 'sqlmesh not found or no config.yaml'; exit 1; fi",
-        "description": "Run SQLMesh tests"
-      }
-    }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(dbt:*)",
+      "Bash(sqlfluff:*)",
+      "Bash(python3:scripts/data_quality.py)"
+    ]
   }
 }

@@ -1,229 +1,368 @@
-# Claude Code Hooks for Data Workflows
+# Claude Code Hooks Documentation
 
 This document describes the Claude Code hooks configured for data engineering workflows.
 
 ## Overview
 
-The hooks in this repository provide automated validation and quality checks for data workflows, including SQL validation, dbt compilation, and test execution.
+This project uses Claude Code hooks to automatically validate SQL, enforce quality standards, and integrate with data tools like dbt and SQLMesh. Hooks run at specific points in the workflow to catch issues early.
 
-## Hook Types
+## Automatic Hooks
 
-### 1. User Prompt Submit Hooks
+These hooks run automatically during Claude Code operations.
 
-**SQL Query Detection**
-- Automatically detects SQL queries in user prompts
-- Provides a reminder to validate SQL before execution
-- Helps prevent accidental execution of invalid or dangerous queries
+### bigquery-validation (PreToolUse)
 
-### 2. Before Tool Call Hooks
+**Trigger**: Before any BigQuery MCP tool is executed
 
-**BigQuery Query Validation**
-- Hook: `before-tool-call.mcp__bigquery__run_query`
-- Validates SQL syntax using sqlparse before executing BigQuery queries
-- Prevents syntax errors from reaching BigQuery
-- Requirement: Python package `sqlparse` (`pip install sqlparse`)
+**Purpose**: Validates SQL syntax before running BigQuery queries
 
-**dbt Command Detection**
-- Hook: `before-tool-call.Bash`
-- Detects dbt commands (run, test, compile)
-- Logs dbt workflow actions for visibility
+**What it does**:
+- Parses SQL queries using sqlparse
+- Checks for basic syntax errors
+- Blocks execution if SQL is invalid (exit code 2)
 
-### 3. Before Write Hooks
-
-**SQL File Validation**
-- Validates SQL files before writing them to disk
-- Uses sqlparse to check syntax
-- Ensures only valid SQL is committed to the repository
-- Requirement: Python package `sqlparse`
-
-### 4. Custom Hooks
-
-These hooks can be triggered manually or integrated into workflows.
-
-#### dbt-compile
-```bash
-# Trigger with: Run the dbt-compile hook
+**Example**:
 ```
-- Compiles dbt models to check for errors
-- Requires: dbt project with `dbt_project.yml`
-- Uses profiles from `~/.dbt`
-
-#### dbt-test
-```bash
-# Trigger with: Run the dbt-test hook
-```
-- Runs dbt tests
-- Validates data quality and model assertions
-
-#### sqlfluff-lint
-```bash
-# Trigger with: Run the sqlfluff-lint hook
-```
-- Lints SQL files using sqlfluff
-- Enforces SQL style guidelines
-- Requirement: `pip install sqlfluff`
-
-#### data-quality-check
-```bash
-# Trigger with: Run the data-quality-check hook
-```
-- Runs custom data quality checks
-- Expects script at `scripts/data_quality.py`
-- Can be customized for project-specific checks
-
-#### pre-commit-data
-```bash
-# Trigger with: Run the pre-commit-data hook
-```
-Comprehensive pre-commit validation including:
-- SQL file syntax validation
-- dbt model compilation
-- Can be integrated with git pre-commit hooks
-
-#### sqlmesh-plan
-```bash
-# Trigger with: Run the sqlmesh-plan hook
-```
-- Runs SQLMesh plan with auto-apply
-- Validates and previews SQLMesh changes
-- Requires: SQLMesh installed and `config.yaml` present
-- Sets PYTHONPATH=. for proper module resolution
-
-#### sqlmesh-test
-```bash
-# Trigger with: Run the sqlmesh-test hook
-```
-- Runs SQLMesh tests
-- Validates SQLMesh model logic and transformations
-
-## Setup Requirements
-
-### Python Packages
-
-```bash
-pip install sqlparse  # For SQL validation
-pip install sqlfluff  # For SQL linting (optional)
-pip install dbt-core  # For dbt hooks
-pip install sqlmesh   # For SQLMesh hooks
+User: Run this query: SELECT * FROM dataset.table
+Claude: [bigquery-validation hook runs automatically]
+        [Hook validates the SQL syntax]
+        [If valid, query proceeds; if invalid, execution is blocked]
 ```
 
-### dbt Configuration
+**Requirements**:
+- Python 3.7+
+- sqlparse: `pip install sqlparse`
 
-Ensure dbt profiles are configured at `~/.dbt/profiles.yml`
+**Script location**: `.claude/hooks/bigquery-validation.sh`
 
-### SQLMesh Configuration
+### sql-validation (PostToolUse)
 
-For SQLMesh hooks, ensure:
-- `config.yaml` exists in the project root
-- SQLMesh is installed
-- PYTHONPATH is set to `.` when running commands
+**Trigger**: After Edit or Write operations
 
-## Usage Examples
+**Purpose**: Validates SQL files after they are written to disk
 
-### Manual Hook Execution
+**What it does**:
+- Checks if the written file is a SQL file (.sql extension)
+- Validates SQL syntax using sqlparse
+- Checks for hardcoded secrets (passwords, API keys, etc.)
+- Blocks if SQL is invalid or warns if secrets are detected
 
-Ask Claude to run hooks:
-- "Run the dbt-compile hook"
-- "Run the pre-commit-data hook"
-- "Run the sqlfluff-lint hook"
-
-### Automatic Execution
-
-Hooks run automatically on:
-- User prompts containing SQL
-- BigQuery query tool calls
-- Writing .sql files
-
-### Git Pre-commit Integration
-
-To integrate the pre-commit-data hook with git:
-
-```bash
-# Create .git/hooks/pre-commit
-cat > .git/hooks/pre-commit << 'EOF'
-#!/bin/bash
-set -e
-echo '=== Pre-commit Data Workflow Checks ==='
-echo 'Checking for SQL files...'
-if git diff --cached --name-only | grep -q '\.sql$'; then
-  echo 'Validating SQL files...'
-  for file in $(git diff --cached --name-only | grep '\.sql$'); do
-    echo "Checking $file"
-    python3 -c "import sqlparse; content = open('$file').read(); parsed = sqlparse.parse(content); exit(0 if parsed else 1)"
-  done
-  echo '✓ SQL validation passed'
-fi
-if [ -f dbt_project.yml ]; then
-  echo 'Compiling dbt models...'
-  dbt compile --profiles-dir ~/.dbt
-  echo '✓ dbt compilation passed'
-fi
-echo '=== All pre-commit checks passed ==='
-EOF
-chmod +x .git/hooks/pre-commit
+**Example**:
+```
+User: Create a SQL file with this query: SELECT * FROM users
+Claude: [Writes the file]
+        [sql-validation hook runs automatically]
+        [Hook validates the file content]
 ```
 
-## Customization
+**Requirements**:
+- Python 3.7+
+- sqlparse: `pip install sqlparse`
 
-### Adding New Hooks
+**Script location**: `.claude/hooks/sql-validation.sh`
 
-Edit `.claude/settings.json` to add new hooks:
+## Custom Hooks
 
+These hooks can be triggered manually by asking Claude to run them.
+
+### dbt-compile
+
+**Usage**:
+```
+Run the dbt-compile hook
+```
+
+**Purpose**: Compiles dbt models to validate SQL and Jinja templating
+
+**What it does**:
+- Checks if dbt is installed
+- Verifies dbt_project.yml exists
+- Runs `dbt compile` to validate all models
+- Reports compilation errors if any
+
+**Requirements**:
+- dbt-core: `pip install dbt-core`
+- dbt adapter (e.g., dbt-bigquery): `pip install dbt-bigquery`
+- Configured dbt profile in `~/.dbt/profiles.yml`
+
+**Exit codes**:
+- 0: Compilation succeeded
+- 1: Compilation failed (fix errors before proceeding)
+
+**Script location**: `.claude/hooks/dbt-compile.sh`
+
+### dbt-test
+
+**Usage**:
+```
+Run the dbt-test hook
+```
+
+**Purpose**: Runs dbt tests to validate data quality and model integrity
+
+**What it does**:
+- Checks if dbt is installed
+- Verifies dbt_project.yml exists
+- Runs `dbt test` to execute all configured tests
+- Reports test failures if any
+
+**Requirements**:
+- dbt-core: `pip install dbt-core`
+- dbt adapter (e.g., dbt-bigquery): `pip install dbt-bigquery`
+- Configured dbt profile in `~/.dbt/profiles.yml`
+- Access to data warehouse for running tests
+
+**Exit codes**:
+- 0: All tests passed
+- 1: One or more tests failed
+
+**Script location**: `.claude/hooks/dbt-test.sh`
+
+### sqlfluff-lint
+
+**Usage**:
+```
+Run the sqlfluff-lint hook
+```
+
+**Purpose**: Lints SQL files to enforce style guidelines and best practices
+
+**What it does**:
+- Finds all .sql files in the project (excluding target/, .git/, venv/)
+- Runs sqlfluff lint with BigQuery dialect
+- Reports style violations and formatting issues
+
+**Requirements**:
+- sqlfluff: `pip install sqlfluff`
+
+**Exit codes**:
+- 0: All files passed linting
+- 1: Linting issues found (run `sqlfluff fix` to auto-fix)
+
+**Tip**: Run `sqlfluff fix --dialect bigquery` to automatically fix many issues
+
+**Script location**: `.claude/hooks/sqlfluff-lint.sh`
+
+### data-quality-check
+
+**Usage**:
+```
+Run the data-quality-check hook
+```
+
+**Purpose**: Runs custom data quality checks using the Python framework
+
+**What it does**:
+- Executes `scripts/data_quality.py`
+- Runs configured quality checks:
+  - SQL file existence checks
+  - SQL syntax validation
+  - Configuration file checks
+  - Hardcoded secrets detection
+
+**Requirements**:
+- Python 3.7+
+- sqlparse: `pip install sqlparse`
+
+**Customization**: Edit `scripts/data_quality.py` to add project-specific checks
+
+**Exit codes**:
+- 0: All quality checks passed
+- 1: One or more checks failed
+
+**Script location**: `.claude/hooks/data-quality-check.sh`
+
+## Hook Configuration
+
+Hooks are configured in `.claude/settings.json`. The configuration specifies:
+
+- **When hooks run**: PreToolUse (before) or PostToolUse (after)
+- **What triggers them**: Tool name patterns (matchers)
+- **What they execute**: Bash scripts
+- **Timeouts**: How long hooks can run before being canceled
+
+Example configuration:
 ```json
 {
   "hooks": {
-    "custom": {
-      "your-hook-name": {
-        "command": "your-command-here",
-        "description": "Description of what this hook does"
+    "PreToolUse": [
+      {
+        "matcher": "mcp__bigquery__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/bigquery-validation.sh",
+            "timeout": 30
+          }
+        ]
       }
-    }
+    ]
   }
 }
 ```
 
-### Modifying Existing Hooks
+## Workflow Examples
 
-Edit the `command` field in `.claude/settings.json` for any hook.
+### Validating SQL Before Running
 
-### Hook Variables
+```
+User: Run this query: SELECT * FORM dataset.table
+Claude: [bigquery-validation hook runs]
+        Error: Invalid SQL syntax detected
+        [Query execution blocked]
 
-Available variables in hooks:
-- `$CLAUDE_USER_PROMPT`: User's prompt text (user-prompt-submit)
-- `$TOOL_ARGS_*`: Tool arguments (before-tool-call)
-- `$FILE_PATH`: File being written (before-write)
-- `$FILE_CONTENT`: Content being written (before-write)
+User: Run this query: SELECT * FROM dataset.table
+Claude: [bigquery-validation hook runs]
+        SQL syntax is valid
+        [Query executes successfully]
+```
 
-## Best Practices
+### Creating and Validating SQL Files
 
-1. **Always validate SQL before execution**: Use the BigQuery validation hook
-2. **Run pre-commit checks**: Use the pre-commit-data hook before committing
-3. **Compile dbt models regularly**: Catch errors early
-4. **Lint SQL files**: Maintain consistent style with sqlfluff
-5. **Write custom data quality checks**: Add project-specific validations
+```
+User: Create a file models/users.sql with this query: SELECT * FROM raw.users
+Claude: [Writes the file]
+        [sql-validation hook runs]
+        SQL file syntax is valid
+        [File created successfully]
+```
+
+### Running Pre-commit Checks
+
+```
+User: Before I commit, run dbt-compile, dbt-test, and data-quality-check
+Claude: [Runs dbt-compile.sh]
+        ✓ dbt compile succeeded
+        [Runs dbt-test.sh]
+        ✓ dbt tests passed
+        [Runs data-quality-check.sh]
+        ✓ Data quality checks passed
+        All checks passed - safe to commit!
+```
 
 ## Troubleshooting
 
-### Hook Fails with "Command not found"
-Install the required tool (dbt, sqlfluff, sqlmesh, etc.)
+### Hook Not Running
 
-### SQL Validation Fails
-Ensure `sqlparse` is installed: `pip install sqlparse`
+**Check hook registration**:
+```
+/hooks
+```
 
-### dbt Hooks Fail
-- Check that `dbt_project.yml` exists
-- Verify dbt profiles at `~/.dbt/profiles.yml`
-- Ensure database credentials are configured
+This shows all registered hooks and their configuration.
 
-### SQLMesh Hooks Fail
-- Verify `config.yaml` exists
-- Check PYTHONPATH is set correctly
-- Ensure SQLMesh is installed: `pip install sqlmesh`
+**Check hook is executable**:
+```bash
+ls -la .claude/hooks/
+```
 
-## Contributing
+All .sh files should have execute permissions (x flag).
 
-To add new data workflow hooks:
-1. Identify the validation or check needed
-2. Add the hook to `.claude/settings.json`
-3. Document it in this file
-4. Test the hook before committing
+### Hook Failing
+
+**Check dependencies**:
+- bigquery-validation and sql-validation require sqlparse
+- dbt-compile and dbt-test require dbt-core and adapter
+- sqlfluff-lint requires sqlfluff
+
+**Check logs**: Hook output is displayed in Claude's response. Read error messages carefully.
+
+**Test hook manually**:
+```bash
+# Test bigquery-validation
+echo '{"tool_input":{"sql":"SELECT * FROM table"}}' | .claude/hooks/bigquery-validation.sh
+
+# Test sql-validation
+echo 'SELECT * FROM table' > test.sql
+echo '{"tool_input":{"file_path":"test.sql"}}' | .claude/hooks/sql-validation.sh
+
+# Test custom hooks
+.claude/hooks/dbt-compile.sh
+.claude/hooks/sqlfluff-lint.sh
+```
+
+### Bypassing Hooks (Not Recommended)
+
+If you need to temporarily disable hooks:
+
+1. Rename `.claude/settings.json` to `.claude/settings.json.disabled`
+2. Perform your operation
+3. Rename back to `.claude/settings.json`
+
+Or ask Claude to use Bash directly instead of MCP tools (though this bypasses validation).
+
+## Best Practices
+
+1. **Run hooks before commits**: Always run dbt-compile, dbt-test, and data-quality-check before committing code
+
+2. **Fix issues immediately**: Don't bypass hooks - they catch real problems early
+
+3. **Customize quality checks**: Edit `scripts/data_quality.py` for project-specific validations
+
+4. **Use sqlfluff fix**: Auto-fix style issues with `sqlfluff fix --dialect bigquery`
+
+5. **Keep hooks fast**: Hooks have timeouts (30-120 seconds). Keep them focused and efficient.
+
+6. **Document custom checks**: If you add custom validation logic, document it in this file
+
+## Adding New Hooks
+
+To add a new hook:
+
+1. Create a bash script in `.claude/hooks/`:
+   ```bash
+   #!/bin/bash
+   set -e
+   echo "Running my hook..."
+   # Your logic here
+   exit 0
+   ```
+
+2. Make it executable:
+   ```bash
+   chmod +x .claude/hooks/my-hook.sh
+   ```
+
+3. For automatic hooks, add to `.claude/settings.json`:
+   ```json
+   {
+     "hooks": {
+       "PreToolUse": [
+         {
+           "matcher": "MyTool",
+           "hooks": [
+             {
+               "type": "command",
+               "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/my-hook.sh",
+               "timeout": 30
+             }
+           ]
+         }
+       ]
+     }
+   }
+   ```
+
+4. For manual hooks, just create the script and ask Claude to run it
+
+## Environment Variables
+
+Available in hook scripts:
+
+- `$CLAUDE_PROJECT_DIR`: Absolute path to project root
+- `CLAUDE_CODE_REMOTE`: Whether running in web ("true") or CLI
+- `PYTHONPATH`: Set to "./" for sqlmesh/dbt compatibility
+
+## Exit Codes
+
+Hooks use exit codes to control Claude's behavior:
+
+- **0**: Success, allow operation to proceed
+- **1**: General failure (for custom hooks, treated as informational)
+- **2**: Blocking failure (prevents tool execution for PreToolUse hooks)
+
+## See Also
+
+- [Claude Code Hooks Documentation](https://code.claude.com/docs/en/hooks.md)
+- [Data Quality Script](../scripts/data_quality.py)
+- [README](../README.md)
