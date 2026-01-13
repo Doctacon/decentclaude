@@ -26,6 +26,7 @@ See [Knowledge Base Documentation](docs/knowledge-base.md) for detailed usage.
 Powerful command-line utilities for common data engineering operations:
 
 **BigQuery Utilities:**
+- **bq-explore**: Interactive TUI for discovering and exploring BigQuery datasets and tables
 - **bq-profile**: Generate comprehensive data profiles with statistics, quality metrics, and anomaly detection
 - **bq-schema-diff**: Compare schemas of two tables to identify differences
 - **bq-query-cost**: Estimate query costs before execution
@@ -237,6 +238,59 @@ Run the data-quality-check hook
 Executes the Python script at `scripts/data_quality.py` with customizable checks.
 
 ## Data Utilities
+
+### bq-explore
+
+Interactive terminal UI for discovering and exploring BigQuery data.
+
+**Usage:**
+```bash
+bin/data-utils/bq-explore [options]
+```
+
+**Options:**
+- `--project=<project>` - BigQuery project ID (uses default if not specified)
+
+**Features:**
+- Browse datasets and tables interactively
+- Search tables by name
+- Find tables by column name
+- View table schemas and metadata
+- Browse sample data from tables
+- Discover table lineage (dependencies)
+- Export discovery results to JSON
+
+**Navigation:**
+- Arrow keys: Navigate through lists
+- Enter: Select item
+- Tab: Switch between panels
+- /: Focus search input
+- Ctrl+S: Export results
+- r: Refresh datasets
+- q: Quit
+- ?: Show help
+
+**Examples:**
+```bash
+# Launch interactive explorer
+bin/data-utils/bq-explore
+
+# Specify a project
+bin/data-utils/bq-explore --project=my-project
+```
+
+**Search capabilities:**
+- Type a table name to filter tables by name
+- Type a column name to find all tables containing that column
+- Results update in real-time as you type
+
+**Export:**
+- Press Ctrl+S to export current discovery results to JSON
+- Files are saved with timestamp: `bq_discovery_YYYYMMDD_HHMMSS.json`
+
+**Requirements:**
+- `textual` library: `pip install textual`
+- `google-cloud-bigquery` library: `pip install google-cloud-bigquery`
 
 ### bq-profile
 
@@ -1126,6 +1180,7 @@ Or create symlinks:
 
 ```bash
 # BigQuery utilities
+sudo ln -s /path/to/decentclaude/bin/data-utils/bq-explore /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-profile /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-schema-diff /usr/local/bin/
 sudo ln -s /path/to/decentclaude/bin/data-utils/bq-query-cost /usr/local/bin/
@@ -1446,6 +1501,7 @@ chmod +x .git/hooks/pre-commit
 │   ├── kb                     # Knowledge base CLI
 │   ├── kb-web                 # Knowledge base web server
 │   ├── data-utils/            # CLI utilities for data engineering
+│   │   ├── bq-explore         # Interactive data discovery TUI
 │   │   ├── bq-profile         # Generate data profiles
 │   │   ├── bq-schema-diff     # Compare table schemas
 │   │   ├── bq-query-cost      # Estimate query costs
@@ -1490,6 +1546,7 @@ chmod +x .git/hooks/pre-commit
 - google-cloud-bigquery (required for BigQuery CLI utilities)
 - anthropic (required for ai-generate utility)
 - fastapi + uvicorn (required for knowledge base web interface)
+- textual (required for bq-explore interactive TUI)
 - sqlfluff (optional, for linting)
 - dbt-core (optional, for dbt hooks)
 - sqlmesh (optional, for SQLMesh hooks)

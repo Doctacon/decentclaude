@@ -1,0 +1,542 @@
+#!/usr/bin/env python3
+"""
+bq-explore - Interactive BigQuery data discovery tool
+
+Usage:
+  bq-explore [options]
+
+Options:
+  --project=<project>  BigQuery project ID (uses default if not specified)
+  --help, -h           Show this help message
+
+Features:
+  - Browse datasets and tables
+  - Search tables by name
+  - Find tables by column name
+  - View table schemas and samples
+  - Discover related tables (lineage)
+  - Export discovery results
+
+Navigation:
+  - Arrow keys: Navigate through lists
+  - Enter: Select item
+  - Tab: Switch between panels
+  - /: Search
+  - q: Quit
+  - ?: Help
+
+Examples:
+  bq-explore
+  bq-explore --project=my-project
+"""
+
+import sys
+import json
+import argparse
+from typing import List, Dict, Optional, Tuple
+from datetime import datetime
+
+try:
+    from textual.app import App, ComposeResult
+    from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+    from textual.widgets import Header, Footer, Static, Input, DataTable, Tree, TabbedContent, TabPane, Button, Label
+    from textual.binding import Binding
+    from textual import on
+    from textual.reactive import reactive
+except ImportError:
+    print("Error: textual library is required for bq-explore")
+    print("Install it with: pip install textual")
+    sys.exit(1)
+
+try:
+    from google.cloud import bigquery
+except ImportError:
+    print("Error: google-cloud-bigquery library is required")
+    print("Install it with: pip install google-cloud-bigquery")
+    sys.exit(1)
+
+
+class DatasetExplorer(App):
+    """Interactive BigQuery data discovery TUI"""
+
+    CSS = """
+    Screen {
+        background: $surface;
+    }
+
+    #main-container {
+        height: 100%;
+    }
+
+    #left-panel {
+        width: 30%;
+        border-right: solid $primary;
+    }
+
+    #right-panel {
+        width: 70%;
+    }
+
+    .panel-title {
+        background: $primary;
+        color: $text;
+        padding: 1;
+        text-style: bold;
+    }
+
+    #search-input {
+        margin: 1;
+    }
+
+    #datasets-tree {
+        height: 1fr;
+        padding: 1;
+    }
+
+    #detail-view {
+        height: 1fr;
+        padding: 1;
+    }
+
+    #status-bar {
+        background: $primary-darken-2;
+        color: $text;
+        height: 1;
+        padding: 0 1;
+    }
+
+    DataTable {
+        height: auto;
+    }
+
+    .info-label {
+        margin: 0 1;
+        padding: 1;
+    }
+
+    .action-buttons {
+        height: auto;
+        padding: 1;
+    }
+
+    Button {
+        margin: 0 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("q", "quit", "Quit"),
+        Binding("?", "help", "Help"),
+        Binding("/", "search", "Search"),
+        Binding("ctrl+s", "export", "Export"),
+        Binding("r", "refresh", "Refresh"),
+    ]
+
+    current_table: reactive[Optional[str]] = reactive(None)
+    search_mode: reactive[str] = reactive("table")  # "table" or "column"
+
+    def __init__(self, project_id: Optional[str] = None):
+        super().__init__()
+        self.project_id = project_id
+        self.client = bigquery.Client(project=project_id)
+        self.datasets_cache = []
+        self.tables_cache = {}
+        self.current_dataset = None
+        self.export_data = []
+
+    def compose(self) -> ComposeResult:
+        """Create child widgets for the app"""
+        yield Header()
+
+        with Container(id="main-container"):
+            with Horizontal():
+                # Left panel - Datasets and Tables tree
+                with Vertical(id="left-panel"):
+                    yield Static("📁 Datasets & Tables", classes="panel-title")
+                    yield Input(placeholder="Search tables or columns...", id="search-input")
+                    yield Tree("BigQuery Datasets", id="datasets-tree")
+
+                # Right panel - Details view
+                with Vertical(id="right-panel"):
+                    yield Static("📊 Table Details", classes="panel-title")
+                    with VerticalScroll(id="detail-view"):
+                        with TabbedContent():
+                            with TabPane("Info", id="tab-info"):
+                                yield Label("Select a table to view details", id="info-content", classes="info-label")
+                            with TabPane("Schema", id="tab-schema"):
+                                yield DataTable(id="schema-table")
+                            with TabPane("Sample", id="tab-sample"):
+                                yield DataTable(id="sample-table")
+                            with TabPane("Lineage", id="tab-lineage"):
+                                yield Label("Lineage information will appear here", id="lineage-content", classes="info-label")
+
+                    with Horizontal(classes="action-buttons"):
+                        yield Button("Export Results", id="btn-export", variant="primary")
+                        yield Button("Refresh", id="btn-refresh")
+
+        yield Static("Ready", id="status-bar")
+        yield Footer()
+
+    async def on_mount(self) -> None:
+        """Initialize the app when mounted"""
+        await self.load_datasets()
+
+    async def load_datasets(self) -> None:
+        """Load datasets from BigQuery"""
+        tree = self.query_one("#datasets-tree", Tree)
+        tree.clear()
+
+        status = self.query_one("#status-bar", Static)
+        status.update("Loading datasets...")
+
+        try:
+            datasets = list(self.client.list_datasets())
+            self.datasets_cache = datasets
+
+            if not datasets:
+                tree.root.add_leaf("No datasets found")
+                status.update("No datasets found")
+                return
+
+            for dataset in datasets:
+                dataset_id = f"{dataset.project}.{dataset.dataset_id}"
+                node = tree.root.add(f"📁 {dataset.dataset_id}", data={"type": "dataset", "id": dataset_id})
+
+            status.update(f"Loaded {len(datasets)} datasets")
+        except Exception as e:
+            status.update(f"Error loading datasets: {str(e)}")
+            tree.root.add_leaf(f"Error: {str(e)}")
+
+    async def load_tables(self, dataset_id: str, node) -> None:
+        """Load tables for a dataset"""
+        status = self.query_one("#status-bar", Static)
+        status.update(f"Loading tables from {dataset_id}...")
+
+        try:
+            # Check if already loaded
+            if dataset_id in self.tables_cache:
+                return
+
+            parts = dataset_id.split('.')
+            if len(parts) == 2:
+                project, dataset = parts
+                tables = list(self.client.list_tables(f"{project}.{dataset}"))
+                self.tables_cache[dataset_id] = tables
+
+                for table in tables:
+                    table_id = f"{project}.{dataset}.{table.table_id}"
+                    icon = "📊" if table.table_type == "TABLE" else "👁️" if table.table_type == "VIEW" else "⚡"
+                    node.add_leaf(f"{icon} {table.table_id}", data={"type": "table", "id": table_id})
+
+                status.update(f"Loaded {len(tables)} tables from {dataset_id}")
+        except Exception as e:
+            status.update(f"Error loading tables: {str(e)}")
+            node.add_leaf(f"Error: {str(e)}")
+
+    @on(Tree.NodeSelected)
+    async def handle_tree_select(self, event: Tree.NodeSelected) -> None:
+        """Handle selection of tree nodes"""
+        if not event.node.data:
+            return
+
+        data = event.node.data
+        if data["type"] == "dataset":
+            self.current_dataset = data["id"]
+            await self.load_tables(data["id"], event.node)
+        elif data["type"] == "table":
+            self.current_table = data["id"]
+            await self.load_table_details(data["id"])
+
+    async def load_table_details(self, table_id: str) -> None:
+        """Load detailed information about a table"""
+        status = self.query_one("#status-bar", Static)
+        status.update(f"Loading details for {table_id}...")
+
+        try:
+            table = self.client.get_table(table_id)
+
+            # Update Info tab
+            info_content = self.query_one("#info-content", Label)
+            info_text = f"""
+Table: {table_id}
+Type: {table.table_type}
+Created: {table.created.strftime('%Y-%m-%d %H:%M:%S') if table.created else 'N/A'}
+Modified: {table.modified.strftime('%Y-%m-%d %H:%M:%S') if table.modified else 'N/A'}
+Rows: {table.num_rows:,}
+Size: {self._format_bytes(table.num_bytes)}
+Description: {table.description or 'No description'}
+            """
+            info_content.update(info_text.strip())
+
+            # Update Schema tab
+            await self.load_schema(table)
+
+            # Update Sample tab
+            await self.load_sample(table_id)
+
+            # Update Lineage tab
+            await self.load_lineage(table_id)
+
+            status.update(f"Loaded details for {table_id}")
+        except Exception as e:
+            status.update(f"Error loading table details: {str(e)}")
+
+    async def load_schema(self, table) -> None:
+        """Load and display table schema"""
+        schema_table = self.query_one("#schema-table", DataTable)
+        schema_table.clear(columns=True)
+
+        schema_table.add_columns("Field", "Type", "Mode", "Description")
+
+        for field in table.schema:
+            schema_table.add_row(
+                field.name,
+                field.field_type,
+                field.mode or "NULLABLE",
+                field.description or ""
+            )
+
+    async def load_sample(self, table_id: str, limit: int = 10) -> None:
+        """Load and display sample data from table"""
+        sample_table = self.query_one("#sample-table", DataTable)
+        sample_table.clear(columns=True)
+
+        try:
+            query = f"SELECT * FROM `{table_id}` LIMIT {limit}"
+            query_job = self.client.query(query)
+            results = list(query_job.result())
+
+            if not results:
+                sample_table.add_column("Message")
+                sample_table.add_row("No data in table")
+                return
+
+            # Add columns
+            first_row = results[0]
+            columns = list(first_row.keys())
+            for col in columns:
+                sample_table.add_column(col)
+
+            # Add rows
+            for row in results:
+                sample_table.add_row(*[str(row[col]) if row[col] is not None else "NULL" for col in columns])
+
+        except Exception as e:
+            sample_table.add_column("Error")
+            sample_table.add_row(f"Error loading sample: {str(e)}")
+
+    async def load_lineage(self, table_id: str) -> None:
+        """Load and display table lineage"""
+        lineage_content = self.query_one("#lineage-content", Label)
+
+        try:
+            # Get upstream dependencies (for views)
+            table = self.client.get_table(table_id)
+            upstream = []
+
+            if table.table_type in ['VIEW', 'MATERIALIZED_VIEW']:
+                view_query = table.view_query or table.mview_query
+                if view_query:
+                    # Simple regex to find table references
+                    import re
+                    pattern = r'`?([a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)`?'
+                    matches = re.findall(pattern, view_query)
+                    upstream = list(set(matches))
+
+            lineage_text = "Upstream Dependencies (tables this depends on):\n"
+            if upstream:
+                for dep in sorted(upstream):
+                    lineage_text += f"  ← {dep}\n"
+            else:
+                lineage_text += "  No upstream dependencies (source table)\n"
+
+            lineage_text += "\nNote: Downstream dependencies require scanning all views in the project"
+            lineage_content.update(lineage_text)
+
+        except Exception as e:
+            lineage_content.update(f"Error loading lineage: {str(e)}")
+
+    @on(Input.Submitted, "#search-input")
+    async def handle_search(self, event: Input.Submitted) -> None:
+        """Handle search input"""
+        query = event.value.strip()
+        if not query:
+            await self.load_datasets()
+            return
+
+        status = self.query_one("#status-bar", Static)
+        status.update(f"Searching for '{query}'...")
+
+        tree = self.query_one("#datasets-tree", Tree)
+        tree.clear()
+
+        try:
+            # Search for tables by name
+            found_count = 0
+            for dataset in self.datasets_cache:
+                dataset_id = f"{dataset.project}.{dataset.dataset_id}"
+                dataset_node = None
+
+                # Load tables if not cached
+                if dataset_id not in self.tables_cache:
+                    tables = list(self.client.list_tables(f"{dataset.project}.{dataset.dataset_id}"))
+                    self.tables_cache[dataset_id] = tables
+
+                tables = self.tables_cache[dataset_id]
+
+                for table in tables:
+                    table_id = f"{dataset.project}.{dataset.dataset_id}.{table.table_id}"
+
+                    # Search by table name or column name
+                    if query.lower() in table.table_id.lower():
+                        if dataset_node is None:
+                            dataset_node = tree.root.add(f"📁 {dataset.dataset_id}", data={"type": "dataset", "id": dataset_id})
+
+                        icon = "📊" if table.table_type == "TABLE" else "👁️" if table.table_type == "VIEW" else "⚡"
+                        dataset_node.add_leaf(f"{icon} {table.table_id}", data={"type": "table", "id": table_id})
+                        found_count += 1
+
+            # Also search by column name if query is specific
+            if found_count == 0:
+                status.update(f"No tables found with name '{query}', searching columns...")
+                await self.search_by_column(query, tree)
+            else:
+                status.update(f"Found {found_count} tables matching '{query}'")
+
+        except Exception as e:
+            status.update(f"Search error: {str(e)}")
+            tree.root.add_leaf(f"Error: {str(e)}")
+
+    async def search_by_column(self, column_name: str, tree: Tree) -> None:
+        """Search for tables containing a specific column"""
+        status = self.query_one("#status-bar", Static)
+        found_count = 0
+
+        try:
+            for dataset in self.datasets_cache:
+                project = dataset.project
+                dataset_name = dataset.dataset_id
+                dataset_id = f"{project}.{dataset_name}"
+                dataset_node = None
+
+                # Query INFORMATION_SCHEMA for tables with this column
+                query = f"""
+                SELECT table_name
+                FROM `{project}.{dataset_name}.INFORMATION_SCHEMA.COLUMNS`
+                WHERE column_name = '{column_name}'
+                """
+
+                try:
+                    query_job = self.client.query(query)
+                    results = list(query_job.result())
+
+                    for row in results:
+                        if dataset_node is None:
+                            dataset_node = tree.root.add(f"📁 {dataset_name}", data={"type": "dataset", "id": dataset_id})
+
+                        table_id = f"{project}.{dataset_name}.{row.table_name}"
+                        dataset_node.add_leaf(f"📊 {row.table_name} (has column: {column_name})", data={"type": "table", "id": table_id})
+                        found_count += 1
+                except:
+                    # Skip datasets that don't have INFORMATION_SCHEMA or permission issues
+                    continue
+
+            status.update(f"Found {found_count} tables with column '{column_name}'")
+
+        except Exception as e:
+            status.update(f"Column search error: {str(e)}")
+
+    @on(Button.Pressed, "#btn-export")
+    async def handle_export(self) -> None:
+        """Export current view to JSON file"""
+        await self.action_export()
+
+    @on(Button.Pressed, "#btn-refresh")
+    async def handle_refresh(self) -> None:
+        """Refresh datasets list"""
+        await self.action_refresh()
+
+    def action_search(self) -> None:
+        """Focus the search input"""
+        search_input = self.query_one("#search-input", Input)
+        search_input.focus()
+
+    async def action_refresh(self) -> None:
+        """Refresh the datasets list"""
+        self.tables_cache.clear()
+        await self.load_datasets()
+
+    async def action_export(self) -> None:
+        """Export discovery results to JSON file"""
+        status = self.query_one("#status-bar", Static)
+
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"bq_discovery_{timestamp}.json"
+
+            export_data = {
+                "timestamp": timestamp,
+                "project": self.project_id or self.client.project,
+                "datasets_count": len(self.datasets_cache),
+                "datasets": [
+                    {
+                        "id": f"{ds.project}.{ds.dataset_id}",
+                        "project": ds.project,
+                        "dataset_id": ds.dataset_id,
+                    }
+                    for ds in self.datasets_cache
+                ],
+                "tables": {
+                    dataset_id: [
+                        {
+                            "table_id": f"{dataset_id}.{t.table_id}",
+                            "name": t.table_id,
+                            "type": t.table_type,
+                        }
+                        for t in tables
+                    ]
+                    for dataset_id, tables in self.tables_cache.items()
+                }
+            }
+
+            with open(filename, 'w') as f:
+                json.dump(export_data, f, indent=2, default=str)
+
+            status.update(f"Exported to {filename}")
+        except Exception as e:
+            status.update(f"Export error: {str(e)}")
+
+    def action_help(self) -> None:
+        """Show help information"""
+        status = self.query_one("#status-bar", Static)
+        status.update("Help: / = Search | Tab = Switch panels | Enter = Select | q = Quit | Ctrl+S = Export")
+
+    @staticmethod
+    def _format_bytes(num_bytes: int) -> str:
+        """Format bytes to human-readable size"""
+        if num_bytes is None:
+            return "N/A"
+
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if num_bytes < 1024.0:
+                return f"{num_bytes:.2f} {unit}"
+            num_bytes /= 1024.0
+        return f"{num_bytes:.2f} PB"
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Interactive BigQuery data discovery tool",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("--project", help="BigQuery project ID")
+
+    args = parser.parse_args()
+
+    app = DatasetExplorer(project_id=args.project)
+    app.run()
+
+
+if __name__ == "__main__":
+    main()
