@@ -1,0 +1,128 @@
+# Template for dbt schema.yml with comprehensive testing
+# Copy and customize for your models
+
+version: 2
+
+models:
+  - name: your_model_name
+    description: |
+      Description of what this model does.
+      Include business logic, assumptions, and dependencies.
+
+    meta:
+      owner: "data-team@company.com"
+      schema_version: "1.0"
+      tags: ["daily", "critical"]
+
+    # Model-level tests
+    tests:
+      # Row count validation
+      - dbt_utils.row_count_in_range:
+          min_value: 1000
+          max_value: 1000000
+          config:
+            severity: error
+
+      # Freshness check
+      - recent_data:
+          column_name: created_at
+          datepart: day
+          interval: -1
+          config:
+            severity: warn
+
+      # Duplicate check
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - primary_key_col1
+            - primary_key_col2
+
+    columns:
+      # Primary Key
+      - name: id
+        description: "Primary key - unique identifier"
+        tests:
+          - unique
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              column_type: INT64
+
+      # Foreign Key
+      - name: customer_id
+        description: "Foreign key to dim_customers"
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_customers')
+              field: customer_id
+              config:
+                severity: error
+
+      # Enum/Categorical Column
+      - name: status
+        description: "Order status: pending, confirmed, shipped, delivered, cancelled"
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled']
+              quote: true
+
+      # Numeric Column with Range
+      - name: amount
+        description: "Transaction amount in USD"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1000000
+              inclusive: true
+
+      # Date/Timestamp Column
+      - name: created_at
+        description: "Record creation timestamp"
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= '2020-01-01'"
+              config:
+                where: "TRUE"
+          - dbt_utils.expression_is_true:
+              name: not_in_future
+              expression: "<= CURRENT_TIMESTAMP()"
+
+      # Email Column
+      - name: email
+        description: "Customer email address"
+        tests:
+          - not_null:
+              config:
+                where: "customer_type != 'guest'"
+          - dbt_expectations.expect_column_values_to_match_regex:
+              regex: "^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]+$"
+              config:
+                severity: warn
+
+      # Percentage Column
+      - name: discount_percentage
+        description: "Discount percentage (0-100)"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              inclusive: true
+
+      # Optional Column (can be null but must validate when present)
+      - name: referral_code
+        description: "Optional referral code"
+        tests:
+          - dbt_expectations.expect_column_values_to_match_regex:
+              regex: "^[A-Z0-9]{6,10}$"
+              config:
+                where: "referral_code IS NOT NULL"
+
+# Custom data tests (reference separate .sql files)
+# Place these in tests/ directory
+
+# tests/assert_revenue_reconciliation.sql
+# tests/assert_no_future_dates.sql
+# tests/assert_primary_key_sequence.sql
