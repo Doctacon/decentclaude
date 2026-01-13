@@ -4,7 +4,10 @@ This directory contains example SQL files that demonstrate best practices and ca
 
 ## Files
 
-### valid_query.sql
+### Template Files
+These files use placeholder table names (`project.dataset.table`) and should be customized for your schema:
+
+#### valid_query.sql
 A basic BigQuery query demonstrating:
 - Proper SQL formatting
 - Window functions
@@ -13,7 +16,7 @@ A basic BigQuery query demonstrating:
 
 Use this to test the SQL validation hooks.
 
-### data_quality.sql
+#### data_quality.sql
 A comprehensive data quality check query that:
 - Checks for null values
 - Detects duplicate records
@@ -22,7 +25,7 @@ A comprehensive data quality check query that:
 
 This demonstrates how to build data quality checks using SQL.
 
-### dbt_model_example.sql
+#### dbt_model_example.sql
 A dbt model showing:
 - Model configuration (materialization, partitioning, clustering)
 - CTEs for organization
@@ -32,7 +35,7 @@ A dbt model showing:
 
 Use this with the dbt-compile hook to test dbt integration.
 
-### sqlmesh_model_example.sql
+#### sqlmesh_model_example.sql
 A SQLMesh model demonstrating:
 - Model metadata (name, kind, schedule)
 - Incremental processing by time range
@@ -42,6 +45,27 @@ A SQLMesh model demonstrating:
 - Engagement scoring logic
 
 Use this with the sqlmesh-plan and sqlmesh-test hooks.
+
+### Working Examples
+These files use actual BigQuery tables and can be run directly:
+
+#### valid_query_working.sql
+Working version of valid_query.sql using real Salesforce user data.
+
+#### data_quality_working.sql
+Working version of data_quality.sql with actual data quality checks.
+
+## Documentation
+
+### [EXAMPLES_OUTPUT.md](./EXAMPLES_OUTPUT.md)
+Actual query results, usage instructions, best practices, and troubleshooting guide.
+
+### [TESTING_GUIDE.md](./TESTING_GUIDE.md)
+Comprehensive testing guide including:
+- Validation status for all examples
+- dbt testing procedures
+- SQLMesh testing procedures
+- Troubleshooting common issues
 
 ## Testing the Hooks
 
