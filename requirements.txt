@@ -10,6 +10,9 @@ google-cloud-bigquery>=3.0.0
 # AI generation utility (ai-generate)
 anthropic>=0.39.0
 
+# MCP server for Claude Code integration
+mcp>=1.0.0
+
 # Optional: SQL linting
 # sqlfluff>=2.0.0
 

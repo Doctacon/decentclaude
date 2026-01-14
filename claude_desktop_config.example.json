@@ -1,0 +1,18 @@
+{
+  "$schema": "https://cdn.claude.ai/mcp-config-schema.json",
+  "mcpServers": {
+    "decentclaude": {
+      "command": "/absolute/path/to/decentclaude/bin/mcp-server.py",
+      "args": [],
+      "env": {
+        "GOOGLE_CLOUD_PROJECT": "your-gcp-project-id",
+        "GOOGLE_APPLICATION_CREDENTIALS": "/path/to/service-account-key.json",
+        "GOOGLE_DATASET": "your-default-dataset",
+        "ANTHROPIC_API_KEY": "sk-ant-your-api-key",
+        "CACHE_DIR": "~/.cache/decentclaude",
+        "CACHE_TTL": "3600",
+        "LOG_LEVEL": "INFO"
+      }
+    }
+  }
+}
