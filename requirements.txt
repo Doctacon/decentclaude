@@ -1,6 +1,9 @@
 # Core dependencies for hooks
 sqlparse>=0.4.0
 
+# Unified CLI interface (bin/mayor)
+click>=8.1.0
+
 # BigQuery utilities (bq-* tools)
 google-cloud-bigquery>=3.0.0
 

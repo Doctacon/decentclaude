@@ -1,0 +1,506 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "version": "0.1.0",
+  "generated": "2026-01-14",
+  "description": "DecentClaude tool registry - complete catalog of all utilities, workflows, and skills",
+  "categories": {
+    "bigquery": {
+      "name": "BigQuery",
+      "description": "Tools for BigQuery data analysis, optimization, and quality management",
+      "tool_count": 11
+    },
+    "dbt": {
+      "name": "dbt",
+      "description": "Tools for dbt project development and optimization",
+      "tool_count": 5
+    },
+    "sqlmesh": {
+      "name": "SQLMesh",
+      "description": "Tools for SQLMesh model development and deployment",
+      "tool_count": 4
+    },
+    "ai": {
+      "name": "AI",
+      "description": "AI-powered tools leveraging LLMs for code generation and analysis",
+      "tool_count": 3
+    },
+    "workflow": {
+      "name": "Workflows",
+      "description": "Pre-built workflow orchestration templates",
+      "tool_count": 4
+    },
+    "kb": {
+      "name": "Knowledge Base",
+      "description": "Tools for managing tribal knowledge and solutions",
+      "tool_count": 1
+    }
+  },
+  "tools": [
+    {
+      "id": "bq-profile",
+      "name": "bq-profile",
+      "category": "bigquery",
+      "command": "mayor bq profile",
+      "description": "Generate comprehensive data profile for BigQuery tables",
+      "long_description": "Analyzes table structure, generates statistics, calculates data quality metrics, and provides actionable recommendations. Supports anomaly detection and parallel batch profiling.",
+      "use_cases": [
+        "data quality assessment",
+        "table exploration",
+        "data profiling",
+        "quality scoring",
+        "null analysis"
+      ],
+      "tags": ["profiling", "quality", "statistics", "exploration"],
+      "inputs": {
+        "required": ["table_id"],
+        "optional": ["format", "sample-size", "detect-anomalies", "no-cache", "parallel", "progress"]
+      },
+      "outputs": {
+        "formats": ["text", "json", "markdown", "html"],
+        "schema": "schemas/bq-profile.json",
+        "fields": ["table_metadata", "column_statistics", "quality_score", "null_percentages", "anomalies"]
+      },
+      "examples": [
+        {
+          "description": "Profile a table with default settings",
+          "command": "mayor bq profile project.dataset.users"
+        },
+        {
+          "description": "Profile with JSON output and anomaly detection",
+          "command": "mayor bq profile project.dataset.table --format=json --detect-anomalies"
+        },
+        {
+          "description": "Batch profile multiple tables in parallel",
+          "command": "mayor bq profile table1 table2 table3 --parallel=3 --progress"
+        }
+      ],
+      "related_skills": ["data-lineage-doc", "schema-doc-generator"],
+      "related_workflows": ["data-quality-audit"],
+      "related_tools": ["bq-validate", "bq-lineage"],
+      "observability": {
+        "metrics": ["bytes_processed", "execution_time", "cache_hit_rate"],
+        "logging": true,
+        "errors": true
+      },
+      "performance": {
+        "typical_runtime": "10-30 seconds",
+        "parallel_speedup": "1.7-4.5x with --parallel"
+      },
+      "path": "bin/data-utils/bq-profile"
+    },
+    {
+      "id": "bq-explain",
+      "name": "bq-explain",
+      "category": "bigquery",
+      "command": "mayor bq explain",
+      "description": "Analyze BigQuery query execution plan and identify bottlenecks",
+      "long_description": "Examines query structure, execution plan, estimates costs, identifies performance bottlenecks, and provides optimization suggestions.",
+      "use_cases": [
+        "query analysis",
+        "performance debugging",
+        "cost estimation",
+        "optimization planning",
+        "bottleneck identification"
+      ],
+      "tags": ["analysis", "performance", "optimization", "explain-plan"],
+      "inputs": {
+        "required": ["file OR query"],
+        "optional": ["format"]
+      },
+      "outputs": {
+        "formats": ["text", "json"],
+        "schema": "schemas/bq-explain.json",
+        "fields": ["execution_plan", "estimated_cost", "bytes_scanned", "bottlenecks", "suggestions"]
+      },
+      "examples": [
+        {
+          "description": "Analyze query from file",
+          "command": "mayor bq explain --file query.sql"
+        },
+        {
+          "description": "Analyze inline query with JSON output",
+          "command": "mayor bq explain --query 'SELECT * FROM table' --format=json"
+        }
+      ],
+      "related_skills": ["sql-optimizer"],
+      "related_workflows": ["query-optimization"],
+      "related_tools": ["bq-optimize", "bq-query-cost"],
+      "observability": {
+        "metrics": ["queries_analyzed", "avg_bytes_scanned"],
+        "logging": true
+      },
+      "path": "bin/data-utils/bq-explain"
+    },
+    {
+      "id": "bq-optimize",
+      "name": "bq-optimize",
+      "category": "bigquery",
+      "command": "mayor bq optimize",
+      "description": "Automatically optimize BigQuery queries for cost and performance",
+      "long_description": "Applies optimization techniques including partition filters, predicate pushdown, clustering suggestions, and provides cost savings estimates.",
+      "use_cases": [
+        "cost reduction",
+        "query optimization",
+        "performance improvement",
+        "automatic refactoring"
+      ],
+      "tags": ["optimization", "cost", "performance", "refactoring"],
+      "inputs": {
+        "required": ["file OR query"],
+        "optional": ["format"]
+      },
+      "outputs": {
+        "formats": ["text", "json"],
+        "schema": "schemas/bq-optimize.json",
+        "fields": ["original_query", "optimized_query", "changes_applied", "cost_before", "cost_after", "savings_pct"]
+      },
+      "examples": [
+        {
+          "description": "Optimize query from file",
+          "command": "mayor bq optimize --file query.sql"
+        },
+        {
+          "description": "Optimize inline query",
+          "command": "mayor bq optimize --query 'SELECT * FROM table WHERE date > ...'"
+        }
+      ],
+      "related_skills": ["sql-optimizer"],
+      "related_workflows": ["query-optimization"],
+      "related_tools": ["bq-explain", "bq-query-cost"],
+      "observability": {
+        "metrics": ["queries_optimized", "total_savings_usd", "avg_improvement_pct"],
+        "logging": true
+      },
+      "path": "bin/data-utils/bq-optimize"
+    },
+    {
+      "id": "bq-lineage",
+      "name": "bq-lineage",
+      "category": "bigquery",
+      "command": "mayor bq lineage",
+      "description": "Discover table dependencies and data lineage",
+      "long_description": "Maps upstream sources and downstream consumers for impact analysis, understanding data flow, and dependency tracking.",
+      "use_cases": [
+        "impact analysis",
+        "dependency mapping",
+        "data lineage",
+        "change planning"
+      ],
+      "tags": ["lineage", "dependencies", "impact-analysis"],
+      "inputs": {
+        "required": ["table_id"],
+        "optional": ["direction", "depth", "format"]
+      },
+      "outputs": {
+        "formats": ["text", "json", "mermaid"],
+        "schema": "schemas/bq-lineage.json",
+        "fields": ["table_id", "upstream_tables", "downstream_tables", "depth", "relationships"]
+      },
+      "examples": [
+        {
+          "description": "Show all dependencies",
+          "command": "mayor bq lineage project.dataset.users"
+        },
+        {
+          "description": "Show downstream consumers with depth 2",
+          "command": "mayor bq lineage table --direction=downstream --depth=2"
+        },
+        {
+          "description": "Generate Mermaid diagram",
+          "command": "mayor bq lineage table --format=mermaid > lineage.md"
+        }
+      ],
+      "related_skills": ["data-lineage-doc"],
+      "related_workflows": [],
+      "related_tools": ["bq-profile"],
+      "observability": {
+        "metrics": ["lineage_queries", "avg_dependencies"],
+        "logging": true
+      },
+      "path": "bin/data-utils/bq-lineage"
+    },
+    {
+      "id": "bq-schema-diff",
+      "name": "bq-schema-diff",
+      "category": "bigquery",
+      "command": "mayor bq schema-diff",
+      "description": "Compare schemas between two tables",
+      "long_description": "Identifies differences in columns, types, and structure. Essential for safe schema migrations and validation.",
+      "use_cases": [
+        "schema comparison",
+        "migration validation",
+        "drift detection",
+        "compatibility checking"
+      ],
+      "tags": ["schema", "comparison", "migration", "validation"],
+      "inputs": {
+        "required": ["table_a", "table_b"],
+        "optional": ["format"]
+      },
+      "outputs": {
+        "formats": ["text", "json"],
+        "schema": "schemas/bq-schema-diff.json",
+        "fields": ["added_columns", "removed_columns", "changed_types", "compatibility_status"]
+      },
+      "examples": [
+        {
+          "description": "Compare dev and prod schemas",
+          "command": "mayor bq schema-diff dev.users prod.users"
+        },
+        {
+          "description": "Compare with JSON output",
+          "command": "mayor bq schema-diff table_v1 table_v2 --format=json"
+        }
+      ],
+      "related_skills": ["schema-doc-generator"],
+      "related_workflows": ["schema-migration"],
+      "related_tools": ["bq-table-compare"],
+      "observability": {
+        "metrics": ["comparisons_performed"],
+        "logging": true
+      },
+      "path": "bin/data-utils/bq-schema-diff"
+    },
+    {
+      "id": "data-quality-audit",
+      "name": "data-quality-audit",
+      "category": "workflow",
+      "command": "mayor workflow run data-quality-audit",
+      "description": "Comprehensive data quality assessment workflow",
+      "long_description": "Orchestrates profiling, analysis, scoring, and recommendation generation for complete data quality audit. Supports pass/fail thresholds for CI/CD integration.",
+      "use_cases": [
+        "data quality assessment",
+        "production validation",
+        "CI/CD quality gates",
+        "quality monitoring"
+      ],
+      "tags": ["workflow", "quality", "audit", "validation"],
+      "inputs": {
+        "required": ["table_id"],
+        "optional": ["quality_threshold"]
+      },
+      "outputs": {
+        "formats": ["json", "markdown"],
+        "schema": "schemas/data-quality-audit.json",
+        "fields": ["quality_score", "result", "recommendations", "null_pct", "distinct_ratio", "anomaly_count"]
+      },
+      "examples": [
+        {
+          "description": "Audit with default 80% threshold",
+          "command": "mayor workflow run data-quality-audit project.dataset.users"
+        },
+        {
+          "description": "Audit with 85% threshold",
+          "command": "mayor workflow run data-quality-audit table 85"
+        }
+      ],
+      "related_skills": ["data-lineage-doc"],
+      "related_workflows": [],
+      "related_tools": ["bq-profile", "bq-validate"],
+      "observability": {
+        "metrics": ["audits_run", "avg_quality_score", "pass_rate"],
+        "logging": true
+      },
+      "exit_codes": {
+        "0": "Quality score meets threshold (PASS)",
+        "1": "Quality score below threshold (FAIL)"
+      },
+      "path": "workflows/data-quality-audit"
+    },
+    {
+      "id": "schema-migration",
+      "name": "schema-migration",
+      "category": "workflow",
+      "command": "mayor workflow run schema-migration",
+      "description": "Safe BigQuery schema change workflow",
+      "long_description": "Compares schemas, validates compatibility, generates migration SQL with rollback scripts. Blocks breaking changes from auto-execution.",
+      "use_cases": [
+        "schema migration",
+        "safe deployments",
+        "compatibility validation",
+        "rollback planning"
+      ],
+      "tags": ["workflow", "schema", "migration", "safety"],
+      "inputs": {
+        "required": ["source_table", "target_table"],
+        "optional": ["--execute"]
+      },
+      "outputs": {
+        "formats": ["markdown", "sql"],
+        "files": ["migration-report.md", "migration.sql", "rollback.sql"],
+        "fields": ["compatibility", "changes", "migration_sql", "rollback_sql"]
+      },
+      "examples": [
+        {
+          "description": "Dry run (compare only)",
+          "command": "mayor workflow run schema-migration dev.users prod.users"
+        },
+        {
+          "description": "Execute safe migration",
+          "command": "mayor workflow run schema-migration dev.users prod.users --execute"
+        }
+      ],
+      "related_skills": ["schema-doc-generator"],
+      "related_workflows": [],
+      "related_tools": ["bq-schema-diff"],
+      "observability": {
+        "metrics": ["migrations_run", "breaking_changes_detected"],
+        "logging": true
+      },
+      "exit_codes": {
+        "0": "Compatible migration (safe to execute)",
+        "1": "Breaking changes detected"
+      },
+      "path": "workflows/schema-migration"
+    },
+    {
+      "id": "incident-response",
+      "name": "incident-response",
+      "category": "workflow",
+      "command": "mayor workflow run incident-response",
+      "description": "Automated incident triage and response workflow",
+      "long_description": "Guides systematic incident response including triage, debugging, timeline reconstruction, and post-mortem generation. Supports P0-P4 severity levels.",
+      "use_cases": [
+        "incident management",
+        "debugging",
+        "postmortem generation",
+        "SLA compliance"
+      ],
+      "tags": ["workflow", "incident", "debugging", "postmortem"],
+      "inputs": {
+        "required": ["incident_description"],
+        "optional": ["severity"]
+      },
+      "outputs": {
+        "formats": ["markdown", "jsonl"],
+        "files": ["incident-report.md", "timeline.jsonl", "action-items.md"],
+        "fields": ["severity", "timeline", "root_cause", "actions"]
+      },
+      "examples": [
+        {
+          "description": "P2 incident (default)",
+          "command": "mayor workflow run incident-response 'Dashboard query timeout'"
+        },
+        {
+          "description": "P1 incident",
+          "command": "mayor workflow run incident-response 'Revenue dashboard down' P1"
+        }
+      ],
+      "related_skills": ["troubleshoot", "triage-incident"],
+      "related_workflows": [],
+      "related_tools": ["bq-explain", "bq-profile"],
+      "observability": {
+        "metrics": ["incidents_handled", "avg_resolution_time", "incidents_by_severity"],
+        "logging": true
+      },
+      "path": "workflows/incident-response"
+    },
+    {
+      "id": "query-optimization",
+      "name": "query-optimization",
+      "category": "workflow",
+      "command": "mayor workflow run query-optimization",
+      "description": "Systematic BigQuery query optimization workflow",
+      "long_description": "Analyzes original query, identifies opportunities, generates optimized version, compares costs, and validates against threshold.",
+      "use_cases": [
+        "cost reduction",
+        "performance improvement",
+        "query refactoring",
+        "cost monitoring"
+      ],
+      "tags": ["workflow", "optimization", "cost", "performance"],
+      "inputs": {
+        "required": ["query_file"],
+        "optional": ["cost_threshold_usd"]
+      },
+      "outputs": {
+        "formats": ["markdown", "sql"],
+        "files": ["optimization-report.md", "original.sql", "optimized.sql"],
+        "fields": ["original_cost", "optimized_cost", "savings_pct", "changes_applied"]
+      },
+      "examples": [
+        {
+          "description": "Optimize with default $1.00 threshold",
+          "command": "mayor workflow run query-optimization queries/dashboard.sql"
+        },
+        {
+          "description": "Optimize with $0.50 threshold",
+          "command": "mayor workflow run query-optimization query.sql 0.50"
+        }
+      ],
+      "related_skills": ["sql-optimizer"],
+      "related_workflows": [],
+      "related_tools": ["bq-explain", "bq-optimize", "bq-query-cost"],
+      "observability": {
+        "metrics": ["queries_optimized", "total_savings_usd", "avg_improvement"],
+        "logging": true
+      },
+      "exit_codes": {
+        "0": "Cost within threshold (PASS)",
+        "1": "Cost exceeds threshold (FAIL)"
+      },
+      "path": "workflows/query-optimization"
+    }
+  ],
+  "skills": [
+    {
+      "id": "sql-optimizer",
+      "name": "sql-optimizer",
+      "category": "skill",
+      "invocation": "/sql-optimizer",
+      "description": "Comprehensive SQL optimization Skill for Claude Code",
+      "long_description": "Orchestrates bq-explain and bq-optimize to systematically improve query performance. Guides Claude through analysis, optimization, and validation.",
+      "use_cases": [
+        "query optimization",
+        "cost reduction",
+        "performance improvement"
+      ],
+      "tools_used": ["bq-explain", "bq-optimize", "bq-query-cost"],
+      "outputs": ["optimized query", "cost analysis", "performance recommendations"],
+      "path": ".claude/skills/sql-optimizer/SKILL.md"
+    },
+    {
+      "id": "data-lineage-doc",
+      "name": "data-lineage-doc",
+      "category": "skill",
+      "invocation": "/data-lineage-doc",
+      "description": "Automatically document data lineage and dependencies",
+      "long_description": "Uses bq-lineage and bq-profile to discover dependencies, profile related tables, generate diagrams, and write comprehensive documentation.",
+      "use_cases": [
+        "lineage documentation",
+        "impact analysis",
+        "data catalog"
+      ],
+      "tools_used": ["bq-lineage", "bq-profile"],
+      "outputs": ["lineage documentation", "mermaid diagrams", "table profiles"],
+      "path": ".claude/skills/data-lineage-doc/SKILL.md"
+    },
+    {
+      "id": "troubleshoot",
+      "name": "troubleshoot",
+      "category": "skill",
+      "invocation": "/troubleshoot",
+      "description": "Systematic debugging and troubleshooting workflow",
+      "long_description": "Guides Claude through hypothesis-driven debugging using knowledge base search, tool analysis, and systematic investigation.",
+      "use_cases": [
+        "debugging",
+        "error resolution",
+        "root cause analysis"
+      ],
+      "tools_used": ["bq-explain", "bq-profile", "kb search"],
+      "outputs": ["root cause analysis", "fix recommendations", "prevention steps"],
+      "path": ".claude/skills/troubleshoot/SKILL.md"
+    }
+  ],
+  "use_case_index": {
+    "data quality": ["bq-profile", "bq-validate", "data-quality-audit"],
+    "optimization": ["bq-optimize", "bq-explain", "query-optimization", "sql-optimizer"],
+    "cost reduction": ["bq-optimize", "bq-query-cost", "query-optimization"],
+    "schema changes": ["bq-schema-diff", "schema-migration"],
+    "debugging": ["bq-explain", "troubleshoot", "incident-response"],
+    "lineage": ["bq-lineage", "data-lineage-doc"],
+    "profiling": ["bq-profile"],
+    "testing": ["dbt-test-gen"],
+    "documentation": ["data-lineage-doc", "schema-doc-generator"]
+  }
+}

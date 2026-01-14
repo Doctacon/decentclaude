@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""
+Mayor - Unified CLI for DecentClaude
+
+The single point of entry for all DecentClaude capabilities:
+- BigQuery utilities (bq-*)
+- dbt utilities (dbt-*)
+- SQLMesh utilities (sqlmesh-*)
+- AI utilities (ai-*)
+- Knowledge base (kb)
+- Workflows
+- Skills
+
+Usage:
+  mayor --help                    # Show all available commands
+  mayor bq --help                 # Show BigQuery subcommands
+  mayor bq profile <table>        # Profile a BigQuery table
+  mayor list                      # List all available tools
+  mayor search "data quality"     # Search tools by use case
+  mayor info bq-profile           # Get detailed tool information
+
+Design principles:
+- Single responsibility: Each subcommand does one thing well
+- Composability: JSON output for piping between commands
+- Discoverability: Comprehensive help and examples
+- AI-native: Structured output for LLM consumption
+"""
+
+import sys
+import os
+from pathlib import Path
+
+# Add lib to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+
+try:
+    import click
+except ImportError:
+    print("Error: click library not installed")
+    print("Install with: pip install click")
+    sys.exit(1)
+
+from mayor_cli import cli
+
+if __name__ == "__main__":
+    cli()
