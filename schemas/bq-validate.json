@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://decentclaude.com/schemas/bq-validate.json",
+  "title": "BigQuery SQL Validation Output",
+  "description": "Output schema for bq-validate tool - SQL syntax and semantic validation",
+  "type": "object",
+  "required": ["query", "is_valid"],
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "The SQL query being validated"
+    },
+    "is_valid": {
+      "type": "boolean",
+      "description": "Whether the query is valid"
+    },
+    "syntax_errors": {
+      "type": "array",
+      "description": "Syntax errors found in the query",
+      "items": {
+        "type": "object",
+        "required": ["message", "location"],
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Error message"
+          },
+          "location": {
+            "type": "object",
+            "properties": {
+              "line": {
+                "type": "integer",
+                "description": "Line number"
+              },
+              "column": {
+                "type": "integer",
+                "description": "Column number"
+              }
+            }
+          },
+          "suggestion": {
+            "type": "string",
+            "description": "Suggested fix"
+          }
+        }
+      }
+    },
+    "semantic_errors": {
+      "type": "array",
+      "description": "Semantic errors (table not found, column mismatch, etc.)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["table_not_found", "column_not_found", "type_mismatch", "permission_denied"],
+            "description": "Error type"
+          },
+          "message": {
+            "type": "string",
+            "description": "Error message"
+          },
+          "resource": {
+            "type": "string",
+            "description": "Resource that caused the error (table, column name)"
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "description": "Non-blocking warnings",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Warning type"
+          },
+          "message": {
+            "type": "string",
+            "description": "Warning message"
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["low", "medium", "high"]
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "validation_time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "dry_run_bytes": {
+          "type": "integer",
+          "description": "Estimated bytes from dry run"
+        }
+      }
+    }
+  }
+}

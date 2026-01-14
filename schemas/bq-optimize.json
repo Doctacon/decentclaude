@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://decentclaude.com/schemas/bq-optimize.json",
+  "title": "BigQuery Query Optimization Output",
+  "description": "Output schema for bq-optimize tool - automated query optimization suggestions",
+  "type": "object",
+  "required": ["original_query", "optimizations"],
+  "properties": {
+    "original_query": {
+      "type": "object",
+      "description": "Original query information",
+      "required": ["sql", "estimated_bytes", "estimated_cost"],
+      "properties": {
+        "sql": {
+          "type": "string",
+          "description": "Original SQL query"
+        },
+        "estimated_bytes": {
+          "type": "integer",
+          "description": "Estimated bytes to process"
+        },
+        "estimated_cost": {
+          "type": "number",
+          "description": "Estimated cost in USD"
+        }
+      }
+    },
+    "optimized_query": {
+      "type": "object",
+      "description": "Optimized query (if auto-optimization applied)",
+      "properties": {
+        "sql": {
+          "type": "string",
+          "description": "Optimized SQL query"
+        },
+        "estimated_bytes": {
+          "type": "integer",
+          "description": "Estimated bytes for optimized query"
+        },
+        "estimated_cost": {
+          "type": "number",
+          "description": "Estimated cost for optimized query"
+        },
+        "improvements": {
+          "type": "object",
+          "properties": {
+            "bytes_reduction_percent": {
+              "type": "number",
+              "description": "Percentage reduction in bytes processed"
+            },
+            "cost_savings_percent": {
+              "type": "number",
+              "description": "Percentage cost savings"
+            },
+            "estimated_speedup": {
+              "type": "string",
+              "description": "Expected performance improvement"
+            }
+          }
+        }
+      }
+    },
+    "optimizations": {
+      "type": "array",
+      "description": "List of optimization recommendations",
+      "items": {
+        "type": "object",
+        "required": ["rule", "severity", "description"],
+        "properties": {
+          "rule": {
+            "type": "string",
+            "description": "Optimization rule name (e.g., 'avoid-select-star', 'use-partitioning')"
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["info", "warning", "error", "critical"],
+            "description": "Severity level"
+          },
+          "category": {
+            "type": "string",
+            "enum": ["cost", "performance", "best_practice", "data_quality"],
+            "description": "Optimization category"
+          },
+          "description": {
+            "type": "string",
+            "description": "Human-readable description"
+          },
+          "location": {
+            "type": "object",
+            "description": "Location in SQL where optimization applies",
+            "properties": {
+              "line": {
+                "type": "integer",
+                "description": "Line number"
+              },
+              "column": {
+                "type": "integer",
+                "description": "Column number"
+              }
+            }
+          },
+          "before": {
+            "type": "string",
+            "description": "SQL snippet before optimization"
+          },
+          "after": {
+            "type": "string",
+            "description": "Suggested SQL after optimization"
+          },
+          "impact": {
+            "type": "object",
+            "properties": {
+              "cost_savings": {
+                "type": "string",
+                "description": "Expected cost savings"
+              },
+              "performance_gain": {
+                "type": "string",
+                "description": "Expected performance improvement"
+              }
+            }
+          },
+          "auto_fixable": {
+            "type": "boolean",
+            "description": "Whether this can be auto-fixed"
+          }
+        }
+      }
+    },
+    "table_recommendations": {
+      "type": "array",
+      "description": "Table-level recommendations (partitioning, clustering, etc.)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "table": {
+            "type": "string",
+            "description": "Table name"
+          },
+          "recommendation_type": {
+            "type": "string",
+            "enum": ["add_partitioning", "add_clustering", "create_materialized_view", "add_index"],
+            "description": "Recommendation type"
+          },
+          "description": {
+            "type": "string",
+            "description": "Recommendation details"
+          },
+          "estimated_savings": {
+            "type": "string",
+            "description": "Expected cost/performance savings"
+          },
+          "ddl_example": {
+            "type": "string",
+            "description": "Example DDL to implement recommendation"
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "description": "Optimization summary statistics",
+      "properties": {
+        "total_optimizations": {
+          "type": "integer",
+          "description": "Total number of optimizations found"
+        },
+        "critical_issues": {
+          "type": "integer",
+          "description": "Number of critical issues"
+        },
+        "auto_fixable_count": {
+          "type": "integer",
+          "description": "Number of auto-fixable optimizations"
+        },
+        "potential_cost_savings_percent": {
+          "type": "number",
+          "description": "Total potential cost savings percentage"
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "analysis_time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "analyzer_version": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

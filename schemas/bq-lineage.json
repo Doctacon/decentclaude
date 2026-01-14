@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://decentclaude.com/schemas/bq-lineage.json",
+  "title": "BigQuery Data Lineage Output",
+  "description": "Output schema for bq-lineage tool - table dependency and lineage tracking",
+  "type": "object",
+  "required": ["root_table", "dependencies"],
+  "properties": {
+    "root_table": {
+      "type": "string",
+      "description": "The table for which lineage was traced"
+    },
+    "dependencies": {
+      "type": "object",
+      "description": "Dependency graph",
+      "properties": {
+        "upstream": {
+          "type": "array",
+          "description": "Tables that this table depends on (sources)",
+          "items": {
+            "type": "object",
+            "required": ["table", "relationship"],
+            "properties": {
+              "table": {
+                "type": "string",
+                "description": "Upstream table name (project.dataset.table)"
+              },
+              "relationship": {
+                "type": "string",
+                "enum": ["direct", "indirect"],
+                "description": "Direct dependency or transitive"
+              },
+              "depth": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Depth in dependency tree"
+              },
+              "join_type": {
+                "type": "string",
+                "enum": ["INNER", "LEFT", "RIGHT", "FULL", "CROSS", "UNION", "UNKNOWN"],
+                "description": "How tables are joined (if known)"
+              },
+              "columns_used": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Columns from upstream table used"
+              }
+            }
+          }
+        },
+        "downstream": {
+          "type": "array",
+          "description": "Tables that depend on this table (consumers)",
+          "items": {
+            "type": "object",
+            "properties": {
+              "table": {
+                "type": "string",
+                "description": "Downstream table name"
+              },
+              "relationship": {
+                "type": "string",
+                "enum": ["direct", "indirect"]
+              },
+              "depth": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "column_lineage": {
+      "type": "array",
+      "description": "Column-level lineage tracking",
+      "items": {
+        "type": "object",
+        "properties": {
+          "column": {
+            "type": "string",
+            "description": "Column name in root table"
+          },
+          "sources": {
+            "type": "array",
+            "description": "Source columns that feed into this column",
+            "items": {
+              "type": "object",
+              "properties": {
+                "table": {
+                  "type": "string",
+                  "description": "Source table"
+                },
+                "column": {
+                  "type": "string",
+                  "description": "Source column"
+                },
+                "transformation": {
+                  "type": "string",
+                  "description": "Transformation applied (if any)"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "graph": {
+      "type": "object",
+      "description": "Graph representation for visualization",
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": ["table", "view", "materialized_view", "external_table"]
+              }
+            }
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "max_depth": {
+          "type": "integer",
+          "description": "Maximum depth explored"
+        },
+        "total_tables": {
+          "type": "integer",
+          "description": "Total tables in lineage graph"
+        },
+        "analysis_time": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

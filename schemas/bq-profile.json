@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://decentclaude.com/schemas/bq-profile.json",
+  "title": "BigQuery Table Profile Output",
+  "description": "Output schema for bq-profile tool - comprehensive table profiling results",
+  "type": "object",
+  "required": ["table_metadata", "column_statistics", "quality_score"],
+  "properties": {
+    "table_metadata": {
+      "type": "object",
+      "description": "Basic table information and characteristics",
+      "required": ["project_id", "dataset_id", "table_id", "row_count", "size_bytes"],
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "description": "Google Cloud project ID"
+        },
+        "dataset_id": {
+          "type": "string",
+          "description": "BigQuery dataset ID"
+        },
+        "table_id": {
+          "type": "string",
+          "description": "BigQuery table ID"
+        },
+        "row_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total number of rows in the table"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total table size in bytes"
+        },
+        "created_time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Table creation timestamp"
+        },
+        "modified_time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last modification timestamp"
+        },
+        "partitioning": {
+          "type": "object",
+          "description": "Partitioning configuration",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["DAY", "HOUR", "MONTH", "YEAR", "INGESTION_TIME", "INTEGER_RANGE"],
+              "description": "Partitioning type"
+            },
+            "field": {
+              "type": "string",
+              "description": "Partitioning column name"
+            }
+          }
+        },
+        "clustering": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Clustering column names"
+        }
+      }
+    },
+    "column_statistics": {
+      "type": "array",
+      "description": "Statistical analysis for each column",
+      "items": {
+        "type": "object",
+        "required": ["name", "type", "null_count", "null_percentage"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Column name"
+          },
+          "type": {
+            "type": "string",
+            "description": "BigQuery data type (STRING, INTEGER, FLOAT, etc.)"
+          },
+          "null_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of NULL values"
+          },
+          "null_percentage": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Percentage of NULL values"
+          },
+          "distinct_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of distinct values"
+          },
+          "min_value": {
+            "description": "Minimum value (for numeric/date columns)"
+          },
+          "max_value": {
+            "description": "Maximum value (for numeric/date columns)"
+          },
+          "mean": {
+            "type": "number",
+            "description": "Mean value (for numeric columns)"
+          },
+          "stddev": {
+            "type": "number",
+            "description": "Standard deviation (for numeric columns)"
+          },
+          "top_values": {
+            "type": "array",
+            "description": "Most frequent values with counts",
+            "items": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "description": "The value"
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Frequency count"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "quality_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Overall data quality score (0-100)"
+    },
+    "null_percentages": {
+      "type": "object",
+      "description": "NULL percentage by column (map of column_name -> percentage)",
+      "additionalProperties": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100
+      }
+    },
+    "anomalies": {
+      "type": "array",
+      "description": "Detected data anomalies (if --detect-anomalies flag used)",
+      "items": {
+        "type": "object",
+        "required": ["type", "column", "severity", "description"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["high_null_rate", "low_cardinality", "skewed_distribution", "outliers", "data_type_mismatch"],
+            "description": "Anomaly type"
+          },
+          "column": {
+            "type": "string",
+            "description": "Column where anomaly was detected"
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["low", "medium", "high", "critical"],
+            "description": "Severity level"
+          },
+          "description": {
+            "type": "string",
+            "description": "Human-readable anomaly description"
+          },
+          "value": {
+            "description": "Specific value or metric related to anomaly"
+          },
+          "recommendation": {
+            "type": "string",
+            "description": "Suggested action to address anomaly"
+          }
+        }
+      }
+    },
+    "recommendations": {
+      "type": "array",
+      "description": "Actionable recommendations for table improvements",
+      "items": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": ["partitioning", "clustering", "data_quality", "schema", "performance"],
+            "description": "Recommendation category"
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["low", "medium", "high"],
+            "description": "Priority level"
+          },
+          "description": {
+            "type": "string",
+            "description": "Recommendation description"
+          },
+          "impact": {
+            "type": "string",
+            "description": "Expected impact of implementing recommendation"
+          }
+        }
+      }
+    },
+    "profiling_metadata": {
+      "type": "object",
+      "description": "Metadata about the profiling operation itself",
+      "properties": {
+        "sample_size": {
+          "type": "integer",
+          "description": "Number of rows sampled for analysis"
+        },
+        "execution_time_seconds": {
+          "type": "number",
+          "description": "Time taken to generate profile"
+        },
+        "bytes_processed": {
+          "type": "integer",
+          "description": "Bytes processed by BigQuery"
+        },
+        "cache_hit": {
+          "type": "boolean",
+          "description": "Whether results were served from cache"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When profiling was performed"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://decentclaude.com/schemas/data-quality-audit.json",
+  "title": "Data Quality Audit Workflow Output",
+  "description": "Output schema for data-quality-audit workflow - comprehensive DQ assessment",
+  "type": "object",
+  "required": ["dataset", "overall_score", "table_results"],
+  "properties": {
+    "dataset": {
+      "type": "string",
+      "description": "Dataset being audited"
+    },
+    "overall_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Overall data quality score (0-100)"
+    },
+    "table_results": {
+      "type": "array",
+      "description": "Quality assessment for each table",
+      "items": {
+        "type": "object",
+        "required": ["table", "score", "dimensions"],
+        "properties": {
+          "table": {
+            "type": "string",
+            "description": "Table name"
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Table quality score"
+          },
+          "dimensions": {
+            "type": "object",
+            "description": "Scores for each quality dimension",
+            "required": ["completeness", "validity", "consistency", "timeliness"],
+            "properties": {
+              "completeness": {
+                "type": "object",
+                "properties": {
+                  "score": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "issues": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "column": {
+                          "type": "string"
+                        },
+                        "null_percentage": {
+                          "type": "number"
+                        },
+                        "severity": {
+                          "type": "string",
+                          "enum": ["low", "medium", "high", "critical"]
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "validity": {
+                "type": "object",
+                "properties": {
+                  "score": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "issues": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "column": {
+                          "type": "string"
+                        },
+                        "rule": {
+                          "type": "string",
+                          "description": "Validation rule that failed"
+                        },
+                        "failed_count": {
+                          "type": "integer"
+                        },
+                        "examples": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Example invalid values"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "consistency": {
+                "type": "object",
+                "properties": {
+                  "score": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "issues": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": ["format_inconsistency", "referential_integrity", "duplicate_records"]
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "affected_rows": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "timeliness": {
+                "type": "object",
+                "properties": {
+                  "score": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "last_update": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "When table was last updated"
+                  },
+                  "freshness_hours": {
+                    "type": "number",
+                    "description": "Hours since last update"
+                  },
+                  "expected_frequency": {
+                    "type": "string",
+                    "description": "Expected update frequency"
+                  },
+                  "is_stale": {
+                    "type": "boolean",
+                    "description": "Whether data is considered stale"
+                  }
+                }
+              }
+            }
+          },
+          "recommendations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "priority": {
+                  "type": "string",
+                  "enum": ["low", "medium", "high", "critical"]
+                },
+                "category": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "impact": {
+                  "type": "string",
+                  "description": "Expected impact of fixing"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "description": "Audit summary statistics",
+      "properties": {
+        "total_tables": {
+          "type": "integer"
+        },
+        "tables_passed": {
+          "type": "integer",
+          "description": "Tables meeting quality threshold"
+        },
+        "tables_failed": {
+          "type": "integer",
+          "description": "Tables below quality threshold"
+        },
+        "critical_issues": {
+          "type": "integer",
+          "description": "Number of critical quality issues"
+        },
+        "quality_threshold": {
+          "type": "number",
+          "description": "Configured quality threshold"
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "audit_time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "execution_time_seconds": {
+          "type": "number"
+        },
+        "workflow_version": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

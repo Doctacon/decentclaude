@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://decentclaude.com/schemas/ai-generate.json",
+  "title": "AI Code Generation Output",
+  "description": "Output schema for ai-generate tool - LLM-powered code generation",
+  "type": "object",
+  "required": ["prompt", "generated_code", "model"],
+  "properties": {
+    "prompt": {
+      "type": "string",
+      "description": "The prompt used for generation"
+    },
+    "generated_code": {
+      "type": "string",
+      "description": "The generated code"
+    },
+    "model": {
+      "type": "string",
+      "description": "LLM model used (e.g., claude-sonnet-4.5)",
+      "examples": ["claude-sonnet-4.5", "claude-opus-4.5", "gpt-4"]
+    },
+    "language": {
+      "type": "string",
+      "description": "Programming language of generated code",
+      "examples": ["sql", "python", "javascript", "typescript"]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Model confidence score (0-1)"
+    },
+    "alternatives": {
+      "type": "array",
+      "description": "Alternative code variations",
+      "items": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Alternative code snippet"
+          },
+          "description": {
+            "type": "string",
+            "description": "Why this alternative might be preferred"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    "explanation": {
+      "type": "string",
+      "description": "Human-readable explanation of the generated code"
+    },
+    "test_cases": {
+      "type": "array",
+      "description": "Generated test cases (if applicable)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "description": "Test input"
+          },
+          "expected_output": {
+            "description": "Expected output"
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "description": "Warnings about the generated code",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["security", "performance", "best_practice", "edge_case"],
+            "description": "Warning type"
+          },
+          "message": {
+            "type": "string",
+            "description": "Warning message"
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["low", "medium", "high"]
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "generation_time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "tokens_used": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "integer",
+              "description": "Input tokens"
+            },
+            "output": {
+              "type": "integer",
+              "description": "Output tokens"
+            },
+            "total": {
+              "type": "integer",
+              "description": "Total tokens"
+            }
+          }
+        },
+        "cost_usd": {
+          "type": "number",
+          "description": "API cost in USD"
+        },
+        "latency_seconds": {
+          "type": "number",
+          "description": "Generation latency"
+        }
+      }
+    }
+  }
+}

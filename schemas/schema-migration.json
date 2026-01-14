@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://decentclaude.com/schemas/schema-migration.json",
+  "title": "Schema Migration Workflow Output",
+  "description": "Output schema for schema-migration workflow - automated schema change management",
+  "type": "object",
+  "required": ["source_table", "target_table", "changes", "migration_plan"],
+  "properties": {
+    "source_table": {
+      "type": "object",
+      "description": "Source table schema",
+      "required": ["name", "schema"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Full table name (project.dataset.table)"
+        },
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string",
+                "enum": ["NULLABLE", "REQUIRED", "REPEATED"]
+              }
+            }
+          }
+        }
+      }
+    },
+    "target_table": {
+      "type": "object",
+      "description": "Target table schema (desired state)",
+      "required": ["name", "schema"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "changes": {
+      "type": "array",
+      "description": "Schema changes detected",
+      "items": {
+        "type": "object",
+        "required": ["type", "column"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["add_column", "drop_column", "change_type", "change_mode", "rename_column"],
+            "description": "Type of schema change"
+          },
+          "column": {
+            "type": "string",
+            "description": "Column name affected"
+          },
+          "old_value": {
+            "description": "Old value (for changes)"
+          },
+          "new_value": {
+            "description": "New value (for changes)"
+          },
+          "is_breaking": {
+            "type": "boolean",
+            "description": "Whether this is a breaking change"
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": ["low", "medium", "high", "critical"],
+            "description": "Risk level of this change"
+          },
+          "impact_analysis": {
+            "type": "object",
+            "properties": {
+              "downstream_tables": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Tables that might be affected"
+              },
+              "downstream_queries": {
+                "type": "integer",
+                "description": "Estimated number of queries affected"
+              }
+            }
+          }
+        }
+      }
+    },
+    "migration_plan": {
+      "type": "object",
+      "description": "Execution plan for migration",
+      "required": ["steps", "estimated_duration"],
+      "properties": {
+        "steps": {
+          "type": "array",
+          "description": "Ordered migration steps",
+          "items": {
+            "type": "object",
+            "required": ["order", "action", "sql"],
+            "properties": {
+              "order": {
+                "type": "integer",
+                "description": "Execution order"
+              },
+              "action": {
+                "type": "string",
+                "description": "Human-readable action description"
+              },
+              "sql": {
+                "type": "string",
+                "description": "SQL to execute"
+              },
+              "rollback_sql": {
+                "type": "string",
+                "description": "SQL to rollback this step"
+              },
+              "validation": {
+                "type": "string",
+                "description": "SQL to validate this step succeeded"
+              },
+              "requires_downtime": {
+                "type": "boolean",
+                "description": "Whether this step requires downtime"
+              }
+            }
+          }
+        },
+        "estimated_duration": {
+          "type": "string",
+          "description": "Estimated migration duration"
+        },
+        "rollback_plan": {
+          "type": "array",
+          "description": "Steps to rollback entire migration",
+          "items": {
+            "type": "object",
+            "properties": {
+              "order": {
+                "type": "integer"
+              },
+              "action": {
+                "type": "string"
+              },
+              "sql": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "description": "Pre-migration validation results",
+      "properties": {
+        "is_valid": {
+          "type": "boolean",
+          "description": "Whether migration can proceed"
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "severity": {
+                "type": "string",
+                "enum": ["error", "warning"]
+              }
+            }
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "migration_id": {
+          "type": "string",
+          "description": "Unique migration identifier"
+        },
+        "workflow_version": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

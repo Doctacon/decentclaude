@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://decentclaude.com/schemas/dbt-test.json",
+  "title": "dbt Test Results Output",
+  "description": "Output schema for dbt-test tool - dbt test execution results",
+  "type": "object",
+  "required": ["project", "results", "summary"],
+  "properties": {
+    "project": {
+      "type": "string",
+      "description": "dbt project name"
+    },
+    "target": {
+      "type": "string",
+      "description": "dbt target/profile used"
+    },
+    "results": {
+      "type": "array",
+      "description": "Individual test results",
+      "items": {
+        "type": "object",
+        "required": ["test_name", "status"],
+        "properties": {
+          "test_name": {
+            "type": "string",
+            "description": "Name of the test"
+          },
+          "test_type": {
+            "type": "string",
+            "enum": ["generic", "singular", "schema"],
+            "description": "Type of dbt test"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pass", "fail", "error", "warn", "skipped"],
+            "description": "Test result status"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model being tested"
+          },
+          "column": {
+            "type": "string",
+            "description": "Column being tested (for column tests)"
+          },
+          "rows_failed": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of rows that failed the test"
+          },
+          "execution_time": {
+            "type": "number",
+            "description": "Test execution time in seconds"
+          },
+          "error_message": {
+            "type": "string",
+            "description": "Error message (if status is error or fail)"
+          },
+          "compiled_sql": {
+            "type": "string",
+            "description": "Compiled SQL for the test"
+          },
+          "failed_rows": {
+            "type": "array",
+            "description": "Sample of rows that failed (if applicable)",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "description": "Test run summary",
+      "required": ["total", "passed", "failed"],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "description": "Total tests run"
+        },
+        "passed": {
+          "type": "integer",
+          "description": "Number of passing tests"
+        },
+        "failed": {
+          "type": "integer",
+          "description": "Number of failing tests"
+        },
+        "errors": {
+          "type": "integer",
+          "description": "Number of tests with errors"
+        },
+        "warnings": {
+          "type": "integer",
+          "description": "Number of tests with warnings"
+        },
+        "skipped": {
+          "type": "integer",
+          "description": "Number of skipped tests"
+        },
+        "pass_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Pass rate percentage"
+        },
+        "total_execution_time": {
+          "type": "number",
+          "description": "Total execution time in seconds"
+        }
+      }
+    },
+    "failed_tests_detail": {
+      "type": "array",
+      "description": "Detailed information for failed tests",
+      "items": {
+        "type": "object",
+        "properties": {
+          "test_name": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "failure_reason": {
+            "type": "string",
+            "description": "Why the test failed"
+          },
+          "remediation": {
+            "type": "string",
+            "description": "Suggested fix"
+          },
+          "impact": {
+            "type": "string",
+            "enum": ["low", "medium", "high", "critical"],
+            "description": "Impact of this failure"
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "dbt_version": {
+          "type": "string",
+          "description": "dbt version used"
+        },
+        "invocation_id": {
+          "type": "string",
+          "description": "dbt invocation ID"
+        },
+        "run_time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When tests were run"
+        },
+        "environment": {
+          "type": "string",
+          "description": "Environment (dev, staging, prod)"
+        }
+      }
+    }
+  }
+}

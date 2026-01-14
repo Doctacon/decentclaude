@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://decentclaude.com/schemas/bq-explain.json",
+  "title": "BigQuery Query Explain Output",
+  "description": "Output schema for bq-explain tool - query execution plan analysis",
+  "type": "object",
+  "required": ["query", "execution_plan", "cost_estimate"],
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "The SQL query being analyzed"
+    },
+    "query_hash": {
+      "type": "string",
+      "description": "Hash of the query for caching/tracking"
+    },
+    "execution_plan": {
+      "type": "object",
+      "description": "Query execution plan from BigQuery",
+      "required": ["stages"],
+      "properties": {
+        "stages": {
+          "type": "array",
+          "description": "Execution stages in the query plan",
+          "items": {
+            "type": "object",
+            "properties": {
+              "stage_id": {
+                "type": "integer",
+                "description": "Stage identifier"
+              },
+              "name": {
+                "type": "string",
+                "description": "Stage name/operation"
+              },
+              "input_stages": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "IDs of input stages"
+              },
+              "records_read": {
+                "type": "integer",
+                "description": "Number of records read"
+              },
+              "records_written": {
+                "type": "integer",
+                "description": "Number of records written"
+              },
+              "shuffle_output_bytes": {
+                "type": "integer",
+                "description": "Bytes shuffled to next stage"
+              },
+              "compute_ratio_avg": {
+                "type": "number",
+                "description": "Average compute time ratio"
+              },
+              "wait_ratio_avg": {
+                "type": "number",
+                "description": "Average wait time ratio"
+              },
+              "steps": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "description": "Step type (READ, FILTER, AGGREGATE, etc.)"
+                    },
+                    "substeps": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Detailed substeps"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "total_slot_ms": {
+          "type": "integer",
+          "description": "Total slot milliseconds consumed"
+        }
+      }
+    },
+    "cost_estimate": {
+      "type": "object",
+      "description": "Query cost estimates",
+      "required": ["bytes_processed", "estimated_cost_usd"],
+      "properties": {
+        "bytes_processed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Estimated bytes to be processed"
+        },
+        "estimated_cost_usd": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Estimated cost in USD at $5/TB"
+        },
+        "tier": {
+          "type": "string",
+          "enum": ["free_tier", "under_1_dollar", "moderate", "expensive"],
+          "description": "Cost tier classification"
+        }
+      }
+    },
+    "bottlenecks": {
+      "type": "array",
+      "description": "Identified performance bottlenecks",
+      "items": {
+        "type": "object",
+        "required": ["type", "stage_id", "severity", "description"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["high_shuffle", "sequential_stages", "skewed_data", "large_scan", "inefficient_join"],
+            "description": "Bottleneck type"
+          },
+          "stage_id": {
+            "type": "integer",
+            "description": "Stage where bottleneck occurs"
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["low", "medium", "high", "critical"],
+            "description": "Severity level"
+          },
+          "description": {
+            "type": "string",
+            "description": "Bottleneck description"
+          },
+          "impact": {
+            "type": "string",
+            "description": "Performance impact"
+          }
+        }
+      }
+    },
+    "optimizations": {
+      "type": "array",
+      "description": "Suggested query optimizations",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["partitioning", "clustering", "materialized_view", "query_rewrite", "index"],
+            "description": "Optimization type"
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["low", "medium", "high"],
+            "description": "Priority level"
+          },
+          "description": {
+            "type": "string",
+            "description": "Optimization description"
+          },
+          "expected_improvement": {
+            "type": "string",
+            "description": "Expected performance improvement"
+          },
+          "example_sql": {
+            "type": "string",
+            "description": "Example optimized SQL"
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Analysis metadata",
+      "properties": {
+        "analysis_time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When analysis was performed"
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Whether this was a dry run (no actual execution)"
+        }
+      }
+    }
+  }
+}

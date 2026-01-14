@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "0.1.0",
+  "description": "Catalog of all DecentClaude tool output schemas",
+  "generated": "2026-01-14",
+  "schemas": [
+    {
+      "id": "bq-profile",
+      "file": "bq-profile.json",
+      "title": "BigQuery Table Profile Output",
+      "tool": "mayor bq profile",
+      "category": "bigquery",
+      "description": "Comprehensive table profiling results with statistics, quality scores, and anomaly detection",
+      "output_formats": ["json", "text", "markdown", "html"],
+      "version": "1.0.0"
+    },
+    {
+      "id": "bq-explain",
+      "file": "bq-explain.json",
+      "title": "BigQuery Query Explain Output",
+      "tool": "mayor bq explain",
+      "category": "bigquery",
+      "description": "Query execution plan analysis with bottlenecks and optimization suggestions",
+      "output_formats": ["json", "text"],
+      "version": "1.0.0"
+    },
+    {
+      "id": "bq-optimize",
+      "file": "bq-optimize.json",
+      "title": "BigQuery Query Optimization Output",
+      "tool": "mayor bq optimize",
+      "category": "bigquery",
+      "description": "Automated query optimization recommendations with before/after comparisons",
+      "output_formats": ["json", "text"],
+      "version": "1.0.0"
+    },
+    {
+      "id": "bq-validate",
+      "file": "bq-validate.json",
+      "title": "BigQuery SQL Validation Output",
+      "tool": "mayor bq validate",
+      "category": "bigquery",
+      "description": "SQL syntax and semantic validation with error locations and suggestions",
+      "output_formats": ["json", "text"],
+      "version": "1.0.0"
+    },
+    {
+      "id": "bq-lineage",
+      "file": "bq-lineage.json",
+      "title": "BigQuery Data Lineage Output",
+      "tool": "mayor bq lineage",
+      "category": "bigquery",
+      "description": "Table dependency graphs with upstream/downstream tracking and column-level lineage",
+      "output_formats": ["json", "text", "dot"],
+      "version": "1.0.0"
+    },
+    {
+      "id": "data-quality-audit",
+      "file": "data-quality-audit.json",
+      "title": "Data Quality Audit Workflow Output",
+      "tool": "mayor workflow run data-quality-audit",
+      "category": "workflow",
+      "description": "Multi-dimensional DQ assessment across datasets with completeness, validity, consistency, and timeliness scoring",
+      "output_formats": ["json", "html"],
+      "version": "1.0.0"
+    },
+    {
+      "id": "schema-migration",
+      "file": "schema-migration.json",
+      "title": "Schema Migration Workflow Output",
+      "tool": "mayor workflow run schema-migration",
+      "category": "workflow",
+      "description": "Schema change analysis with migration plans, rollback strategies, and impact assessment",
+      "output_formats": ["json", "text"],
+      "version": "1.0.0"
+    },
+    {
+      "id": "ai-generate",
+      "file": "ai-generate.json",
+      "title": "AI Code Generation Output",
+      "tool": "mayor ai generate",
+      "category": "ai",
+      "description": "LLM-powered code generation with alternatives, explanations, test cases, and confidence scores",
+      "output_formats": ["json", "text"],
+      "version": "1.0.0"
+    },
+    {
+      "id": "dbt-test",
+      "file": "dbt-test.json",
+      "title": "dbt Test Results Output",
+      "tool": "mayor dbt test",
+      "category": "dbt",
+      "description": "dbt test execution results with pass/fail details, failed row samples, and remediation suggestions",
+      "output_formats": ["json", "text"],
+      "version": "1.0.0"
+    }
+  ],
+  "categories": {
+    "bigquery": {
+      "name": "BigQuery Tools",
+      "schema_count": 5
+    },
+    "workflow": {
+      "name": "Workflows",
+      "schema_count": 2
+    },
+    "ai": {
+      "name": "AI Tools",
+      "schema_count": 1
+    },
+    "dbt": {
+      "name": "dbt Tools",
+      "schema_count": 1
+    }
+  },
+  "total_schemas": 9,
+  "json_schema_version": "draft/2020-12"
+}
