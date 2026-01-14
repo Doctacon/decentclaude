@@ -13,11 +13,16 @@ from pathlib import Path
 bin_path = Path(__file__).parent.parent.parent / "bin" / "data-utils"
 sys.path.insert(0, str(bin_path))
 
-# Import after path modification
-import importlib.util
-spec = importlib.util.spec_from_file_location("bq_query_cost", bin_path / "bq-query-cost")
-bq_query_cost = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(bq_query_cost)
+# Import after path modification using SourceFileLoader
+from importlib.machinery import SourceFileLoader
+
+# Mock google.cloud before importing
+sys.modules['google'] = MagicMock()
+sys.modules['google.cloud'] = MagicMock()
+sys.modules['google.cloud.bigquery'] = MagicMock()
+
+loader = SourceFileLoader("bq_query_cost", str(bin_path / "bq-query-cost"))
+bq_query_cost = loader.load_module()
 
 estimate_query_cost = bq_query_cost.estimate_query_cost
 format_bytes = bq_query_cost.format_bytes

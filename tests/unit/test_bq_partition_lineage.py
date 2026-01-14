@@ -13,16 +13,23 @@ from pathlib import Path
 bin_path = Path(__file__).parent.parent.parent / "bin" / "data-utils"
 sys.path.insert(0, str(bin_path))
 
-# Import bq-partition-info
+# Import bq-partition-info using SourceFileLoader
+from importlib.machinery import SourceFileLoader
 import importlib.util
-spec_partition = importlib.util.spec_from_file_location("bq_partition_info", bin_path / "bq-partition-info")
-bq_partition_info = importlib.util.module_from_spec(spec_partition)
-spec_partition.loader.exec_module(bq_partition_info)
+
+# Mock google.cloud and bq_cache before importing
+sys.modules['google'] = MagicMock()
+sys.modules['google.cloud'] = MagicMock()
+sys.modules['google.cloud.bigquery'] = MagicMock()
+sys.modules['bq_cache'] = MagicMock()
+
+# Import bq-partition-info
+loader_partition = SourceFileLoader("bq_partition_info", str(bin_path / "bq-partition-info"))
+bq_partition_info = loader_partition.load_module()
 
 # Import bq-lineage
-spec_lineage = importlib.util.spec_from_file_location("bq_lineage", bin_path / "bq-lineage")
-bq_lineage = importlib.util.module_from_spec(spec_lineage)
-spec_lineage.loader.exec_module(bq_lineage)
+loader_lineage = SourceFileLoader("bq_lineage", str(bin_path / "bq-lineage"))
+bq_lineage = loader_lineage.load_module()
 
 # ===== BQ PARTITION INFO TESTS =====
 

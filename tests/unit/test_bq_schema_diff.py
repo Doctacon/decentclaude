@@ -13,11 +13,17 @@ from pathlib import Path
 bin_path = Path(__file__).parent.parent.parent / "bin" / "data-utils"
 sys.path.insert(0, str(bin_path))
 
-# Import after path modification
-import importlib.util
-spec = importlib.util.spec_from_file_location("bq_schema_diff", bin_path / "bq-schema-diff")
-bq_schema_diff = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(bq_schema_diff)
+# Import after path modification using SourceFileLoader
+from importlib.machinery import SourceFileLoader
+
+# Mock google.cloud and bq_cache before importing
+sys.modules['google'] = MagicMock()
+sys.modules['google.cloud'] = MagicMock()
+sys.modules['google.cloud.bigquery'] = MagicMock()
+sys.modules['bq_cache'] = MagicMock()
+
+loader = SourceFileLoader("bq_schema_diff", str(bin_path / "bq-schema-diff"))
+bq_schema_diff = loader.load_module()
 
 get_table_schema = bq_schema_diff.get_table_schema
 compare_schemas = bq_schema_diff.compare_schemas
