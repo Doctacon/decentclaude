@@ -5,6 +5,9 @@ Welcome to the DecentClaude data workflows documentation. This documentation has
 ## Quick Navigation
 
 - **[Complete Documentation Index](INDEX.md)** - Full searchable index with quick links
+- **[Claude Code Setup](CLAUDE_CODE_SETUP.md)** - Integrate DecentClaude with Claude Code (<5 minutes)
+- **[Tool Registry](../lib/tool_registry.json)** - Complete catalog of all 23+ tools
+- **[JSON Schemas](../schemas/README.md)** - Output schemas for all tools
 - **[Reference Documentation](reference/)** - API and tool references
 - **[Guides and Tutorials](guides/)** - Step-by-step instructions
 - **[Architecture Documentation](architecture/)** - Design docs and system architecture
@@ -61,9 +64,49 @@ Design documents and implementation details for the system.
 New to DecentClaude? Follow this path:
 
 1. **[Main README](../README.md)** - Start with the project overview
-2. **[QUICKSTART](guides/QUICKSTART.md)** - Get up and running in minutes
-3. **[Settings Best Practices](reference/settings-best-practices.md)** - Configure your environment
-4. **[Workflows Tutorial](guides/WORKFLOWS_TUTORIAL.md)** - Learn the workflows
+2. **[Claude Code Setup](CLAUDE_CODE_SETUP.md)** - Integrate with Claude Code (<5 minutes)
+3. **[Tool Registry](../lib/tool_registry.json)** - Discover available tools
+4. **[QUICKSTART](guides/QUICKSTART.md)** - Get up and running in minutes
+5. **[Settings Best Practices](reference/settings-best-practices.md)** - Configure your environment
+6. **[Workflows Tutorial](guides/WORKFLOWS_TUTORIAL.md)** - Learn the workflows
+
+## Mayor CLI
+
+DecentClaude provides a unified CLI for all tools:
+
+```bash
+mayor --help                    # Show all commands
+mayor list                      # List all available tools
+mayor search "data quality"     # Search tools by keyword
+mayor config init               # Interactive configuration wizard
+```
+
+### Quick Commands
+
+```bash
+# BigQuery Tools
+mayor bq profile <table>        # Profile table with quality scores
+mayor bq explain <sql>          # Analyze query execution plan
+mayor bq optimize <sql>         # Get optimization suggestions
+mayor bq validate <sql>         # Validate SQL syntax
+mayor bq lineage <table>        # Trace table dependencies
+
+# dbt Tools
+mayor dbt test                  # Run dbt tests
+mayor dbt compile               # Compile dbt models
+mayor dbt run                   # Execute dbt models
+
+# AI Tools
+mayor ai generate <prompt>      # Generate code with LLMs
+mayor ai review <file>          # AI code review
+mayor ai docs <file>            # Generate documentation
+
+# Workflows
+mayor workflow run data-quality-audit     # Run DQ audit
+mayor workflow run schema-migration       # Schema migration planning
+```
+
+See [Tool Registry](../lib/tool_registry.json) for complete tool catalog.
 
 ## Finding What You Need
 
