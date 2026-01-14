@@ -782,5 +782,181 @@ Related Skills:
         click.echo(f"Or: mayor list (to see all tools)")
 
 
+# ============================================================================
+# Config Command Group
+# ============================================================================
+
+@cli.group()
+def config():
+    """Configuration management
+
+    Tools for managing DecentClaude environment configuration.
+
+    \b
+    Available commands:
+      init       Interactive configuration wizard
+      validate   Validate configuration
+      show       Show current configuration
+
+    Examples:
+      mayor config init           # Run interactive setup
+      mayor config validate       # Test all settings
+      mayor config show           # Display current config
+    """
+    pass
+
+
+@config.command()
+def init():
+    """Run interactive configuration wizard
+
+    Guides you through setting up BigQuery, AI, observability,
+    and other configuration options. Creates .env file.
+
+    \b
+    Examples:
+      mayor config init
+    """
+    wizard_path = BIN_DIR / "config-wizard.py"
+    if not wizard_path.exists():
+        click.echo("Error: config-wizard.py not found", err=True)
+        sys.exit(1)
+
+    sys.exit(run_utility(wizard_path, []))
+
+
+@config.command()
+def validate():
+    """Validate configuration settings
+
+    Checks that all required environment variables are set
+    and validates credentials work.
+
+    \b
+    Examples:
+      mayor config validate
+    """
+    import os
+
+    # Required for BigQuery
+    required_bq = ['GOOGLE_CLOUD_PROJECT', 'GOOGLE_APPLICATION_CREDENTIALS']
+    # Required for AI
+    required_ai = ['ANTHROPIC_API_KEY']
+
+    errors = []
+    warnings = []
+
+    click.echo("Validating configuration...\n")
+
+    # Check BigQuery
+    click.echo("[BigQuery Configuration]")
+    for var in required_bq:
+        value = os.getenv(var)
+        if not value:
+            warnings.append(f"{var} not set (BigQuery tools won't work)")
+            click.echo(f"  ⚠ {var}: Not set")
+        else:
+            # Check if credential file exists
+            if var == 'GOOGLE_APPLICATION_CREDENTIALS':
+                if not Path(value).exists():
+                    errors.append(f"{var} points to non-existent file: {value}")
+                    click.echo(f"  ✗ {var}: File not found")
+                else:
+                    click.echo(f"  ✓ {var}: {value}")
+            else:
+                click.echo(f"  ✓ {var}: {value}")
+
+    # Check AI
+    click.echo("\n[AI Integration]")
+    for var in required_ai:
+        value = os.getenv(var)
+        if not value:
+            warnings.append(f"{var} not set (AI tools won't work)")
+            click.echo(f"  ⚠ {var}: Not set")
+        else:
+            # Mask the key for security
+            masked = value[:10] + "..." if len(value) > 10 else "***"
+            click.echo(f"  ✓ {var}: {masked}")
+
+    # Summary
+    click.echo("\n" + "="*50)
+    if errors:
+        click.echo(f"\n{len(errors)} error(s) found:")
+        for error in errors:
+            click.echo(f"  ✗ {error}")
+
+    if warnings:
+        click.echo(f"\n{len(warnings)} warning(s):")
+        for warning in warnings:
+            click.echo(f"  ⚠ {warning}")
+
+    if not errors and not warnings:
+        click.echo("\n✓ Configuration valid!")
+        sys.exit(0)
+    elif errors:
+        click.echo("\nConfiguration has errors. Fix them to use DecentClaude.")
+        click.echo("Run: mayor config init")
+        sys.exit(1)
+    else:
+        click.echo("\nConfiguration has warnings but will work with limitations.")
+        sys.exit(0)
+
+
+@config.command()
+def show():
+    """Show current configuration
+
+    Displays all DecentClaude environment variables (with sensitive values masked).
+
+    \b
+    Examples:
+      mayor config show
+    """
+    import os
+
+    config_vars = [
+        # BigQuery
+        'GOOGLE_CLOUD_PROJECT',
+        'GOOGLE_DATASET',
+        'GOOGLE_APPLICATION_CREDENTIALS',
+        # AI
+        'ANTHROPIC_API_KEY',
+        'OPENAI_API_KEY',
+        # Observability
+        'METRICS_ENABLED',
+        'LOG_FORMAT',
+        'LOG_LEVEL',
+        'DATADOG_API_KEY',
+        'SENTRY_DSN',
+        # Cache
+        'CACHE_DIR',
+        'CACHE_TTL',
+        # KB
+        'KB_DIR',
+        # Workflows
+        'WORKFLOW_OUTPUT_DIR',
+        'DATA_QUALITY_THRESHOLD',
+        'QUERY_COST_THRESHOLD',
+    ]
+
+    click.echo("Current Configuration:\n")
+
+    sensitive_keys = ['API_KEY', 'DSN', 'CREDENTIALS']
+
+    for var in config_vars:
+        value = os.getenv(var)
+        if value:
+            # Mask sensitive values
+            if any(key in var for key in sensitive_keys):
+                display_value = value[:10] + "..." if len(value) > 10 else "***"
+            else:
+                display_value = value
+
+            click.echo(f"  {var:<35} {display_value}")
+
+    click.echo("\nTo modify: mayor config init")
+    click.echo("To validate: mayor config validate")
+
+
 if __name__ == "__main__":
     cli()
